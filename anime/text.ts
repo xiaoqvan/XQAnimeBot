@@ -385,7 +385,7 @@ export function AnimeText(anime: animeType, item: animeItem) {
     )
     .join(" ")}${
     anime.navMessage?.link || anime.navMessageLink
-      ? ` \n[番剧信息](${anime.navMessage?.link || anime.navMessageLink})`
+      ? ` **\n[番剧信息](${anime.navMessage?.link || anime.navMessageLink})`
       : ""
   }`;
 
