@@ -195,6 +195,20 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           thread_id: Anime.navMessage.thread_id,
           link: navLink.link,
         });
+        const newAnimeinfo = await getAnimeById(Anime.id);
+
+        if (newAnimeinfo) {
+          const megtexts = await navmegtext(client, newAnimeinfo);
+
+          await editMessageCaption(
+            client,
+            newAnimeinfo.navMessage!.chat_id,
+            newAnimeinfo.navMessage!.message_id,
+            {
+              text: megtexts[0],
+            }
+          );
+        }
       }
     } else {
       // 没有历史视频消息，全部按顺序发送，并写入数据库
