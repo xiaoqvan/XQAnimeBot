@@ -171,6 +171,10 @@ export async function sendMegToNavAnime(client: Client, id: number) {
             input_message_content: {
               _: "inputMessageText",
               text: await parseTextEntities(client, megtexts[idx]),
+              link_preview_options: {
+                _: "linkPreviewOptions",
+                is_disabled: true,
+              },
             },
           },
         });
@@ -223,6 +227,10 @@ export async function sendMegToNavAnime(client: Client, id: number) {
             input_message_content: {
               _: "inputMessageText",
               text: await parseTextEntities(client, megtexts[idx]),
+              link_preview_options: {
+                _: "linkPreviewOptions",
+                is_disabled: true,
+              },
             },
           },
         });
