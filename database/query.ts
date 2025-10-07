@@ -151,7 +151,8 @@ export async function searchAnime(key: string) {
           name: 1,
           name_cn: 1,
           names: 1, // 需要参与查询但不显示
-          navMessageLink: 1, // 频道消息链接
+          navMessage: 1, // 新版导航频道消息
+          navMessageLink: 1, // 频道消息链接（备用）
         },
       })
       .toArray();

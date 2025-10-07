@@ -88,8 +88,10 @@ export default async function handleSearchAnime(
       resultText += `**中文名：** ${anime.name_cn || "无"}\n`;
 
       // 添加频道消息链接（如果存在）
-      if (anime.navMessageLink) {
-        resultText += `**频道链接：** [查看详情](${anime.navMessageLink})\n`;
+      // 优先使用新的 navMessage.link，如果不存在则使用旧的 navMessageLink 作为备用
+      const messageLink = anime.navMessage?.link || anime.navMessageLink;
+      if (messageLink) {
+        resultText += `**频道链接：** [查看详情](${messageLink})\n`;
       }
 
       resultText += `\n`;
