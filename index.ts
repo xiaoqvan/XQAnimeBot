@@ -1,7 +1,7 @@
 import logger from "@log/index.ts";
 import { Plugin } from "@plugin/BasePlugin.ts";
 import type { Client } from "tdl";
-// import { anime } from "./anime/index.ts";
+import { anime } from "./anime/index.ts";
 
 export default class AnimePlugin extends Plugin {
   name = "XQ的动漫插件";
@@ -14,7 +14,7 @@ export default class AnimePlugin extends Plugin {
 
     this.onLoad = async () => {
       logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
-      // await anime(this.client);
+      await anime(this.client);
     };
 
     this.cmdHandlers = {
