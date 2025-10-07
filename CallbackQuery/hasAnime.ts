@@ -26,6 +26,8 @@ import { buildAndSaveAnimeFromInfo } from "../anime/index.ts";
 import { downloadTorrentFromUrl } from "../anime/torrent.ts";
 import { getQBClient } from "../qBittorrent/index.ts";
 
+import { env } from "../database/initDb.ts";
+
 const QBclient = await getQBClient();
 
 /**
@@ -452,18 +454,14 @@ async function updateAnimeLinks(
   }
   const animetext = AnimeText(new_Anime, cacheItem);
 
-  const animeMeg = await sendMessage(
-    client,
-    Number(process.env.ANIME_CHANNEL),
-    {
-      media: {
-        video: {
-          id: episodeData.episode.videoid,
-        },
+  const animeMeg = await sendMessage(client, Number(env.data.ANIME_CHANNEL), {
+    media: {
+      video: {
+        id: episodeData.episode.videoid,
       },
-      text: animetext,
-    }
-  );
+    },
+    text: animetext,
+  });
 
   if (!animeMeg) {
     logger.error(`发送动漫消息失败: ${JSON.stringify(cacheItem, null, 2)}`);

@@ -1,9 +1,11 @@
 import { getAnimeById, getCacheItemById } from "../database/query.ts";
 import { sendMessage } from "@TDLib/function/message.ts";
 import { isUserAdmin, parseTextEntities } from "@TDLib/function/index.ts";
+import { env } from "../database/initDb.ts";
 
 import type { message as messageType } from "tdlib-types";
 import type { Client } from "tdl";
+import { getConfig } from "@db/config.ts";
 
 export default async function ConAnimeInformation(
   client: Client,
@@ -13,12 +15,14 @@ export default async function ConAnimeInformation(
   // 检查是否为管理员
   const isAdmin = await isUserAdmin(
     client,
-    Number(process.env.ADMIN_GROUP_ID),
+    Number(env.data.ADMIN_GROUP_ID),
     message.sender_id
   );
+
+  const config = await getConfig("admin");
   const isBotAdmin =
     message.sender_id._ === "messageSenderUser" &&
-    message.sender_id.user_id === Number(process.env.BOT_ADMIN_ID);
+    message.sender_id.user_id === config?.super_admin;
 
   if (!isAdmin && !isBotAdmin) {
     return;

@@ -13,21 +13,24 @@ import {
 } from "../anime/info.ts";
 import { formatPubDate } from "../anime/rss/bangumi.ts";
 import { formatDmhyPubDate } from "../anime/rss/dmhy.ts";
+import { env } from "../database/initDb.ts";
+import { getConfig } from "@db/config.ts";
 
 export default async function addAnime(
   client: Client,
   message: messageType,
   commandParts: string[] | undefined
 ) {
+  const config = await getConfig("admin");
   // 检查是否为管理员
   const isAdmin = await isUserAdmin(
     client,
-    Number(process.env.ADMIN_GROUP_ID),
+    Number(env.data.ADMIN_GROUP_ID),
     message.sender_id
   );
   const isBotAdmin =
     message.sender_id._ === "messageSenderUser" &&
-    message.sender_id.user_id === Number(process.env.BOT_ADMIN_ID);
+    message.sender_id.user_id === config?.super_admin;
 
   if (!isAdmin && !isBotAdmin) {
     return;
