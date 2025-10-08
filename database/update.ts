@@ -17,6 +17,7 @@ const db = await getDatabase();
 export async function updateTorrentStatus(
   title: string,
   newStatus:
+    | "等待下载"
     | "等待元数据"
     | "下载中"
     | "下载完成"
@@ -30,6 +31,7 @@ export async function updateTorrentStatus(
   }
 
   const validStatuses = [
+    "等待下载",
     "等待元数据",
     "下载中",
     "下载完成",

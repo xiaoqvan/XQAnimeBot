@@ -15,7 +15,7 @@ import {
 
 import { groupRules } from "./groupRules.ts";
 import { updateAnimeBtdata } from "../database/update.ts";
-import { addCacheItem, saveAnime } from "../database/create.ts";
+import { addCacheItem, addTorrent, saveAnime } from "../database/create.ts";
 import { getQBClient } from "../qBittorrent/index.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMessage } from "@TDLib/function/message.ts";
@@ -42,7 +42,7 @@ export async function anime(client: Client) {
       const validItems = rss.filter(
         (item) => item && item.title && item.pubDate && item.type
       );
-      await processItemsWithConcurrency(client, validItems, 3);
+      await processItemsWithConcurrency(client, validItems, 3).catch(() => {});
     }
 
     await smartDelayWithInterval();
@@ -250,6 +250,8 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
   const searchAnime = await animeinfo(item.names[0]);
 
   const Cache_id = await addCacheItem(item);
+
+  await addTorrent(item.magnet, "等待下载", item.title);
 
   if (!searchAnime.data || searchAnime.data.length === 0) {
     await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {

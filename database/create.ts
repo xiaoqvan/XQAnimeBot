@@ -80,6 +80,7 @@ export async function addTorrent(
 
   // 验证状态是否有效
   const validStatuses = [
+    "等待下载",
     "等待元数据",
     "下载中",
     "下载完成",
@@ -90,7 +91,7 @@ export async function addTorrent(
   ];
   if (!validStatuses.includes(status)) {
     throw new Error(
-      "无效的状态，有效状态：等待元数据、下载中、下载完成、上传中、完成、失败、等待纠正"
+      "无效的状态，有效状态：等待下载，等待元数据、下载中、下载完成、上传中、完成、失败、等待纠正"
     );
   }
 
