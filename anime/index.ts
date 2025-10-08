@@ -355,7 +355,7 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
               type: {
                 _: "inlineKeyboardButtonTypeCallback",
                 data: Buffer.from(
-                  `N_anime?id=${anime.id}&c=${Cache_id}`
+                  `F_anime?id=${anime.id}&c=${Cache_id}`
                 ).toString("base64"),
               },
             },
