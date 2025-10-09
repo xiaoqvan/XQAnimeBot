@@ -96,7 +96,7 @@ export async function addTorrent(
   }
 
   const torrentData = {
-    title: title || null, // 可选标题
+    title: title,
     magnetLink,
     status,
     createdAt: new Date(),
@@ -104,11 +104,39 @@ export async function addTorrent(
   };
 
   try {
-    const result = await db.collection("torrents").insertOne(torrentData);
-    return result.insertedId;
+    // 确保 title 唯一索引
+    await db.collection("torrents").createIndex({ title: 1 }, { unique: true });
+
+    // 使用 title 做为唯一标识，存在则更新，不存在则插入（upsert）
+    const result = (await db.collection("torrents").findOneAndUpdate(
+      { title },
+      {
+        $set: {
+          magnetLink: torrentData.magnetLink,
+          status: torrentData.status,
+          updatedAt: new Date(),
+        },
+        $setOnInsert: {
+          createdAt: torrentData.createdAt,
+          title: torrentData.title,
+        },
+      },
+      { upsert: true, returnDocument: "after" }
+    )) as any;
+
+    // 返回文档的 _id（无论是新插入还是更新）
+    if (result && result.value && result.value._id) {
+      return result.value._id;
+    }
+
+    // 万一上面没有返回文档，再做一次查询读取 _id
+    const doc = await db.collection("torrents").findOne({ title });
+    return doc?._id ?? null;
   } catch (error) {
     throw new Error(
-      `保存种子信息失败: ${error instanceof Error ? error.message : error}`
+      `保存或更新种子信息失败: ${
+        error instanceof Error ? error.message : error
+      }`
     );
   }
 }
