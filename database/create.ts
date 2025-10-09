@@ -104,8 +104,8 @@ export async function addTorrent(
   };
 
   try {
-    // 确保 title 唯一索引
-    await db.collection("torrents").createIndex({ title: 1 }, { unique: true });
+    // 不要在这里重复创建索引
+    // await db.collection("torrents").createIndex({ title: 1 }, { unique: true });
 
     // 使用 title 做为唯一标识，存在则更新，不存在则插入（upsert）
     const result = (await db.collection("torrents").findOneAndUpdate(
@@ -140,7 +140,6 @@ export async function addTorrent(
     );
   }
 }
-
 /**
  * 保存或更新动漫信息
  * @param anime - 动漫对象，必须包含 id 字段
