@@ -125,6 +125,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
                 videoMeg.message_id,
                 {
                   text: megtexts[idx],
+                  link_preview: true,
                 }
               );
             }
@@ -148,6 +149,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
               videoMeg.message_id,
               {
                 text: megtexts[idx],
+                link_preview: true,
               }
             );
           }
@@ -155,6 +157,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           // 获取旧消息失败则按原逻辑尝试编辑为文本
           await editMessageText(client, videoMeg.chat_id, videoMeg.message_id, {
             text: megtexts[idx],
+            link_preview: true,
           });
         }
         idx++;
