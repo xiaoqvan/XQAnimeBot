@@ -296,11 +296,11 @@ function parseEpisode(
   | { type: "num"; num: number; version: string }
   | { type: "sp"; num: number }
   | { type: "other"; raw: string } {
-  const match = ep.match(/^(\d+)(v\d+)?$/i);
+  const match = ep.match(/^(\d+(?:\.\d+)?)(v\d+)?$/i);
   if (match)
     return {
       type: "num",
-      num: parseInt(match[1], 10),
+      num: parseFloat(match[1]),
       version: match[2] ?? "",
     };
 
