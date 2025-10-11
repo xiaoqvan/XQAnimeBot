@@ -11,6 +11,7 @@ import {
   fetchBangumiTags,
   fetchBangumiTeam,
   fetchBangumiTorrent,
+  getEpisodeInfo,
 } from "./info.ts";
 
 import { groupRules } from "./groupRules.ts";
@@ -392,6 +393,7 @@ export async function buildAndSaveAnimeFromInfo(
   info: bangumiAnime,
   newanime: boolean
 ) {
+  const EpisodeInfo = await getEpisodeInfo(info.id);
   const infobox = extractInfoFromInfobox(info?.infobox || []);
   const anime: animeType = {
     id: info.id,
@@ -418,6 +420,21 @@ export async function buildAndSaveAnimeFromInfo(
 
     tags: info.tags ? (await extractFilteredTagNames(info.tags)) || [] : [],
     episode: infobox.episodeCount || undefined,
+    eps: {
+      total: EpisodeInfo.total || 0,
+      list: EpisodeInfo.data.map((ep: any) => ({
+        airdate: ep.airdate,
+        name: ep.name,
+        name_cn: ep.name_cn,
+        duration: ep.duration,
+        desc: ep.desc,
+        ep: ep.ep,
+        sort: ep.sort,
+        id: ep.id,
+        subject_id: ep.subject_id,
+        comment: ep.comment,
+      })),
+    },
     score: info.rating?.score,
     navMessageLink: undefined,
     airingDay: infobox.broadcastDay || undefined,

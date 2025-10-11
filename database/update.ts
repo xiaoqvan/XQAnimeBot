@@ -564,3 +564,82 @@ export async function updateAnimeInfo(
     );
   }
 }
+
+/**
+ * 更新动漫的集数信息（eps 字段）
+ * @param animeId - 动漫的 id 字段值
+ * @param EpisodeInfo - 包含 total 与 data 数组的集数信息
+ * @returns 更新成功返回 true，否则返回 false
+ */
+export async function updateAnimeEpisodes(
+  animeId: number,
+  EpisodeInfo: {
+    total: number;
+    data: {
+      airdate: string;
+      name: string;
+      name_cn: string;
+      duration: string;
+      desc: string;
+      ep: number;
+      sort: number;
+      id: number;
+      subject_id: number;
+      comment: number;
+      type: number;
+      disc: number;
+      duration_seconds: number;
+    }[];
+  }
+) {
+  if (!animeId) {
+    throw new Error("animeId 是必需的参数");
+  }
+
+  if (
+    !EpisodeInfo ||
+    typeof EpisodeInfo.total !== "number" ||
+    !Array.isArray(EpisodeInfo.data)
+  ) {
+    throw new Error("EpisodeInfo 必须包含 total:number 和 data: any[]");
+  }
+
+  try {
+    const collection = db.collection<AnimeType>("anime");
+    const anime = await collection.findOne({ id: animeId });
+    if (!anime) {
+      throw new Error(`未找到ID为 ${animeId} 的动漫`);
+    }
+
+    // 构建新的 list，尽量保持与 buildAndSaveAnimeFromInfo 中相同的字段
+    const list = EpisodeInfo.data.map((ep: any) => ({
+      airdate: ep.airdate,
+      name: ep.name,
+      name_cn: ep.name_cn,
+      duration: ep.duration,
+      desc: ep.desc,
+      ep: ep.ep,
+      sort: ep.sort,
+      id: ep.id,
+      subject_id: ep.subject_id,
+      comment: ep.comment,
+    }));
+
+    const result = await collection.updateOne(
+      { id: animeId },
+      {
+        $set: {
+          "eps.total": EpisodeInfo.total || 0,
+          "eps.list": list,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    return result.modifiedCount > 0;
+  } catch (error) {
+    throw new Error(
+      `更新动漫集数信息失败: ${error instanceof Error ? error.message : error}`
+    );
+  }
+}

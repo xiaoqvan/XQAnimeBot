@@ -81,6 +81,34 @@ export type anime = {
   tags?: string[];
   /** 总集数 */
   episode?: string;
+  /** 集数信息 */
+  eps?: {
+    /** 当前总集数 */
+    total: number;
+    /** 话数列表 */
+    list: {
+      /** 放送日期 */
+      airdate?: string;
+      /** 标题 */
+      name?: string;
+      /** 中文名 */
+      name_cn?: string;
+      /** 时长 */
+      duration?: string;
+      /** 简介 */
+      desc?: string;
+      /** 集数 */
+      ep: number;
+      /** 排序 */
+      sort: number;
+      /** 章节 ID */
+      id: number;
+      /** 动漫 ID */
+      subject_id: number;
+      /** 回复数量 */
+      comment?: number;
+    }[];
+  };
   /** 评分 */
   score?: number | string;
   /** 动漫在TG中的数据 */

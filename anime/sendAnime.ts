@@ -3,6 +3,7 @@ import fs from "fs/promises";
 import logger from "@log/index.ts";
 
 import {
+  updateAnimeEpisodes,
   updateAnimeInfo,
   updateAnimeNavMessage,
   // updateAnimeNavMessageLink, // 不再使用链接单独更新
@@ -17,7 +18,7 @@ import {
 } from "@TDLib/function/message.ts";
 import { getAnimeById } from "../database/query.ts";
 import { AnimeText, navmegtext } from "./text.ts";
-import { getSubjectById } from "./info.ts";
+import { getEpisodeInfo, getSubjectById } from "./info.ts";
 import { getMessageLink, getMessageLinkInfo } from "@TDLib/function/get.ts";
 import { downloadFile, extractVideoMetadata } from "../function/index.ts";
 import { env } from "../database/initDb.ts";
@@ -63,8 +64,11 @@ export async function sendMegToNavAnime(client: Client, id: number) {
   if (Anime.navMessage?.link) {
     // 更新评分
     const animeInfo = await getSubjectById(Anime.id);
+    // 更新集数信息
+    const episodeInfo = await getEpisodeInfo(Anime.id);
 
     updateAnimeInfo(Anime.id, animeInfo);
+    updateAnimeEpisodes(Anime.id, episodeInfo.data);
 
     Anime.score = animeInfo?.rating?.score || Anime.score;
     const megtexts = await navmegtext(client, Anime); // megtexts[0] 为主导航，1.. 为资源
