@@ -430,7 +430,11 @@ async function updateAnimeLinks(
     throw new Error("btdata不存在");
   }
 
-  const episodeData = findEpisodeByCacheId(anime.btdata, cache_id);
+  const episodeData = findEpisodeByCacheId(
+    anime.btdata,
+    cache_id,
+    cacheItem.title
+  );
 
   if (
     !episodeData ||
