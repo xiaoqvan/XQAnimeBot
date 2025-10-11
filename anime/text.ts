@@ -87,16 +87,17 @@ export async function navmegtext(
 
   // 2) 基于无资源版本确定合适的 summary 长度
   let summaryMax = 300;
-  let mainWithoutResources = buildMain(summaryMax, false, resourceNavigation);
+  let mainWithoutResources = buildMain(summaryMax, false, "");
   let { textLength: baseTextLen, entitiesLength: baseEntitiesLen } =
     await measureTextLen(client, mainWithoutResources);
 
+  // 先检查无导航链接版本
   if (baseTextLen > 1024 || baseEntitiesLen > 100) {
     // 3) 逐步压缩 summary 至少到 100
     const steps = [250, 200, 150, 120, 100];
     for (const len of steps) {
       summaryMax = len;
-      const candidate = buildMain(summaryMax, false, resourceNavigation);
+      const candidate = buildMain(summaryMax, false, "");
       const { textLength, entitiesLength } = await measureTextLen(
         client,
         candidate
@@ -114,7 +115,21 @@ export async function navmegtext(
     }
   }
 
-  // 4) 尝试在无资源版本基础上添加完整资源区
+  // 4) 尝试添加资源导航链接（如果有）
+  if (resourceNavigation) {
+    const candidateWithNav = buildMain(summaryMax, false, resourceNavigation);
+    const { textLength, entitiesLength } = await measureTextLen(
+      client,
+      candidateWithNav
+    );
+    if (textLength <= 1024 && entitiesLength <= 100) {
+      // 可以安全添加导航链接
+      mainWithoutResources = candidateWithNav;
+    }
+    // 否则不添加导航链接
+  }
+
+  // 5) 尝试在无资源版本基础上添加完整资源区
   let includeResources = false;
   let main = mainWithoutResources;
 
@@ -133,7 +148,7 @@ export async function navmegtext(
 
   messages.push(main);
 
-  // 5) 添加资源分页（仅当资源未完整包含在首条时）
+  // 6) 添加资源分页（仅当资源未完整包含在首条时）
   if (!includeResources && resourcePages.length > 0) {
     messages.push(...resourcePages);
   }
