@@ -597,9 +597,8 @@ export async function updateAnimeEpisodes(
   }
 
   if (
-    !EpisodeInfo ||
-    typeof EpisodeInfo.total !== "number" ||
-    !Array.isArray(EpisodeInfo.data)
+    typeof EpisodeInfo?.total !== "number" ||
+    !Array.isArray(EpisodeInfo?.data)
   ) {
     throw new Error("EpisodeInfo 必须包含 total:number 和 data: any[]");
   }

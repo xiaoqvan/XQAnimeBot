@@ -74,7 +74,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     const episodeInfo = await getEpisodeInfo(Anime.id);
 
     updateAnimeInfo(Anime.id, animeInfo);
-    updateAnimeEpisodes(Anime.id, episodeInfo.data);
+    updateAnimeEpisodes(Anime.id, episodeInfo);
 
     Anime.score = animeInfo?.rating?.score || Anime.score;
     const megtexts = await navmegtext(client, Anime); // megtexts[0] 为主导航，1.. 为资源
