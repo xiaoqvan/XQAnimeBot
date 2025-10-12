@@ -30,6 +30,12 @@ import type { MessageContent } from "tdlib-types";
 import { parseTextEntities } from "@TDLib/function/index.ts";
 
 /**
+ * 延迟函数，用于避免频繁编辑触发风控
+ * @param ms - 延迟毫秒数
+ */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * 发送/更新 导航频道的消息
  *
  * @param client - TDLib 客户端实例
@@ -94,6 +100,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
             text: megtexts[0],
           }
         );
+        // 添加延迟避免频繁编辑触发风控
+        await sleep(5000);
       }
     } catch {
       // 获取旧消息失败则按原逻辑尝试编辑
@@ -105,6 +113,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           text: megtexts[0],
         }
       );
+      // 添加延迟避免频繁编辑触发风控
+      await sleep(5000);
     }
 
     // 没有就发送新的，有就修改（并补足多出来的）
@@ -132,6 +142,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
                   link_preview: true,
                 }
               );
+              // 添加延迟避免频繁编辑触发风控
+              await sleep(5000);
             }
           } else if (content?._ === "messagePhoto") {
             const oldCaption = content?.caption ?? "";
@@ -144,6 +156,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
                   text: megtexts[idx],
                 }
               );
+              // 添加延迟避免频繁编辑触发风控
+              await sleep(5000);
             }
           } else {
             // 未知类型，保持兼容使用编辑文本
@@ -156,6 +170,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
                 link_preview: true,
               }
             );
+            // 添加延迟避免频繁编辑触发风控
+            await sleep(5000);
           }
         } catch {
           // 获取旧消息失败则按原逻辑尝试编辑为文本
@@ -163,6 +179,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
             text: megtexts[idx],
             link_preview: true,
           });
+          // 添加延迟避免频繁编辑触发风控
+          await sleep(5000);
         }
         idx++;
       }
@@ -219,6 +237,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
               text: megtexts[0],
             }
           );
+          // 添加延迟避免频繁编辑触发风控
+          await sleep(5000);
         }
       }
     } else {
@@ -276,6 +296,8 @@ export async function sendMegToNavAnime(client: Client, id: number) {
               text: megtexts[0],
             }
           );
+          // 添加延迟避免频繁编辑触发风控
+          await sleep(5000);
         }
       }
     }
