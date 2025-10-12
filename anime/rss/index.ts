@@ -57,8 +57,13 @@ export async function fetchMergedRss() {
         return;
       }
       const normalizedTitle = normalizeTitle(title);
+      const cleanedTitle = cleanTitle(title);
       if (!mergedMap.has(normalizedTitle)) {
-        mergedMap.set(normalizedTitle, { ...item, source: "acgnx" });
+        mergedMap.set(normalizedTitle, {
+          ...item,
+          title: cleanedTitle,
+          source: "acgnx",
+        });
       }
     });
 
@@ -73,7 +78,12 @@ export async function fetchMergedRss() {
         return;
       }
       const normalizedTitle = normalizeTitle(title);
-      mergedMap.set(normalizedTitle, { ...item, source: "dmhy" });
+      const cleanedTitle = cleanTitle(title);
+      mergedMap.set(normalizedTitle, {
+        ...item,
+        title: cleanedTitle,
+        source: "dmhy",
+      });
     });
 
     // 最后处理bangumi，会覆盖相同标题的dmhy和acgnx条目
@@ -87,7 +97,12 @@ export async function fetchMergedRss() {
         return;
       }
       const normalizedTitle = normalizeTitle(title);
-      mergedMap.set(normalizedTitle, { ...item, source: "bangumi" });
+      const cleanedTitle = cleanTitle(title);
+      mergedMap.set(normalizedTitle, {
+        ...item,
+        title: cleanedTitle,
+        source: "bangumi",
+      });
     });
 
     const mergedList: RssAnimeItem[] = Array.from(mergedMap.values());
@@ -145,6 +160,22 @@ function parsePubDate(pubDateString: string): number {
 }
 
 /**
+ * 清理标题中的多余空格
+ * 保留原始标题的大小写和格式，只压缩多个空格为单个空格
+ */
+function cleanTitle(title: string): string {
+  return (
+    title
+      .trim()
+      // 移除零宽字符
+      .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      // 压缩多个空格为单个空格
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
+/**
  * 标准化标题用于去重比较
  * 移除一些可能影响比较的字符和格式差异
  */
@@ -161,12 +192,18 @@ function normalizeTitle(title: string): string {
       .replace(/）/g, ")")
       // 移除零宽字符
       .replace(/[\u200B-\u200D\uFEFF]/g, "")
+      // 先压缩所有多余空格为单个空格（必须在其他空格处理之前）
+      .replace(/\s+/g, " ")
       // 去除斜杠两侧空格
       .replace(/\s*\/\s*/g, "/")
-      // 压缩空格
-      .replace(/\s+/g, " ")
-      // 统一连接符
+      // 统一连接符（去除连接符两侧空格）
       .replace(/\s*-\s*/g, "-")
       .replace(/\s*_\s*/g, "_")
+      // 去除方括号内侧的空格
+      .replace(/\[\s+/g, "[")
+      .replace(/\s+\]/g, "]")
+      // 再次压缩空格确保彻底清理
+      .replace(/\s+/g, " ")
+      .trim()
   );
 }
