@@ -5,6 +5,7 @@ import type {
   bangumiAnime,
   messageType,
 } from "../types/anime.ts";
+import { cleanTitle } from "../anime/rss/index.ts";
 const db = await getDatabase();
 
 /**
@@ -46,7 +47,7 @@ export async function updateTorrentStatus(
   }
 
   const result = await db.collection("torrents").updateOne(
-    { title: title },
+    { title: cleanTitle(title) },
     {
       $set: {
         status: newStatus,

@@ -42,7 +42,7 @@ export async function fetchBangumiRss() {
     const bangumiList: RssAnimeItem[] = [];
 
     for (const item of items) {
-      const title = $(item).find("title").text().trim();
+      const title = $(item).find("title").text().trim().replace(/\s+/g, " ");
       const link = $(item).find("link").text();
       const pubDateRaw = $(item).find("pubDate").text();
       const pubDate = formatPubDate(pubDateRaw);

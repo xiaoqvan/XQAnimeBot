@@ -2,6 +2,7 @@ import logger from "@log/index.ts";
 import type { animeItem, anime as AnimeType, BtEntry } from "../types/anime.ts";
 
 import { getDatabase } from "./initDb.ts";
+import { cleanTitle } from "../anime/rss/index.ts";
 
 const db = await getDatabase();
 
@@ -96,7 +97,7 @@ export async function addTorrent(
   }
 
   const torrentData = {
-    title: title,
+    title: cleanTitle(title),
     magnetLink,
     status,
     createdAt: new Date(),

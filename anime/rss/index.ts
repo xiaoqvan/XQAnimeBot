@@ -160,17 +160,19 @@ function parsePubDate(pubDateString: string): number {
 }
 
 /**
- * 清理标题中的多余空格
- * 保留原始标题的大小写和格式，只压缩多个空格为单个空格
+ * 清理标题中的多余空格和特殊空白字符
+ * - 移除零宽字符、全角空格等不可见符号
+ * - 压缩多个空格为单个半形空格
+ * - 保留原始大小写和格式
  */
-function cleanTitle(title: string): string {
+export function cleanTitle(title: string): string {
   return (
     title
       .trim()
-      // 移除零宽字符
-      .replace(/[\u200B-\u200D\uFEFF]/g, "")
-      // 压缩多个空格为单个空格
-      .replace(/\s+/g, " ")
+      // 移除零宽字符（包括 BOM、ZWSP、ZWNJ、ZWJ）
+      .replace(/[\u200B-\u200F\uFEFF]/g, "")
+      // 将各种空白字符（包含全角空格、不间断空格等）统一替换为半形空格
+      .replace(/[\s\u00A0\u1680\u180E\u2000-\u200A\u202F\u205F\u3000]+/g, " ")
       .trim()
   );
 }
