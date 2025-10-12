@@ -174,7 +174,7 @@ async function buildResourcePages(
   anime: animeType,
   sections: string[]
 ): Promise<string[]> {
-  const title = `动漫: ${anime.name_cn || anime.name}\n>\n资源:\n`;
+  const title = `动漫: ${anime.name_cn || anime.name}\n\n资源:\n`;
   const pages: string[] = [];
 
   let currentBody = "";
