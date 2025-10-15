@@ -320,7 +320,16 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
     anime.id,
     combineFansub(item.fansub),
     item.episode || "未知",
-    animeLink.link,
+    {
+      chat_id: animeMeg.chat_id,
+      message_id: animeMeg.id,
+      thread_id: animeMeg.topic_id
+        ? animeMeg.topic_id._ === "messageTopicForum"
+          ? animeMeg.topic_id.forum_topic_id
+          : 0
+        : 0,
+      link: animeLink.link,
+    },
     item.title,
     item.source,
     item.names,
@@ -488,7 +497,16 @@ export async function updateAnime(
     anime.id,
     combineFansub(item.fansub),
     item.episode || "未知",
-    animeLink.link,
+    {
+      chat_id: animeMeg.chat_id,
+      message_id: animeMeg.id,
+      thread_id: animeMeg.topic_id
+        ? animeMeg.topic_id._ === "messageTopicForum"
+          ? animeMeg.topic_id.forum_topic_id
+          : 0
+        : 0,
+      link: animeLink.link,
+    },
     item.title,
     item.source,
     item.names,

@@ -149,7 +149,10 @@ export type anime = {
 export type BtEntry = {
   /** 动漫集数 */
   episode: string;
-  /** TG 链接 */
+   /**
+   * TG 链接
+   * @deprecated 已被 Message 取代
+   */
   TGMegLink?: string;
   /** 新消息详细 */
   Message?: messageType;

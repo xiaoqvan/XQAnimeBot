@@ -169,7 +169,7 @@ export async function updateAnimeNavMessageLink(
  * @param animeId - 动漫的id字段值
  * @param subGroup - 字幕组名称
  * @param episode - 集数
- * @param tgMegLink - Telegram 链接
+ * @param Message - TG消息详细
  * @param [title] - 集数标题（可选）
  * @param [names] - 该集数的别名数组（可选）
  * @param [pubDate] - 发布时间（可选）
@@ -183,7 +183,7 @@ export async function updateAnimeBtdata(
   animeId: number,
   subGroup: string,
   episode: string | "未知",
-  tgMegLink: string,
+  Message: messageType,
   title: string,
   source: string | undefined,
   names: string[] | [],
@@ -196,11 +196,11 @@ export async function updateAnimeBtdata(
     !animeId ||
     !subGroup ||
     !episode ||
-    !tgMegLink ||
+    !Message ||
     (cache && !cacheItemId)
   ) {
     throw new Error(
-      `动漫ID、字幕组、集数和TGMegLink是必需的参数${
+      `动漫ID、字幕组、集数和Message是必需的参数${
         cache ? ", 当 cache 为 true 时，cacheItemId 也是必需的" : ""
       }`
     );
@@ -231,7 +231,7 @@ export async function updateAnimeBtdata(
     if (!anime.btdata[formattedSubGroup]) {
       let newEpisode = {
         episode: episode,
-        TGMegLink: tgMegLink,
+        Message: Message,
         title: title,
         cache_id: cacheItemId ? cacheItemId : undefined,
         videoid: videoid ? videoid : undefined,
@@ -259,7 +259,7 @@ export async function updateAnimeBtdata(
       // 如果集数不存在，则添加新集数
       const newEpisode = {
         episode: episode,
-        TGMegLink: tgMegLink,
+        Message: Message,
         title: title,
         videoid: videoid ? videoid : undefined,
         names: names ? names : undefined,
@@ -278,7 +278,7 @@ export async function updateAnimeBtdata(
     } else {
       // 更新对应集数的TGMegLink
       const updateQuery = {
-        [`btdata.${formattedSubGroup}.${episodeIndex}.TGMegLink`]: tgMegLink,
+        [`btdata.${formattedSubGroup}.${episodeIndex}.Message`]: Message,
         [`btdata.${formattedSubGroup}.${episodeIndex}.title`]: title,
         [`btdata.${formattedSubGroup}.${episodeIndex}.videoid`]: videoid
           ? videoid

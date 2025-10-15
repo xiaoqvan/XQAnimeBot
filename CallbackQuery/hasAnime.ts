@@ -8,7 +8,7 @@ import {
 } from "@TDLib/function/message.ts";
 
 import type { messageSenderUser } from "tdlib-types";
-import type { anime as animeType } from "../types/anime.d.ts";
+import type { anime as animeType, messageType } from "../types/anime.d.ts";
 import type { Client } from "tdl";
 import { saveAnime } from "../database/create.ts";
 import { sendMegToAnime, sendMegToNavAnime } from "../anime/sendAnime.ts";
@@ -362,7 +362,16 @@ export async function nullAnime(
     [combineFansub(item.fansub)]: [
       {
         episode: item.episode || "未知",
-        TGMegLink: animeLink.link,
+        Message: {
+          chat_id: cacheAnimeMeg.chat_id,
+          message_id: cacheAnimeMeg.id,
+          thread_id: cacheAnimeMeg.topic_id
+            ? cacheAnimeMeg.topic_id._ === "messageTopicForum"
+              ? cacheAnimeMeg.topic_id.forum_topic_id
+              : 0
+            : 0,
+          link: animeLink.link,
+        } as messageType,
         title: item.title,
         videoid:
           cacheAnimeMeg.content._ === "messageVideo"
@@ -495,7 +504,16 @@ async function updateAnimeLinks(
     animeId,
     combineFansub(cacheItem.fansub),
     cacheItem.episode || "未知",
-    newAnimeLink.link,
+    {
+      chat_id: animeMeg.chat_id,
+      message_id: animeMeg.id,
+      thread_id: animeMeg.topic_id
+        ? animeMeg.topic_id._ === "messageTopicForum"
+          ? animeMeg.topic_id.forum_topic_id
+          : 0
+        : 0,
+      link: newAnimeLink.link,
+    },
     cacheItem.title,
     cacheItem.source,
     cacheItem.names,
