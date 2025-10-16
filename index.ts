@@ -20,6 +20,7 @@ export default class AnimePlugin extends Plugin {
     this.cmdHandlers = {
       searchanime: {
         description: "搜索频道内的动漫",
+        scope: "all",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/searchanime.ts");
           return mod.default(this.client, message.message, commandParts);
@@ -27,6 +28,7 @@ export default class AnimePlugin extends Plugin {
       },
       s: {
         description: "/searchanime命令的短命令",
+        scope: "all",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/searchanime.ts");
           return mod.default(this.client, message.message, commandParts);
@@ -34,13 +36,17 @@ export default class AnimePlugin extends Plugin {
       },
       setanimer18: {
         description: "设置动漫的r18字段",
+        scope: "private",
+        permission: "admin",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/setanimer18.ts");
           return mod.default(this.client, message.message, commandParts);
         },
       },
       ConAnimeInfo: {
-        description: "获取动漫信息",
+        description: "纠正缓存动漫信息为数据库的内容",
+        scope: "private",
+        permission: "admin",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/jz.ts");
           return mod.default(this.client, message.message, commandParts);
@@ -48,6 +54,8 @@ export default class AnimePlugin extends Plugin {
       },
       addanime: {
         description: "为指定ID的动漫添加BT信息",
+        scope: "private",
+        permission: "admin",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/addanime.ts");
           return mod.default(this.client, message.message, commandParts);
@@ -55,6 +63,8 @@ export default class AnimePlugin extends Plugin {
       },
       updateanime: {
         description: "更新指定ID动漫的信息",
+        scope: "private",
+        permission: "admin",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/updateAnime.ts");
           return mod.default(this.client, message.message, commandParts);
