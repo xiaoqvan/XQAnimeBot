@@ -38,15 +38,22 @@ import { env } from "../database/initDb.ts";
 
 export async function anime(client: Client) {
   while (true) {
-    const rss = await fetchMergedRss();
-    if (rss && Array.isArray(rss)) {
-      const validItems = rss.filter(
-        (item) => item && item.title && item.pubDate && item.type
-      );
-      await processItemsWithConcurrency(client, validItems, 3).catch(() => {});
-    }
+    try {
+      const rss = await fetchMergedRss();
+      if (rss && Array.isArray(rss)) {
+        const validItems = rss.filter(
+          (item) => item && item.title && item.pubDate && item.type
+        );
+        await processItemsWithConcurrency(client, validItems, 3).catch(
+          () => {}
+        );
+      }
 
-    await smartDelayWithInterval();
+      await smartDelayWithInterval();
+    } catch (error) {
+      logger.error("处理RSS动漫项时出错", error);
+      ErrorHandler(client, error);
+    }
   }
 }
 
@@ -61,41 +68,35 @@ async function processItemsWithConcurrency(
   items: RssAnimeItem[],
   maxConcurrency: number
 ) {
-  const executing = new Set();
+  const queue = [...items]; // 复制一份作为任务队列
+
   logger.debug(
-    `开始处理 ${items.length} 个RSS动漫项，最大并发数: ${maxConcurrency}`
+    `开始处理 ${queue.length} 个RSS动漫项，最大并发数: ${maxConcurrency}`
   );
 
-  for (const item of items) {
-    // 创建处理 Promise
-    const promise = handleRssAnimeItem(client, item)
-      .catch((err: unknown) => {
-        logger.error(
-          `处理RSS动漫项失败: ${item.title},json:${JSON.stringify(
-            item,
-            null,
-            2
-          )}`,
-          err
-        );
-        ErrorHandler(client, err);
-      })
-      .finally(() => {
-        // 任务完成后从执行集合中移除
-        executing.delete(promise);
-      });
+  // 创建 worker 函数，每个 worker 都是一个 Promise
+  const worker = async () => {
+    while (queue.length > 0) {
+      const item = queue.shift(); // 从队列头部取出一个任务
+      if (!item) continue;
 
-    // 添加到执行集合
-    executing.add(promise);
-
-    // 如果达到最大并发数，等待其中一个完成
-    if (executing.size >= maxConcurrency) {
-      await Promise.race(executing);
+      try {
+        await handleRssAnimeItem(client, item);
+      } catch (error) {
+        logger.error(`处理动漫项 ${item.title} 时发生错误:`, error);
+      }
     }
-  }
+  };
 
-  // 等待所有剩余任务完成
-  await Promise.all(executing);
+  // 创建一个 Promise 池
+  const workers = Array(maxConcurrency)
+    .fill(null)
+    .map(() => worker());
+
+  // 等待所有 worker 完成它们的工作
+  await Promise.all(workers);
+
+  logger.info(`处理完成，共处理 ${items.length} 个RSS动漫项`);
   return;
 }
 
