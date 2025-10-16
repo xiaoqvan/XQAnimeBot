@@ -12,8 +12,8 @@
   "license": "ISC",
   "packageManager": "pnpm@10.14.0",
   "dependencies": {
-    "@ctrl/qbittorrent": "^9.8.0",
+    "@ctrl/qbittorrent": "^9.10.0",
     "cheerio": "^1.1.2",
-    "parse-torrent": "^11.0.18"
+    "parse-torrent": "^11.0.19"
   }
 }
