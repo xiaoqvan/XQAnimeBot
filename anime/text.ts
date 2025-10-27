@@ -7,6 +7,7 @@ import type {
 } from "../types/anime.ts";
 
 import type { Client } from "tdl";
+import { formatTags, safeTag } from "../utils/index.ts";
 
 /**
  * 生成导航消息文本（首条带图，1024 文本长度限制；资源分条纯文本，每条 4096 文本长度限制）
@@ -348,27 +349,6 @@ function compareEpisode(a: BtEntry, b: BtEntry): number {
   if (ea.type === "other" && eb.type !== "other") return 1;
 
   return 0;
-}
-
-function formatTags(tags: string[]) {
-  if (!Array.isArray(tags)) return "";
-
-  return tags
-    .map((t) => safeTag(t)) // 对每个标签进行格式化
-    .filter((t) => t && !/^\d+$/.test(t)) // 过滤掉空值和纯数字标签
-    .map((t) => `#${t}`)
-    .join(" ");
-}
-function safeTag(text: string) {
-  text = String(text ?? "");
-  return text
-    .trim()
-    .replace(/\s+/g, "")
-    .replace(
-      /[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Latin}0-9_]/gu,
-      ""
-    )
-    .replace(/[-❀]/g, "");
 }
 
 // ----------------------------------------------------------------

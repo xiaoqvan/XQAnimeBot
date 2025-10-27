@@ -3,18 +3,19 @@ import type { Client } from "tdl";
 
 import { isUserAdmin } from "@TDLib/function/index.ts";
 import { editMessageText, sendMessage } from "@TDLib/function/message.ts";
-import { parseInfo, updateAnime } from "../anime/index.ts";
+import { updateAnime } from "../anime/index.ts";
 import { getAnimeById } from "../database/query.ts";
 import {
   fetchBangumiTags,
   fetchBangumiTeam,
   fetchBangumiTorrent,
   fetchDmhyTorrent,
-} from "../anime/info.ts";
+} from "../anime/get.ts";
 import { formatPubDate } from "../anime/rss/bangumi.ts";
 import { formatDmhyPubDate } from "../anime/rss/dmhy.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
+import { parseInfo } from "../utils/animeParser.ts";
 
 export default async function addAnime(
   client: Client,

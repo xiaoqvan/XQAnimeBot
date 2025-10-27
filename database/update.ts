@@ -4,10 +4,10 @@ import type {
   anime as AnimeType,
   bangumiAnime,
   messageType,
+  navMessageType,
 } from "../types/anime.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
 const db = await getDatabase();
-import type { topicType } from "@TDLib/types/message.d.ts";
 
 /**
  * 更新种子状态
@@ -442,31 +442,7 @@ export async function updateAnimeNavMessage(
 
 export async function updateAnimeNavVideoMessage(
   animeId: number,
-  videoMessage:
-    | {
-        /** 索引，从1开始，navMessage为主消息 */
-        page: number;
-        /** 消息所属的聊天 ID */
-        chat_id: number;
-        /** 消息 ID */
-        message_id: number;
-        /** 线程 ID */
-        topic_id?: topicType;
-        /** 消息链接 */
-        link: string;
-      }[]
-    | {
-        /** 索引，从1开始，navMessage为主消息 */
-        page: number;
-        /** 消息所属的聊天 ID */
-        chat_id: number;
-        /** 消息 ID */
-        message_id: number;
-        /** 线程 ID */
-        topic_id?: topicType;
-        /** 消息链接 */
-        link: string;
-      }
+  videoMessage: navMessageType[] | messageType
 ) {
   if (!animeId || !videoMessage) {
     throw new Error("动漫ID和视频消息都是必需的参数");

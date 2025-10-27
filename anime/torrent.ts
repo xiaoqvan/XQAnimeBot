@@ -201,10 +201,16 @@ async function retryRequest(
  */
 export async function getMagnetFromTorrent(url: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    remote(url, { timeout: 60 * 1000 }, (err: Error | null, parsed) => {
-      if (err) return reject(err);
-      resolve(toMagnetURI(parsed));
-    });
+    // some versions of `parse-torrent` have callback-only typings; cast to any
+    // to call the 3-argument form (url, opts, cb) and keep runtime behavior.
+    (remote as any)(
+      url,
+      { timeout: 60 * 1000 },
+      (err: Error | null, parsed: any) => {
+        if (err) return reject(err);
+        resolve(toMagnetURI(parsed));
+      }
+    );
   });
 }
 

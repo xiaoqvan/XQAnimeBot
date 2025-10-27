@@ -3,10 +3,6 @@ import path from "path";
 import fs from "fs";
 import axios from "axios";
 import type { BtData } from "../types/anime.ts";
-import { sendMessage } from "@TDLib/function/message.ts";
-import { env } from "../database/initDb.ts";
-
-import type { Client } from "tdl";
 /**
  * 将 Unix 时间戳（以秒为单位）转换为格式化的日期字符串。
  *
@@ -252,23 +248,4 @@ export function omit<T extends object, K extends keyof T>(
     delete clone[key];
   }
   return clone;
-}
-
-/**
- * 错误处理函数
- * @param error
- */
-export async function ErrorHandler(client: Client, error: unknown) {
-  let errorText;
-  if (error instanceof Error) {
-    errorText = `name: ${error.name}\nmessage: ${error.message}\nstack: ${error.stack}`;
-  } else {
-    errorText = JSON.stringify(error, null, 2);
-  }
-
-  await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
-    thread_id: Number(env.data.ERROR_GROUP_THREAD_ID),
-    text: `错误信息:\n${errorText}`,
-    link_preview: true,
-  });
 }

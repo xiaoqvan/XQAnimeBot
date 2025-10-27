@@ -21,12 +21,12 @@ import {
 } from "../database/update.ts";
 import { findEpisodeByCacheId, omit } from "../function/index.ts";
 import { deleteCacheAnime } from "../database/delete.ts";
-import { getSubjectById } from "../anime/info.ts";
-import { buildAndSaveAnimeFromInfo } from "../anime/index.ts";
+import { getSubjectById } from "../anime/get.ts";
 import { downloadTorrentFromUrl } from "../anime/torrent.ts";
 import { getQBClient } from "../qBittorrent/index.ts";
 
 import { env } from "../database/initDb.ts";
+import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
 
 const QBclient = await getQBClient();
 

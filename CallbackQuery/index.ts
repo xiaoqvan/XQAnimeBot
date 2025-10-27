@@ -1,8 +1,8 @@
-import { ErrorHandler } from "../function/index.ts";
 import logger from "@log/index.ts";
 import { falseAnime, nullAnime, trueAnime } from "./hasAnime.ts";
 import type { updateNewCallbackQuery as Td$updateNewCallbackQuery } from "tdlib-types";
 import type { Client } from "tdl";
+import { ErrorHandler } from "../utils/ErrorHandler.ts";
 
 /**
  * 处理新的回调查询

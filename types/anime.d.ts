@@ -1,4 +1,4 @@
-import type { topicType } from "@TDLib/types/message.d.ts";
+import { MessageTopic$Input } from "tdlib-types";
 export type RssAnimeItem = RssDmhyItem | RssAcgnxItem | RssBangumiItem;
 
 export type RssDmhyItem = {
@@ -122,22 +122,7 @@ export type anime = {
   /** 新版导航频道消息 */
   navMessage?: messageType;
   /** 多条资源导航消息 */
-  navVideoMessage?: {
-    /** 索引，从1开始，navMessage为主消息 */
-    page: number;
-    /** 消息所属的聊天 ID */
-    chat_id: number;
-    /** 消息 ID */
-    message_id: number;
-    /**
-     * @deprecated 已被 topic_id 取代
-     *  线程 ID */
-    thread_id?: number;
-    /** 主题 ID */
-    topic_id?: topicType;
-    /** 消息链接 */
-    link: string;
-  }[];
+  navVideoMessage?: navMessageType[];
   /** 是否为R18 */
   r18?: boolean;
   /** 放送星期 */
@@ -286,7 +271,24 @@ export type messageType = {
    *  线程 ID */
   thread_id?: number;
   /** 主题 ID */
-  topic_id?: topicType;
+  topic_id?: MessageTopic$Input;
+  /** 消息链接 */
+  link: string;
+};
+
+export type navMessageType = {
+  /** 索引，从1开始，navMessage为主消息 */
+  page: number;
+  /** 消息所属的聊天 ID */
+  chat_id: number;
+  /** 消息 ID */
+  message_id: number;
+  /**
+   * @deprecated 已被 topic_id 取代
+   *  线程 ID */
+  thread_id?: number;
+  /** 主题 ID */
+  topic_id?: MessageTopic$Input;
   /** 消息链接 */
   link: string;
 };

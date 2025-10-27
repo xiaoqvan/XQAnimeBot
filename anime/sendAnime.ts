@@ -18,12 +18,16 @@ import {
 } from "@TDLib/function/message.ts";
 import { getAnimeById } from "../database/query.ts";
 import { AnimeText, navmegtext } from "./text.ts";
-import { getEpisodeInfo, getSubjectById } from "./info.ts";
+import { getEpisodeInfo, getSubjectById } from "./get.ts";
 import { getMessageLink, getMessageLinkInfo } from "@TDLib/function/get.ts";
 import { downloadFile, extractVideoMetadata } from "../function/index.ts";
 import { env } from "../database/initDb.ts";
 
-import type { animeItem, anime as animeType } from "../types/anime.ts";
+import type {
+  animeItem,
+  anime as animeType,
+  messageType,
+} from "../types/anime.ts";
 import type { Client } from "tdl";
 import type { MessageContent } from "tdlib-types";
 
@@ -56,15 +60,10 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     }
 
     // 导航频道有旧消息，进行新消息适配
-    const newMeg = {
+    const newMeg: messageType = {
       chat_id: navmeg.chat_id,
       message_id: navmeg.message.id,
-      topic_id: {
-        forum_topic_id:
-          navmeg.topic_id?._ === "messageTopicForum"
-            ? navmeg.topic_id.forum_topic_id
-            : 0,
-      },
+      topic_id: navmeg.topic_id,
       link: Anime.navMessageLink,
     };
     await updateAnimeNavMessage(Anime.id, newMeg);
@@ -192,9 +191,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       // 如果 megtexts 有新增条目，则补发并写入数据库
       for (; idx < megtexts.length; idx++) {
         const videoMeg = await sendMessage(client, Anime.navMessage.chat_id, {
-          topic_id: {
-            forum_topic_id: Anime.navMessage.thread_id || 0,
-          },
+          topic_id: Anime.navMessage.topic_id,
           reply_to_message_id: Anime.navMessage.message_id,
           text: megtexts[idx],
           link_preview: true,
@@ -213,18 +210,15 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           videoMeg.chat_id,
           videoMeg.id
         );
-        await updateAnimeNavVideoMessage(Anime.id, {
-          page: idx, // 与 megtexts 的索引对应：1.. 为资源页
-          chat_id: videoMeg.chat_id,
-          message_id: videoMeg.id,
-          topic_id: {
-            forum_topic_id:
-              videoMeg.topic_id?._ === "messageTopicForum"
-                ? videoMeg.topic_id.forum_topic_id
-                : 0,
+        await updateAnimeNavVideoMessage(Anime.id, [
+          {
+            page: idx, // 与 megtexts 的索引对应：1.. 为资源页
+            chat_id: videoMeg.chat_id,
+            message_id: videoMeg.id,
+            topic_id: videoMeg.topic_id,
+            link: navLink.link,
           },
-          link: navLink.link,
-        });
+        ]);
         const newAnimeinfo = await getAnimeById(Anime.id);
 
         if (newAnimeinfo) {
@@ -248,9 +242,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
         const videoMeg = await sendMessage(client, Anime.navMessage.chat_id, {
           text: megtexts[idx],
           reply_to_message_id: Anime.navMessage.message_id,
-          topic_id: {
-            forum_topic_id: Anime.navMessage.thread_id || 0,
-          },
+          topic_id: Anime.navMessage.topic_id,
           invoke: {
             reply_to: {
               _: "inputMessageReplyToMessage",
@@ -272,18 +264,15 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           videoMeg.chat_id,
           videoMeg.id
         );
-        await updateAnimeNavVideoMessage(Anime.id, {
-          page: idx,
-          chat_id: videoMeg.chat_id,
-          message_id: videoMeg.id,
-          topic_id: {
-            forum_topic_id:
-              videoMeg.topic_id?._ === "messageTopicForum"
-                ? videoMeg.topic_id.forum_topic_id
-                : 0,
+        await updateAnimeNavVideoMessage(Anime.id, [
+          {
+            page: idx,
+            chat_id: videoMeg.chat_id,
+            message_id: videoMeg.id,
+            topic_id: videoMeg.topic_id,
+            link: navLink.link,
           },
-          link: navLink.link,
-        });
+        ]);
 
         const newAnimeinfo = await getAnimeById(Anime.id);
 
@@ -353,10 +342,11 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
   // 获取首条（图片）消息链接并写入 navMessage
   const navLink = await getMessageLink(client, navmeg.chat_id, navmeg.id);
-  const navMessage = {
+  const navMessage: messageType = {
     chat_id: navmeg.chat_id,
     message_id: navmeg.id,
     topic_id: {
+      _: "messageTopicForum",
       forum_topic_id:
         navmeg.topic_id?._ === "messageTopicForum"
           ? navmeg.topic_id.forum_topic_id
@@ -371,12 +361,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     const videoMeg = await sendMessage(client, navmeg.chat_id, {
       text: megtexts[i],
       reply_to_message_id: navmeg.id,
-      topic_id: {
-        forum_topic_id:
-          navmeg.topic_id?._ === "messageTopicForum"
-            ? navmeg.topic_id.forum_topic_id
-            : 0,
-      },
+      topic_id: navmeg.topic_id,
     });
 
     if (!videoMeg) {
@@ -388,18 +373,15 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     }
 
     const link = await getMessageLink(client, videoMeg.chat_id, videoMeg.id);
-    await updateAnimeNavVideoMessage(Anime.id, {
-      page: i,
-      chat_id: videoMeg.chat_id,
-      message_id: videoMeg.id,
-      topic_id: {
-        forum_topic_id:
-          navmeg.topic_id?._ === "messageTopicForum"
-            ? navmeg.topic_id.forum_topic_id
-            : 0,
+    await updateAnimeNavVideoMessage(Anime.id, [
+      {
+        page: i,
+        chat_id: videoMeg.chat_id,
+        message_id: videoMeg.id,
+        topic_id: videoMeg.topic_id,
+        link: link.link,
       },
-      link: link.link,
-    });
+    ]);
   }
 
   return navLink.link;
@@ -430,7 +412,10 @@ export async function sendMegToAnime(
       Number(env.data.ADMIN_GROUP_ID),
       {
         text: AnimeText(anime, item),
-        topic_id: { forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) },
+        topic_id: {
+          _: "messageTopicForum",
+          forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
+        },
         media: {
           video: {
             path: videoPath,
