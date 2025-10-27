@@ -1,3 +1,4 @@
+import type { topicType } from "@TDLib/types/message.d.ts";
 export type RssAnimeItem = RssDmhyItem | RssAcgnxItem | RssBangumiItem;
 
 export type RssDmhyItem = {
@@ -128,8 +129,12 @@ export type anime = {
     chat_id: number;
     /** 消息 ID */
     message_id: number;
-    /** 线程 ID */
+    /**
+     * @deprecated 已被 topic_id 取代
+     *  线程 ID */
     thread_id?: number;
+    /** 主题 ID */
+    topic_id?: topicType;
     /** 消息链接 */
     link: string;
   }[];
@@ -149,7 +154,7 @@ export type anime = {
 export type BtEntry = {
   /** 动漫集数 */
   episode: string;
-   /**
+  /**
    * TG 链接
    * @deprecated 已被 Message 取代
    */
@@ -276,8 +281,12 @@ export type messageType = {
   chat_id: number;
   /** 消息 ID */
   message_id: number;
-  /** 线程 ID */
+  /**
+   * @deprecated 已被 topic_id 取代
+   *  线程 ID */
   thread_id?: number;
+  /** 主题 ID */
+  topic_id?: topicType;
   /** 消息链接 */
   link: string;
 };

@@ -59,7 +59,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     const newMeg = {
       chat_id: navmeg.chat_id,
       message_id: navmeg.message.id,
-      thread_id: navmeg.message_thread_id || undefined,
+      topic_id: {
+        forum_topic_id:
+          navmeg.topic_id?._ === "messageTopicForum"
+            ? navmeg.topic_id.forum_topic_id
+            : 0,
+      },
       link: Anime.navMessageLink,
     };
     await updateAnimeNavMessage(Anime.id, newMeg);
@@ -187,21 +192,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       // 如果 megtexts 有新增条目，则补发并写入数据库
       for (; idx < megtexts.length; idx++) {
         const videoMeg = await sendMessage(client, Anime.navMessage.chat_id, {
-          invoke: {
-            reply_to: {
-              _: "inputMessageReplyToMessage",
-              message_id: Anime.navMessage.message_id,
-            },
-            message_thread_id: Anime.navMessage.thread_id,
-            input_message_content: {
-              _: "inputMessageText",
-              text: await parseTextEntities(client, megtexts[idx]),
-              link_preview_options: {
-                _: "linkPreviewOptions",
-                is_disabled: true,
-              },
-            },
+          topic_id: {
+            forum_topic_id: Anime.navMessage.thread_id || 0,
           },
+          reply_to_message_id: Anime.navMessage.message_id,
+          text: megtexts[idx],
+          link_preview: true,
         });
 
         if (!videoMeg) {
@@ -221,7 +217,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           page: idx, // 与 megtexts 的索引对应：1.. 为资源页
           chat_id: videoMeg.chat_id,
           message_id: videoMeg.id,
-          thread_id: Anime.navMessage.thread_id,
+          topic_id: {
+            forum_topic_id:
+              videoMeg.topic_id?._ === "messageTopicForum"
+                ? videoMeg.topic_id.forum_topic_id
+                : 0,
+          },
           link: navLink.link,
         });
         const newAnimeinfo = await getAnimeById(Anime.id);
@@ -245,19 +246,15 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       // 没有历史视频消息，全部按顺序发送，并写入数据库
       for (idx = 1; idx < megtexts.length; idx++) {
         const videoMeg = await sendMessage(client, Anime.navMessage.chat_id, {
+          text: megtexts[idx],
+          reply_to_message_id: Anime.navMessage.message_id,
+          topic_id: {
+            forum_topic_id: Anime.navMessage.thread_id || 0,
+          },
           invoke: {
             reply_to: {
               _: "inputMessageReplyToMessage",
               message_id: Anime.navMessage.message_id,
-            },
-            message_thread_id: Anime.navMessage.thread_id,
-            input_message_content: {
-              _: "inputMessageText",
-              text: await parseTextEntities(client, megtexts[idx]),
-              link_preview_options: {
-                _: "linkPreviewOptions",
-                is_disabled: true,
-              },
             },
           },
         });
@@ -279,7 +276,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
           page: idx,
           chat_id: videoMeg.chat_id,
           message_id: videoMeg.id,
-          thread_id: Anime.navMessage.thread_id,
+          topic_id: {
+            forum_topic_id:
+              videoMeg.topic_id?._ === "messageTopicForum"
+                ? videoMeg.topic_id.forum_topic_id
+                : 0,
+          },
           link: navLink.link,
         });
 
@@ -354,7 +356,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
   const navMessage = {
     chat_id: navmeg.chat_id,
     message_id: navmeg.id,
-    thread_id: navmeg.message_thread_id,
+    topic_id: {
+      forum_topic_id:
+        navmeg.topic_id?._ === "messageTopicForum"
+          ? navmeg.topic_id.forum_topic_id
+          : 0,
+    },
     link: navLink.link,
   };
   await updateAnimeNavMessage(Anime.id, navMessage);
@@ -364,7 +371,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     const videoMeg = await sendMessage(client, navmeg.chat_id, {
       text: megtexts[i],
       reply_to_message_id: navmeg.id,
-      thread_id: navmeg.message_thread_id,
+      topic_id: {
+        forum_topic_id:
+          navmeg.topic_id?._ === "messageTopicForum"
+            ? navmeg.topic_id.forum_topic_id
+            : 0,
+      },
     });
 
     if (!videoMeg) {
@@ -380,7 +392,12 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       page: i,
       chat_id: videoMeg.chat_id,
       message_id: videoMeg.id,
-      thread_id: navmeg.message_thread_id,
+      topic_id: {
+        forum_topic_id:
+          navmeg.topic_id?._ === "messageTopicForum"
+            ? navmeg.topic_id.forum_topic_id
+            : 0,
+      },
       link: link.link,
     });
   }
@@ -413,7 +430,7 @@ export async function sendMegToAnime(
       Number(env.data.ADMIN_GROUP_ID),
       {
         text: AnimeText(anime, item),
-        thread_id: Number(env.data.ANIME_GROUP_THREAD_ID),
+        topic_id: { forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) },
         media: {
           video: {
             path: videoPath,

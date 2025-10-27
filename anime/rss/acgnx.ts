@@ -2,6 +2,7 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import logger from "@log/index.ts";
 import type { RssAnimeItem } from "../../types/anime.ts";
+import { isTitleAllowed } from "./common.ts";
 
 const authorMapping: Record<string, string> = {
   smzase: "三明治摆烂组",
@@ -73,48 +74,8 @@ export async function fetchAcgnxRss() {
         continue;
       }
 
-      // 过滤标题中含有特定内容的条目
-      if (
-        title.includes("内封") ||
-        title.includes("繁") ||
-        title.includes("合集") ||
-        title.includes("無字幕") ||
-        title.includes("粵語") ||
-        title.includes("整理搬运") ||
-        title.includes("無對白字幕") ||
-        /\bFin\b/i.test(title) || // 精确匹配 Fin
-        title.includes("BIG5") || // 匹配所有包含 BIG5 的情况
-        /\bMKV\b/i.test(title) || // 精确匹配 MKV（不是 xxxMKVxxx）
-        title.includes("[720p]")
-      )
-        continue;
-
-      // 幻樱字幕组特殊过滤：只要中文版本和1080P
-      if (title.includes("【幻樱字幕组】")) {
-        // 过滤掉BIG5繁体版本
-        if (title.includes("【BIG5_MP4】")) {
-          continue;
-        }
-        // 过滤掉720P版本
-        if (title.includes("【1280X720】")) {
-          continue;
-        }
-        // 只保留GB简体和1080P版本
-        if (!title.includes("【GB_MP4】") || !title.includes("【1920X1080】")) {
-          continue;
-        }
-      }
-
-      // 悠哈璃羽字幕社特殊过滤：只要CHS简体版本，排除CHT繁体版本
-      if (title.includes("【悠哈璃羽字幕社】")) {
-        // 过滤掉CHT繁体版本
-        if (title.includes("[CHT]")) {
-          continue;
-        }
-      }
-
-      // 过滤集数区间
-      if (/\[\d{1,3}-\d{1,3}\]|\(\d{1,3}-\d{1,3}\)/.test(title)) continue;
+      // 统一的标题内容过滤（迁移到 common.ts）
+      if (!isTitleAllowed(title)) continue;
 
       // 检查作者是否在白名单中
       if (!authorWhitelist.includes(originalAuthor)) {

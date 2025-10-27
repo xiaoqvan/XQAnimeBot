@@ -23,6 +23,8 @@ import { sendMessage } from "@TDLib/function/message.ts";
 import { fetchMergedRss } from "./rss/index.ts";
 import { sendMegToAnime, sendMegToNavAnime } from "./sendAnime.ts";
 import { downloadTorrentFromUrl } from "./torrent.ts";
+import { ErrorHandler } from "../function/index.ts";
+import { env } from "../database/initDb.ts";
 
 import type {
   RssAnimeItem,
@@ -32,9 +34,6 @@ import type {
   infobox,
 } from "../types/anime.ts";
 import type { Client } from "tdl";
-import { parseTextEntities } from "@TDLib/function/index.ts";
-import { ErrorHandler } from "../function/index.ts";
-import { env } from "../database/initDb.ts";
 
 export async function anime(client: Client) {
   while (true) {
@@ -69,6 +68,7 @@ async function processItemsWithConcurrency(
   maxConcurrency: number
 ) {
   const queue = [...items]; // 复制一份作为任务队列
+  const TIMEOUT_MS = 30 * 60 * 1000; // 30分钟超时
 
   logger.debug(
     `开始处理 ${queue.length} 个RSS动漫项，最大并发数: ${maxConcurrency}`
@@ -81,9 +81,32 @@ async function processItemsWithConcurrency(
       if (!item) continue;
 
       try {
-        await handleRssAnimeItem(client, item);
+        // 为任务添加超时控制
+        await Promise.race([
+          handleRssAnimeItem(client, item),
+          new Promise((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    `处理超时 (30分钟): ${item.title}, 已挂起后台继续执行`
+                  )
+                ),
+              TIMEOUT_MS
+            )
+          ),
+        ]);
       } catch (error) {
-        logger.error(`处理动漫项 ${item.title} 时发生错误:`, error);
+        // 如果是超时错误，在后台继续处理该项目，不阻塞队列
+        if (error instanceof Error && error.message.includes("处理超时")) {
+          logger.warn(error.message);
+          // 在后台处理，不等待结果
+          handleRssAnimeItem(client, item).catch((err) => {
+            logger.error(`后台处理动漫项 ${item.title} 时发生错误:`, err);
+          });
+        } else {
+          logger.error(`处理动漫项 ${item.title} 时发生错误:`, error);
+        }
       }
     }
   };
@@ -96,7 +119,7 @@ async function processItemsWithConcurrency(
   // 等待所有 worker 完成它们的工作
   await Promise.all(workers);
 
-  logger.info(`处理完成，共处理 ${items.length} 个RSS动漫项`);
+  logger.debug(`处理完成，共处理 ${items.length} 个RSS动漫项`);
   return;
 }
 
@@ -256,7 +279,12 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
   await addTorrent(item.magnet, "等待下载", item.title);
 
   if (!searchAnime.data || searchAnime.data.length === 0) {
-    await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
+    sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
+      topic_id: {
+        forum_topic_id: Number(env.data.NAV_GROUP_THREAD_ID),
+      },
+      text: `当前番剧为${item.title}\n\n未搜索到的动漫信息\n请手动提供一个`,
+      link_preview: true,
       invoke: {
         reply_markup: {
           _: "replyMarkupInlineKeyboard",
@@ -273,18 +301,6 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
             ],
           ],
         },
-        message_thread_id: Number(env.data.NAV_GROUP_THREAD_ID),
-        input_message_content: {
-          _: "inputMessageText",
-          text: await parseTextEntities(
-            client,
-            `当前番剧为${item.title}\n\n未搜索到的动漫信息\n请手动提供一个`
-          ),
-          link_preview_options: {
-            _: "linkPreviewOptions",
-            is_disabled: true,
-          },
-        },
       },
     });
     return;
@@ -296,6 +312,19 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
   const torrent = await downloadTorrentFromUrl(item.magnet, item.title);
   if (!torrent) {
     logger.error(`种子下载失败: ${item.title}, magnet: ${item.magnet}`);
+    return;
+  }
+
+  // 检查种子文件大小，大于2GB直接跳过
+  const maxSize = 2 * 1024 * 1024 * 1024; // 2GB in bytes
+  if (torrent.totalSize > maxSize) {
+    logger.warn(
+      `种子文件过大(${(torrent.totalSize / 1024 / 1024 / 1024).toFixed(
+        2
+      )}GB): ${item.title}, 已跳过`
+    );
+    const QBclient = await getQBClient();
+    await QBclient.removeTorrent(torrent.id, true);
     return;
   }
 
@@ -345,6 +374,16 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
   );
 
   await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
+    topic_id: {
+      forum_topic_id: Number(env.data.NAV_GROUP_THREAD_ID),
+    },
+    text: `当前番剧为${item.title}\n\n搜索到的动漫信息：\n\n**名称：** [${
+      searchAnime.data[0].name_cn || searchAnime.data[0].name
+    }](https://bgm.tv/subject/${searchAnime.data[0].id})\n**ID：** ${
+      searchAnime.data[0].id
+    }\n\n请确认是否正确`,
+    link_preview: true,
+
     invoke: {
       reply_markup: {
         _: "replyMarkupInlineKeyboard",
@@ -372,22 +411,6 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
             },
           ],
         ],
-      },
-      message_thread_id: Number(env.data.NAV_GROUP_THREAD_ID),
-      input_message_content: {
-        _: "inputMessageText",
-        text: await parseTextEntities(
-          client,
-          `当前番剧为${item.title}\n\n搜索到的动漫信息：\n\n**名称：** [${
-            searchAnime.data[0].name_cn || searchAnime.data[0].name
-          }](https://bgm.tv/subject/${searchAnime.data[0].id})\n**ID：** ${
-            searchAnime.data[0].id
-          }\n\n请确认是否正确`
-        ),
-        link_preview_options: {
-          _: "linkPreviewOptions",
-          is_disabled: true,
-        },
       },
     },
   });
@@ -475,6 +498,18 @@ export async function updateAnime(
   if (!Torrent) {
     logger.error(`种子下载失败: ${item.title}, magnet: ${item.magnet}`);
     throw new Error(` 种子下载失败: ${item.title}`);
+  }
+
+  const maxSize = 2 * 1024 * 1024 * 1024; // 2GB in bytes
+  if (Torrent.totalSize > maxSize) {
+    logger.warn(
+      `种子文件过大(${(Torrent.totalSize / 1024 / 1024 / 1024).toFixed(
+        2
+      )}GB): ${item.title}, 已跳过`
+    );
+    const QBclient = await getQBClient();
+    await QBclient.removeTorrent(Torrent.id, true);
+    return;
   }
 
   const animeMeg = await sendMegToAnime(

@@ -7,6 +7,7 @@ import type {
 } from "../types/anime.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
 const db = await getDatabase();
+import type { topicType } from "@TDLib/types/message.d.ts";
 
 /**
  * 更新种子状态
@@ -450,7 +451,7 @@ export async function updateAnimeNavVideoMessage(
         /** 消息 ID */
         message_id: number;
         /** 线程 ID */
-        thread_id?: number;
+        topic_id?: topicType;
         /** 消息链接 */
         link: string;
       }[]
@@ -462,7 +463,7 @@ export async function updateAnimeNavVideoMessage(
         /** 消息 ID */
         message_id: number;
         /** 线程 ID */
-        thread_id?: number;
+        topic_id?: topicType;
         /** 消息链接 */
         link: string;
       }

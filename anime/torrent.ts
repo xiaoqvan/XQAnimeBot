@@ -131,9 +131,9 @@ export async function downloadAndReturnPath(
       await wait(1000);
       continue;
     }
-    const t = await qbRequestWithRetry(() => QBclient.getTorrent(torrentId));
+    const data = await qbRequestWithRetry(() => QBclient.getAllData());
     // 兼容 t 或 t.torrent 等两种返回结构，保留旧的 torrent 对象以防接口短暂返回 null
-    torrent = t || torrent;
+    torrent = data.torrents.find((t) => t.id === torrentId) || torrent;
 
     // 检查多种可能的位置上的 has_metadata 字段
     const raw = torrent?.raw || torrent;
@@ -144,7 +144,7 @@ export async function downloadAndReturnPath(
       typeof torrent?.progress === "number" && torrent.progress > 0;
 
     if (hasMetadata || progressReady) break;
-    await wait(3000); // 每3秒轮询一次
+    await wait(5000); // 每3秒轮询一次
   }
 
   logger.debug(
@@ -154,10 +154,10 @@ export async function downloadAndReturnPath(
 
   // 2. 等待下载完成
   while (!torrent.isCompleted) {
-    await wait(5000); // 每5秒检查一次
-    const t = await QBclient.getTorrent(torrent.id);
+    await wait(10000); // 每5秒检查一次
+    const data = await QBclient.getAllData();
     // 兼容返回结构，若为空则保留上次的 torrent 对象
-    torrent = t;
+    torrent = data.torrents.find((t) => t.id === torrent.id) || torrent;
   }
 
   await updateTorrentStatus(title, "下载完成");
