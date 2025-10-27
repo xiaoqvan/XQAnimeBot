@@ -1,4 +1,5 @@
 import logger from "@log/index.ts";
+import { promises as fs } from "fs";
 
 import { hasAnimeSend, hasTorrentTitle } from "../database/query.ts";
 
@@ -322,6 +323,22 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
     const QBclient = await getQBClient();
     await QBclient.removeTorrent(torrent.id, true);
     return;
+  }
+  if (torrent.raw.content_path) {
+    try {
+      const stats = await fs.stat(torrent.raw.content_path);
+      if (stats.isDirectory()) {
+        logger.warn(
+          `下载路径是文件夹，跳过: ${torrent.raw.content_path} (${item.title})`
+        );
+        const QBclient = await getQBClient();
+        await QBclient.removeTorrent(torrent.id, true);
+        return;
+      }
+    } catch (err) {
+      // 无法检查路径类型：记录错误并继续后续处理（尽量不要阻塞）
+      logger.error("检查下载路径类型时出错", err);
+    }
   }
 
   const animeMeg = await sendMegToAnime(
