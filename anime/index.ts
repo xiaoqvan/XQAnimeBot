@@ -461,7 +461,22 @@ export async function updateAnime(
     await QBclient.removeTorrent(Torrent.id, true);
     return;
   }
-
+  if (Torrent.raw.content_path) {
+    try {
+      const stats = await fs.stat(Torrent.raw.content_path);
+      if (stats.isDirectory()) {
+        logger.warn(
+          `下载路径是文件夹，跳过: ${Torrent.raw.content_path} (${item.title})`
+        );
+        const QBclient = await getQBClient();
+        await QBclient.removeTorrent(Torrent.id, true);
+        return;
+      }
+    } catch (err) {
+      // 无法检查路径类型：记录错误并继续后续处理（尽量不要阻塞）
+      logger.error("检查下载路径类型时出错", err);
+    }
+  }
   const animeMeg = await sendMegToAnime(
     client,
     anime,
