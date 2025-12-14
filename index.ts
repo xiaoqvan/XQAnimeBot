@@ -14,7 +14,7 @@ export default class AnimePlugin extends Plugin {
 
     this.onLoad = async () => {
       logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
-      anime(this.client);
+      anime(this.client).then();
     };
 
     this.cmdHandlers = {

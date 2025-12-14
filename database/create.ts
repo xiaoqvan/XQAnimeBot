@@ -9,12 +9,11 @@ const db = await getDatabase();
 /**
  * 添加一个缓存条目
  * @param item - 要缓存的对象
- * @returns 插入的自增id 或 null
+ * @returns 插入的自增id
  */
 export async function addCacheItem(item: animeItem) {
   try {
     const id = await getNextSequence("cacheItemId");
-    if (id === null) return null;
 
     const doc = {
       id,
@@ -26,40 +25,60 @@ export async function addCacheItem(item: animeItem) {
     return id;
   } catch (err) {
     logger.error("addCacheItem 出错:", err);
-    return null;
+    throw err;
   }
+}
+
+interface SequenceConfig {
+  key: string;
+  seq: number;
 }
 
 /** 获取下一个自增序列值
  * @param name - 序列名称
- * @returns 下一个序列值 或 null
+ * @returns 下一个序列值
  */
-async function getNextSequence(name: string) {
+async function getNextSequence(name: string): Promise<number> {
   try {
     // 使用 key 字段保存序列，_id 由 MongoDB 生成为 ObjectId。
     // upsert 时确保设置 key 字段。
-    const result = (await db.collection("config").findOneAndUpdate(
-      { key: name } as any,
-      { $inc: { seq: 1 }, $setOnInsert: { key: name } }, // 自增并在插入时设置 key
-      {
-        upsert: true, // 文档不存在就创建
-        returnDocument: "after", // 返回更新后的文档
-      }
-    )) as any;
+    const result = await db
+      .collection<SequenceConfig>("config")
+      .findOneAndUpdate(
+        { key: name },
+        { $inc: { seq: 1 }, $setOnInsert: { key: name } }, // 自增并在插入时设置 key
+        {
+          upsert: true, // 文档不存在就创建
+          returnDocument: "after", // 返回更新后的文档
+        }
+      );
 
-    if (!result.value) {
-      // 兜底查询，兼容旧格式或异常情况
-      const doc = (await db
-        .collection("config")
-        .findOne({ key: name } as any)) as any;
-      return doc?.seq ?? null;
+    if (result) {
+      return result.seq;
     }
 
-    return result.value.seq ?? null;
+    // 兜底查询，兼容旧格式或异常情况
+    const doc = await db
+      .collection<SequenceConfig>("config")
+      .findOne({ key: name });
+
+    if (doc?.seq !== undefined) {
+      return doc.seq;
+    }
+
+    throw new Error(`无法获取序列 ${name} 的值`);
   } catch (err) {
     logger.error("getNextSequence 出错:", err);
-    return null;
+    throw err;
   }
+}
+
+interface TorrentData {
+  title: string;
+  magnetLink: string;
+  status: string;
+  createdAt: Date;
+  updatedAt: Date;
 }
 
 /**
@@ -96,7 +115,7 @@ export async function addTorrent(
     );
   }
 
-  const torrentData = {
+  const torrentData: TorrentData = {
     title: cleanTitle(title),
     magnetLink,
     status,
@@ -109,30 +128,35 @@ export async function addTorrent(
     // await db.collection("torrents").createIndex({ title: 1 }, { unique: true });
 
     // 使用 title 做为唯一标识，存在则更新，不存在则插入（upsert）
-    const result = (await db.collection("torrents").findOneAndUpdate(
-      { title },
-      {
-        $set: {
-          magnetLink: torrentData.magnetLink,
-          status: torrentData.status,
-          updatedAt: new Date(),
+    const result = await db
+      .collection<TorrentData>("torrents")
+      .findOneAndUpdate(
+        { title },
+        {
+          $set: {
+            magnetLink: torrentData.magnetLink,
+            status: torrentData.status,
+            updatedAt: new Date(),
+          },
+          $setOnInsert: {
+            createdAt: torrentData.createdAt,
+            title: torrentData.title,
+          },
         },
-        $setOnInsert: {
-          createdAt: torrentData.createdAt,
-          title: torrentData.title,
-        },
-      },
-      { upsert: true, returnDocument: "after" }
-    )) as any;
+        { upsert: true, returnDocument: "after" }
+      );
 
     // 返回文档的 _id（无论是新插入还是更新）
-    if (result && result.value && result.value._id) {
-      return result.value._id;
+    if (result?._id) {
+      return result._id;
     }
 
     // 万一上面没有返回文档，再做一次查询读取 _id
-    const doc = await db.collection("torrents").findOne({ title });
-    return doc?._id ?? null;
+    const doc = await db.collection<TorrentData>("torrents").findOne({ title });
+    if (!doc?._id) {
+      throw new Error("无法获取插入文档的 ID");
+    }
+    return doc._id;
   } catch (error) {
     throw new Error(
       `保存或更新种子信息失败: ${

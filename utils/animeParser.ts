@@ -1,4 +1,3 @@
-import logger from "@log/index.ts";
 import { groupRules } from "./groupRules.ts";
 
 /**
@@ -226,10 +225,7 @@ export function parseInfo(title: string, teamName: string | null) {
         }
       }
     }
-  } catch (error) {
-    logger.error(
-      `❌ 解析出错: ${error instanceof Error ? error.message : String(error)}`
-    );
+  } catch {
     return; // 出错时也返回空
   }
 

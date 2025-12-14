@@ -1,13 +1,8 @@
-import { parseTextEntities } from "@TDLib/function/index.ts";
-import type {
-  animeItem,
-  anime as animeType,
-  BtData as BtDataType,
-  BtEntry,
-} from "../types/anime.ts";
+import {parseTextEntities} from "@TDLib/function/index.ts";
+import type {anime as animeType, animeItem, BtData as BtDataType, BtEntry,} from "../types/anime.ts";
 
-import type { Client } from "tdl";
-import { formatTags, safeTag } from "../utils/index.ts";
+import type {Client} from "tdl";
+import {formatTags, safeTag} from "../utils/index.ts";
 
 /**
  * 生成导航消息文本（首条带图，1024 文本长度限制；资源分条纯文本，每条 4096 文本长度限制）
@@ -219,10 +214,8 @@ async function buildResourcePages(
 
 /** 格式化 时间 #<时间> */
 function animeDate(time: string | undefined) {
-  const titleTag =
-    (time ? "#" : "") +
-    (time ? time.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月") : "");
-  return titleTag;
+    return (time ? "#" : "") +
+      (time ? time.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月") : "");
 }
 
 /** 格式化 NSFW #NSFW */
@@ -361,28 +354,26 @@ function compareEpisode(a: BtEntry, b: BtEntry): number {
  */
 export function AnimeText(anime: animeType, item: animeItem) {
   const nsfwTag = anime.r18 === true ? "#NSFW " : "";
-  const text = `#${
-    anime.airingStart
-      ? anime.airingStart.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月")
-      : ""
+    return `#${
+      anime.airingStart
+          ? anime.airingStart.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月")
+          : ""
   } ${nsfwTag} ${item.title}\n>原名称: ${anime.name}\n>中文名: ${
-    anime.name_cn
+      anime.name_cn
   }\n>发布组: ${formatTags(item.fansub?.map((f) => safeTag(f)) || [])}${
-    item.pubDate ? `\n>发布时间: ${item.pubDate}` : ""
+      item.pubDate ? `\n>发布时间: ${item.pubDate}` : ""
   }\n\n追踪标签：\n>名称: #${safeTag(
-    anime.name_cn || anime.name
+      anime.name_cn || anime.name
   )}\n>番剧组: ${item.fansub
-    ?.map(
-      (f) =>
-        `#${safeTag(f.replace(/\s+/g, "_"))}_${safeTag(
-          anime.name_cn || anime.name
-        )}`
-    )
-    .join(" ")}${
-    anime.navMessage?.link || anime.navMessageLink
-      ? ` \n\n[番剧信息](${anime.navMessage?.link || anime.navMessageLink})`
-      : ""
+      ?.map(
+          (f) =>
+              `#${safeTag(f.replace(/\s+/g, "_"))}_${safeTag(
+                  anime.name_cn || anime.name
+              )}`
+      )
+      .join(" ")}${
+      anime.navMessage?.link || anime.navMessageLink
+          ? ` \n\n[番剧信息](${anime.navMessage?.link || anime.navMessageLink})`
+          : ""
   }`;
-
-  return text;
 }

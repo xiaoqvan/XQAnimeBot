@@ -56,8 +56,7 @@ export async function downloadTorrentFromUrl(
   title: string
 ): Promise<Torrent | null> {
   // 如果传入的就是磁力链接，直接使用；否则从种子文件解析磁力链接并支持重试
-  const isMagnet =
-    typeof url === "string" && url.trim().toLowerCase().startsWith("magnet:");
+  const isMagnet = url.trim().toLowerCase().startsWith("magnet:");
   const magnetLink = isMagnet
     ? url
     : await retryRequest(async () => {
@@ -66,9 +65,7 @@ export async function downloadTorrentFromUrl(
 
   if (isMagnet) logger.debug("传入的是磁力链接，跳过解析: ", magnetLink);
   await addTorrent(magnetLink, "等待元数据", title);
-  const torrent = await downloadAndReturnPath(magnetLink, title);
-
-  return torrent;
+  return await downloadAndReturnPath(magnetLink, title);
 }
 
 /**
@@ -81,15 +78,49 @@ export async function downloadAndReturnPath(
   magnetLink: string,
   title: string
 ): Promise<Torrent | null> {
-  // 检查输入
-  if (typeof magnetLink !== "string") return null;
+  const { infoHash } = await getMagnetHash(magnetLink);
+  const hash = infoHash;
 
-  // 使用重试封装来调用 QBclient.addMagnet，防止偶发超时导致抛出
-  await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
+  if (!hash) {
+    QBclient.removeTorrent(magnetLink);
+  }
 
-  const hash = await getMagnetHash(magnetLink);
+  let torrent: Torrent | undefined;
 
-  let torrent: any | Torrent;
+  try {
+    const data = await qbRequestWithRetry(() => QBclient.getAllData());
+    torrent =
+      data && data.torrents
+        ? data.torrents.find((t) => {
+            try {
+              // 支持多种可能的字段名（raw.hash / hash / infoHash）
+              const candidateHash =
+                (t as any)?.raw?.hash ||
+                (t as any)?.hash ||
+                (t as any)?.infoHash ||
+                (t as any)?.raw?.infoHash;
+              return !!candidateHash && candidateHash === hash;
+            } catch {
+              return false;
+            }
+          })
+        : undefined;
+
+    if (torrent) {
+      logger.debug(`已存在 hash=${hash} 的种子，跳过添加，直接开始判断状态`);
+    } else {
+      // 使用重试封装来调用 QBclient.addMagnet，防止偶发超时导致抛出
+      await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
+    }
+  } catch (err) {
+    // 若获取列表失败则继续尝试添加（以防万一），并记录警告
+    logger.warn(
+      `检查现有种子时出错，将尝试添加磁力链接: ${
+        err instanceof Error ? err.message : err
+      }`
+    );
+    await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
+  }
 
   // 循环直到找到对应 hash 的 torrent（每 2 秒重试一次）
   while (!torrent) {
@@ -100,12 +131,14 @@ export async function downloadAndReturnPath(
         data && data.torrents
           ? data.torrents.find((t) => {
               try {
-                return t && t.raw && t.raw.hash === hash;
+                if (t && t.raw && t.raw.hash === hash) {
+                  return t as Torrent;
+                }
               } catch {
-                return false;
+                return undefined;
               }
             })
-          : null;
+          : undefined;
       if (torrent) break;
     } catch (err) {
       logger.warn(
@@ -125,10 +158,10 @@ export async function downloadAndReturnPath(
   // 1. 等待种子信息获取（has_metadata）
   while (true) {
     // 使用 getTorrent 替代 getAllData，并加重试
-    const torrentId = torrent?.id;
+    const torrentId: string = torrent?.id;
     if (!torrentId) {
       // 若暂时没有 id，等待并重试
-      await wait(1000);
+      await wait(2000);
       continue;
     }
     const data = await qbRequestWithRetry(() => QBclient.getAllData());
@@ -153,11 +186,16 @@ export async function downloadAndReturnPath(
   await updateTorrentStatus(title, "下载中");
 
   // 2. 等待下载完成
-  while (!torrent.isCompleted) {
-    await wait(10000); // 每5秒检查一次
+  while (torrent && !torrent.isCompleted) {
+    await wait(10000); // 每10秒检查一次
     const data = await QBclient.getAllData();
     // 兼容返回结构，若为空则保留上次的 torrent 对象
-    torrent = data.torrents.find((t) => t.id === torrent.id) || torrent;
+    torrent =
+      data.torrents.find((t) => {
+        if (torrent && t.id === torrent.id) {
+          return t as Torrent;
+        } else return torrent;
+      }) || torrent;
   }
 
   await updateTorrentStatus(title, "下载完成");
@@ -216,12 +254,12 @@ export async function getMagnetFromTorrent(url: string): Promise<string> {
 
 /**
  * 获取磁力链接的哈希值
- * @param {string} magnetLink
- * @returns {Promise<string|null>}
+ * @param magnetLink
+ * @returns 磁力链接的 infoHash
  */
 async function getMagnetHash(magnetLink: string) {
-  const parsed = await parseTorrent(magnetLink);
-  return parsed.infoHash;
+  const parsed = parseTorrent(magnetLink);
+  return parsed;
 }
 
 // 等待函数

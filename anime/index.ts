@@ -1,5 +1,6 @@
 import logger from "@log/index.ts";
 import { promises as fs } from "fs";
+import { extname } from "path";
 
 import { hasAnimeSend, hasTorrentTitle } from "../database/query.ts";
 
@@ -25,11 +26,13 @@ import type {
   anime as animeType,
   animeItem,
 } from "../types/anime.ts";
+import type { Torrent } from "../types/torrent.ts";
 import type { Client } from "tdl";
 import { parseInfo } from "../utils/animeParser.ts";
 import { combineFansub, smartDelayWithInterval } from "../utils/index.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
+import { mkvToMp4 } from "../utils/mkvtomp4.ts";
 
 export async function anime(client: Client) {
   while (true) {
@@ -39,7 +42,7 @@ export async function anime(client: Client) {
         const validItems = rss.filter(
           (item) => item && item.title && item.pubDate && item.type
         );
-        await processItemsWithConcurrency(client, validItems, 3).catch(
+        await processItemsWithConcurrency(client, validItems, 1).catch(
           () => {}
         );
       }
@@ -47,7 +50,8 @@ export async function anime(client: Client) {
       await smartDelayWithInterval();
     } catch (error) {
       logger.error("处理RSS动漫项时出错", error);
-      ErrorHandler(client, error);
+      ErrorHandler(client, error).catch();
+      await smartDelayWithInterval();
     }
   }
 }
@@ -93,13 +97,9 @@ async function processItemsWithConcurrency(
           ),
         ]);
       } catch (error) {
-        // 如果是超时错误，在后台继续处理该项目，不阻塞队列
+        // 如果是超时错误，记录警告并继续队列（避免重复处理）
         if (error instanceof Error && error.message.includes("处理超时")) {
           logger.warn(error.message);
-          // 在后台处理，不等待结果
-          handleRssAnimeItem(client, item).catch((err) => {
-            logger.error(`后台处理动漫项 ${item.title} 时发生错误:`, err);
-          });
         } else {
           logger.error(`处理动漫项 ${item.title} 时发生错误:`, error);
         }
@@ -137,7 +137,7 @@ async function handleRssAnimeItem(client: Client, item: RssAnimeItem) {
 
   // 从标题中提取字幕组信息
   let fansub = null;
-  const match = item.title.match(/^(?:\[([^\]]+)\]|【([^】]+)】)/);
+  const match = item.title.match(/^(?:\[([^\]]+)]|【([^】]+)】)/);
   if (!match) {
     return; // 跳过无法解析的条目
   }
@@ -270,6 +270,27 @@ async function animeDownload(client: Client, item: animeItem) {
 async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
   const searchAnime = await animeinfo(item.names[0]);
 
+  // const searchdata = searchAnime.data?.map((anime) => ({
+  //   id: anime.id,
+  //   name: anime.name,
+  //   name_cn: anime.name_cn,
+  //   alias: anime.infobox
+  //     ?.filter((info) => info.key === "别名")
+  //     .flatMap((info) => {
+  //       if (Array.isArray(info.value)) {
+  //         return info.value
+  //           .map((v) => {
+  //             if (typeof v === "object" && v !== null && "v" in v) {
+  //               return String(v.v);
+  //             }
+  //             return null;
+  //           })
+  //           .filter((v): v is string => v !== null);
+  //       }
+  //       return [];
+  //     }),
+  // }));
+
   const Cache_id = await addCacheItem(item);
 
   await addTorrent(item.magnet, "等待下载", item.title);
@@ -302,44 +323,11 @@ async function newAnimeHasBeenSaved(client: Client, item: animeItem) {
     });
     return;
   }
-
   const anime = await buildAndSaveAnimeFromInfo(searchAnime.data[0], true);
 
   // 下载种子文件并获取下载路径
-  const torrent = await downloadTorrentFromUrl(item.magnet, item.title);
-  if (!torrent) {
-    logger.error(`种子下载失败: ${item.title}, magnet: ${item.magnet}`);
-    return;
-  }
-
-  // 检查种子文件大小，大于2GB直接跳过
-  const maxSize = 2 * 1024 * 1024 * 1024; // 2GB in bytes
-  if (torrent.totalSize > maxSize) {
-    logger.warn(
-      `种子文件过大(${(torrent.totalSize / 1024 / 1024 / 1024).toFixed(
-        2
-      )}GB): ${item.title}, 已跳过`
-    );
-    const QBclient = await getQBClient();
-    await QBclient.removeTorrent(torrent.id, true);
-    return;
-  }
-  if (torrent.raw.content_path) {
-    try {
-      const stats = await fs.stat(torrent.raw.content_path);
-      if (stats.isDirectory()) {
-        logger.warn(
-          `下载路径是文件夹，跳过: ${torrent.raw.content_path} (${item.title})`
-        );
-        const QBclient = await getQBClient();
-        await QBclient.removeTorrent(torrent.id, true);
-        return;
-      }
-    } catch (err) {
-      // 无法检查路径类型：记录错误并继续后续处理（尽量不要阻塞）
-      logger.error("检查下载路径类型时出错", err);
-    }
-  }
+  const torrent = await downloadAndValidateTorrent(item);
+  if (!torrent) return;
 
   const animeMeg = await sendMegToAnime(
     client,
@@ -443,45 +431,16 @@ export async function updateAnime(
   item: animeItem
 ) {
   // 下载种子文件并获取下载路径
-  const Torrent = await downloadTorrentFromUrl(item.magnet, item.title);
+  const torrent = await downloadAndValidateTorrent(item, {
+    throwOnDownloadFail: true,
+  });
+  if (!torrent) return;
 
-  if (!Torrent) {
-    logger.error(`种子下载失败: ${item.title}, magnet: ${item.magnet}`);
-    throw new Error(` 种子下载失败: ${item.title}`);
-  }
-
-  const maxSize = 2 * 1024 * 1024 * 1024; // 2GB in bytes
-  if (Torrent.totalSize > maxSize) {
-    logger.warn(
-      `种子文件过大(${(Torrent.totalSize / 1024 / 1024 / 1024).toFixed(
-        2
-      )}GB): ${item.title}, 已跳过`
-    );
-    const QBclient = await getQBClient();
-    await QBclient.removeTorrent(Torrent.id, true);
-    return;
-  }
-  if (Torrent.raw.content_path) {
-    try {
-      const stats = await fs.stat(Torrent.raw.content_path);
-      if (stats.isDirectory()) {
-        logger.warn(
-          `下载路径是文件夹，跳过: ${Torrent.raw.content_path} (${item.title})`
-        );
-        const QBclient = await getQBClient();
-        await QBclient.removeTorrent(Torrent.id, true);
-        return;
-      }
-    } catch (err) {
-      // 无法检查路径类型：记录错误并继续后续处理（尽量不要阻塞）
-      logger.error("检查下载路径类型时出错", err);
-    }
-  }
   const animeMeg = await sendMegToAnime(
     client,
     anime,
     item,
-    Torrent.raw.content_path
+    torrent.raw.content_path
   );
 
   if (!animeMeg) {
@@ -490,7 +449,7 @@ export async function updateAnime(
 
   // remove data on disk
   const QBclient = await getQBClient();
-  await QBclient.removeTorrent(Torrent.id, true);
+  await QBclient.removeTorrent(torrent.id, true);
 
   const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
 
@@ -520,4 +479,60 @@ export async function updateAnime(
   );
   await sendMegToNavAnime(client, anime.id);
   return;
+}
+
+const TORRENT_MAX_SIZE = 2 * 1024 * 1024 * 1024;
+
+async function downloadAndValidateTorrent(
+  item: animeItem,
+  options?: { throwOnDownloadFail?: boolean }
+): Promise<Torrent | null> {
+  const failMessage = `种子下载失败: ${item.title}, magnet: ${item.magnet}`;
+  const torrent = await downloadTorrentFromUrl(item.magnet, item.title);
+  if (!torrent) {
+    logger.error(failMessage);
+    if (options?.throwOnDownloadFail) {
+      throw new Error(failMessage);
+    }
+    return null;
+  }
+
+  if (torrent.totalSize > TORRENT_MAX_SIZE) {
+    logger.warn(
+      `种子文件过大(${(torrent.totalSize / 1024 / 1024 / 1024).toFixed(
+        2
+      )}GB): ${item.title}, 已跳过`
+    );
+    const QBclient = await getQBClient();
+    await QBclient.removeTorrent(torrent.id, true);
+    return null;
+  }
+
+  if (torrent.raw.content_path) {
+    try {
+      const stats = await fs.stat(torrent.raw.content_path);
+      if (stats.isDirectory()) {
+        logger.warn(
+          `下载路径是文件夹，跳过: ${torrent.raw.content_path} (${item.title})`
+        );
+        const QBclient = await getQBClient();
+        await QBclient.removeTorrent(torrent.id, true);
+        return null;
+      }
+      const fileExt = extname(torrent.raw.content_path).toLowerCase();
+      if (stats.isFile() && fileExt === ".mkv") {
+        logger.warn(
+          `下载文件为 MKV，尝试转换为 MP4: ${torrent.raw.content_path} (${item.title})`
+        );
+        const video = await mkvToMp4(torrent.raw.content_path);
+        fs.unlink(torrent.raw.content_path).catch(() => {});
+        torrent.raw.content_path = video;
+        return torrent;
+      }
+    } catch (err) {
+      logger.error("检查下载路径类型时出错", err);
+    }
+  }
+
+  return torrent;
 }

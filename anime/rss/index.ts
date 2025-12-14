@@ -56,6 +56,14 @@ export async function fetchMergedRss() {
         logger.debug(`跳过拉黑动漫: ${title}`);
         return;
       }
+      if (isFinCollectionTitle(title) || isMultiEpisodeCollectionTitle(title)) {
+        logger.debug(`跳过合集/Fin标记: ${title}`);
+        return;
+      }
+      if (containsDisallowedSubtitleKeyword(title)) {
+        logger.debug(`跳过外挂/字幕类型: ${title}`);
+        return;
+      }
       const normalizedTitle = normalizeTitle(title);
       const cleanedTitle = cleanTitle(title);
       if (!mergedMap.has(normalizedTitle)) {
@@ -77,6 +85,14 @@ export async function fetchMergedRss() {
         logger.debug(`跳过拉黑动漫: ${title}`);
         return;
       }
+      if (isFinCollectionTitle(title) || isMultiEpisodeCollectionTitle(title)) {
+        logger.debug(`跳过合集/Fin标记: ${title}`);
+        return;
+      }
+      if (containsDisallowedSubtitleKeyword(title)) {
+        logger.debug(`跳过外挂/字幕类型: ${title}`);
+        return;
+      }
       const normalizedTitle = normalizeTitle(title);
       const cleanedTitle = cleanTitle(title);
       mergedMap.set(normalizedTitle, {
@@ -94,6 +110,14 @@ export async function fetchMergedRss() {
       );
       if (isBlacklisted) {
         logger.debug(`跳过拉黑动漫: ${title}`);
+        return;
+      }
+      if (isFinCollectionTitle(title) || isMultiEpisodeCollectionTitle(title)) {
+        logger.debug(`跳过合集/Fin标记: ${title}`);
+        return;
+      }
+      if (containsDisallowedSubtitleKeyword(title)) {
+        logger.debug(`跳过外挂/字幕类型: ${title}`);
         return;
       }
       const normalizedTitle = normalizeTitle(title);
@@ -207,5 +231,55 @@ function normalizeTitle(title: string): string {
       // 再次压缩空格确保彻底清理
       .replace(/\s+/g, " ")
       .trim()
+  );
+}
+
+function isFinCollectionTitle(title: string): boolean {
+  const lowercaseTitle = title.toLowerCase();
+  if (!lowercaseTitle.includes("fin")) {
+    return false;
+  }
+
+  if (/\[[^\]]*fin[^\]]*\]/i.test(title)) {
+    return true;
+  }
+
+  if (/合集|fin$/i.test(lowercaseTitle)) {
+    return true;
+  }
+
+  return false;
+}
+
+function isMultiEpisodeCollectionTitle(title: string): boolean {
+  const bracketRangePattern = /\[[^\]]*\d{1,3}\s*[-~–—]\s*\d{1,3}[^\]]*\]/;
+  if (bracketRangePattern.test(title)) {
+    return true;
+  }
+
+  const sequencePattern = /\d{1,3}[集话卷]/;
+  const lowercaseTitle = title.toLowerCase();
+  if (
+    sequencePattern.test(lowercaseTitle) &&
+    /合集|全集/i.test(lowercaseTitle)
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+const SUBTITLE_BLACKLIST_KEYWORDS = [
+  "繁體內嵌",
+  "外挂",
+  "繁日字幕",
+  "繁日雙語",
+  "繁體",
+];
+
+function containsDisallowedSubtitleKeyword(title: string): boolean {
+  const normalized = title.toLowerCase().replace(/\s+/g, "");
+  return SUBTITLE_BLACKLIST_KEYWORDS.some((keyword) =>
+    normalized.includes(keyword.toLowerCase())
   );
 }

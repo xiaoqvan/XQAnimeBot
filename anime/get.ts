@@ -1,7 +1,7 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import logger from "@log/index.ts";
-import type { bangumiAnime, bangumiSearchResult } from "../types/anime.js";
+import type { bangumiAnime, bangumiSearchResult } from "../types/anime.d.ts";
 
 /**
  * 重试请求函数

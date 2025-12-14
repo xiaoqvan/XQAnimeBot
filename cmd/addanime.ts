@@ -94,11 +94,8 @@ export default async function addAnime(
     // 从标题中提取字幕组信息
     let fansub = null;
     const match = torrentInfo.title.match(
-      /^(?:\[([^\]]+)\]|【([^】]+)】)/
+      /^(?:\[([^\]]+)]|【([^】]+)】)/
     ) as string[];
-    if (!match) {
-      return; // 跳过无法解析的条目
-    }
     if (match) {
       const raw = match[1] || match[2];
       fansub = raw
@@ -111,7 +108,7 @@ export default async function addAnime(
       return;
     }
     // 提取发布组信息
-    let team = [];
+    let team: { name: string }[]
     if (torrentInfo.team_id) {
       team = await fetchBangumiTeam(torrentInfo.team_id);
     } else {
@@ -179,7 +176,7 @@ export default async function addAnime(
     // 从标题中提取字幕组信息
     let fansub = null;
     const match = dmhyinfo.title.match(
-      /^(?:\[([^\]]+)\]|【([^】]+)】)/
+      /^(?:\[([^\]]+)]|【([^】]+)】)/
     ) as string[];
     if (!match) {
       return; // 跳过无法解析的条目

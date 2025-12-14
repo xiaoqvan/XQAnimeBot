@@ -20,11 +20,11 @@ export function combineFansub(fansub: string[] | null) {
   return fansub.join("_");
 }
 
-export /**
+/**
  * 智能延迟与时间段计算方法
  * 根据当前时间动态调整请求间隔
  */
-async function smartDelayWithInterval() {
+export async function smartDelayWithInterval() {
   const now = new Date();
   // 获取北京时间
   const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);

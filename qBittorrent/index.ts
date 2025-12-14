@@ -12,6 +12,7 @@ async function createQBClient() {
     baseUrl: env.data.QBITTORRENT_HOST,
     username: env.data.QBITTORRENT_USERNAME,
     password: env.data.QBITTORRENT_PASSWORD,
+    timeout: 360 * 1000 * 10,
   });
 
   try {

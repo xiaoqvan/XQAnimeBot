@@ -690,4 +690,52 @@ export const groupRules: Record<string, (title: string) => string[]> = {
 
     return sortNamesByPriority(names, title);
   },
+  // 绿茶字幕组：字幕组后面是番剧名（中文名/英文名用/分割），到[集数]前
+  绿茶字幕组: (title: string) => {
+    // 移除字幕组标识
+    let t = title.replace(/^\[绿茶字幕组\]\s*/, "");
+
+    // 提取到第一个 [ 之前的内容作为番剧名称
+    t = t.split("[")[0].trim();
+
+    // 按 / 分割多个名称
+    const names = t
+      .split(/\s*\/\s*/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    return sortNamesByPriority(names, title);
+  },
+  // 隣天使字幕组：番剧名在第二个[]，支持中英文名用 / 分割
+  隣天使字幕组: (title: string) => {
+    // 提取所有[]内的内容
+    const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
+    // 跳过字幕组名，取第二个[]作为番剧名称
+    if (brackets.length >= 2) {
+      let animeName = brackets[1];
+      // 按 / 分割中英文名
+      const names = animeName
+        .split(/\s*\/\s*/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return sortNamesByPriority(names, title);
+    }
+    return [];
+  },
+  // 百冬练习组：番剧名在第二个【】中，用 _ 分割
+  百冬练习组: (title: string) => {
+    // 提取所有【】内的内容
+    const brackets = [...title.matchAll(/【([^】]+)】/g)].map((m) => m[1]);
+    // 取第二个【】作为番剧名称
+    if (brackets.length >= 2) {
+      let animeName = brackets[1];
+      // 按 _ 分割名称
+      const names = animeName
+        .split("_")
+        .map((s) => s.trim())
+        .filter(Boolean);
+      return sortNamesByPriority(names, title);
+    }
+    return [];
+  },
 };

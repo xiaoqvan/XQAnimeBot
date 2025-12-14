@@ -16,11 +16,11 @@ export type Torrent = {
   /** 下载进度（0-1） */
   progress: number;
   /** 标签/分类 */
-  label: string;
+  label?: string;
   /** 标签列表 */
-  tags: string[];
+  tags?: string[];
   /** 完成时间（字符串） */
-  dateCompleted: string;
+  dateCompleted?: string;
   /** 保存路径 */
   savePath: string;
   /** 上传速度（字节/秒） */
