@@ -68,7 +68,6 @@ async function processItemsWithConcurrency(
   maxConcurrency: number
 ) {
   const queue = [...items]; // 复制一份作为任务队列
-  const TIMEOUT_MS = 30 * 60 * 1000; // 30分钟超时
 
   logger.debug(
     `开始处理 ${queue.length} 个RSS动漫项，最大并发数: ${maxConcurrency}`
@@ -81,21 +80,8 @@ async function processItemsWithConcurrency(
       if (!item) continue;
 
       try {
-        // 为任务添加超时控制
-        await Promise.race([
-          handleRssAnimeItem(client, item),
-          new Promise((_, reject) =>
-            setTimeout(
-              () =>
-                reject(
-                  new Error(
-                    `处理超时 (30分钟): ${item.title}, 已挂起后台继续执行`
-                  )
-                ),
-              TIMEOUT_MS
-            )
-          ),
-        ]);
+        // 直接等待任务完成（已移除 30 分钟超时）
+        await handleRssAnimeItem(client, item);
       } catch (error) {
         // 如果是超时错误，记录警告并继续队列（避免重复处理）
         if (error instanceof Error && error.message.includes("处理超时")) {
