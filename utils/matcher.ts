@@ -37,7 +37,8 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
     // 3. 在 eps.list 中查找
     // Bangumi API: type 0 = 本篇, 1 = SP, 2 = OP, 3 = ED
     // 我们优先匹配 type === 0 的本篇
-    const matchedEp = dbAnime.eps.list.find(e => e.sort === epNum && e.type === 0);
+    // 显式类型转换匹配：防止 sort 为字符串类型
+    const matchedEp = dbAnime.eps.list.find(e => Number(e.sort) === epNum && (e.type === 0 || e.type === undefined));
 
     // ==========================================
     // 核心逻辑：越界检查 (Out of Range Check)
@@ -45,7 +46,7 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
     if (!matchedEp) {
         // 场景：数据库只有 1-12 集，BT 是 13 集
         // 结果：返回 NOT_FOUND，提示调用者这是潜在的新季或错误
-        return { status: 'NOT_FOUND_IN_DB', msg: `Episode ${epNum} not found in current season (Max maybe ${dbAnime.eps.total}?)` };
+        return { status: 'NOT_FOUND_IN_DB', msg: `未在当前季度找到第 ${epNum} 集（当前季可能最多 ${dbAnime.eps.total} 集）` };
     }
 
     // ==========================================
