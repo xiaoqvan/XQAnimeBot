@@ -7,6 +7,15 @@ import type { Torrent } from "../types/torrent.js";
 
 const QBclient = await getQBClient();
 
+const seedingStates = [
+  'uploading',
+  'stalledUP',
+  'queuedUP',
+  'forcedUP',
+  'checkingUP',
+  'pausedUP'
+];
+
 /**
  * 通用的 QB 请求重试封装
  * @param fn - 要执行的请求函数
@@ -93,12 +102,9 @@ export async function downloadAndReturnPath(
       data && data.torrents
         ? data.torrents.find((t) => {
           try {
-            // 支持多种可能的字段名（raw.hash / hash / infoHash）
             const candidateHash =
-              (t as any)?.raw?.hash ||
-              (t as any)?.hash ||
-              (t as any)?.infoHash ||
-              (t as any)?.raw?.infoHash;
+              t?.raw?.hash ||
+              t?.raw?.infoHash;
             return !!candidateHash && candidateHash === hash;
           } catch {
             return false;
@@ -155,15 +161,12 @@ export async function downloadAndReturnPath(
 
   // 1. 等待种子信息获取（has_metadata）
   while (true) {
-    // 使用 getTorrent 替代 getAllData，并加重试
     const torrentId: string = torrent?.id;
     if (!torrentId) {
-      // 若暂时没有 id，等待并重试
       await wait(2000);
       continue;
     }
     const data = await qbRequestWithRetry(() => QBclient.getAllData());
-    // 兼容 t 或 t.torrent 等两种返回结构，保留旧的 torrent 对象以防接口短暂返回 null
     torrent = data.torrents.find((t) => t.id === torrentId) || torrent;
 
     // 检查多种可能的位置上的 has_metadata 字段
@@ -184,7 +187,7 @@ export async function downloadAndReturnPath(
   await updateTorrentStatus(title, "下载中");
 
   // 2. 等待下载完成
-  while (torrent && !torrent.isCompleted) {
+  while (torrent && !torrent.isCompleted && seedingStates.includes(torrent.state)) {
     await wait(10000); // 每10秒检查一次
     const data = await QBclient.getAllData();
     // 兼容返回结构，若为空则保留上次的 torrent 对象

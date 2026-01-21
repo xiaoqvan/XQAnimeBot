@@ -147,7 +147,7 @@ export default async function start(client: Client, message: message) {
 
             sendMessage(client, message.chat_id, {
                 reply_to_message_id: message.id,
-                text: `动漫: [${animeFromEpisode.name_cn || animeFromEpisode.name}](https://bgm.tv/subject/${animeFromEpisode.id})\n剧集: [${epSort}](https://bgm.tv/ep/${episodeId}) 标记为 看过 成功！`,
+                text: `动漫: [${animeFromEpisode.name_cn || animeFromEpisode.name}](https://bgm.tv/subject/${animeFromEpisode.id})\n集数: [${epSort}](https://bgm.tv/ep/${episodeId}) 标记为 看过 成功！`,
             });
             break;
         default:

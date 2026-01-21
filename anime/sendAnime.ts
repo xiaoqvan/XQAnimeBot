@@ -404,8 +404,6 @@ export async function sendMegToAnime(
   episodeId?: number,
   newAnime = false
 ) {
-
-
   await updateTorrentStatus(item.title, "上传中");
   const videoInfo = await extractVideoMetadata(videoPath);
 

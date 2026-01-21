@@ -49,6 +49,9 @@ export async function downloadAndValidateTorrent(
                 throw new Error(`下载路径是文件夹: ${item.title}`);
             }
             const fileExt = extname(torrent.raw.content_path).toLowerCase();
+            if (stats.isFile() && fileExt === ".mp4") {
+                return torrent;
+            }
             if (stats.isFile() && fileExt === ".mkv") {
                 logger.warn(
                     `下载文件为 MKV，尝试转换为 MP4: ${torrent.raw.content_path} (${item.title})`
