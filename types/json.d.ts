@@ -8,4 +8,6 @@ export interface animeenv {
   ANIME_GROUP_THREAD_ID: number;
   NAV_GROUP_THREAD_ID: number;
   ERROR_GROUP_THREAD_ID: number;
+  BG_APP_ID: string;
+  BG_APP_SECRET: string;
 }

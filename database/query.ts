@@ -1,9 +1,10 @@
-import { getDatabase } from "./initDb.ts";
 import type {
   AnimeBlacklistConfig,
   TagExcludeListConfig,
 } from "../types/database.ts";
 import type { animeItem, anime as animeType } from "../types/anime.ts";
+import type { BangumiUser } from "../types/bangumi.d.ts";
+import { getDatabase } from "@db/index.ts";
 
 const db = await getDatabase();
 
@@ -89,6 +90,24 @@ export async function getAnimeById(
   }
 }
 
+/**
+ * 根据章节（episode）ID 查询所属的动漫条目
+ * @param episodeId - Bangumi 章节 ID
+ */
+export async function getAnimeByEpisodeId(
+  episodeId: number
+): Promise<animeType | null> {
+  if (!episodeId) throw new Error("章节 id 是必需的参数");
+  try {
+    const anime = await db
+      .collection<animeType>("anime")
+      .findOne({ "eps.list.id": episodeId });
+    return anime || null;
+  } catch (error) {
+    throw new Error(`查询章节所属动漫失败: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
 /** 根据缓存ID查询缓存的动漫信息
  * @param id - 缓存ID
  * @returns 如果找到缓存返回动漫信息，否则返回undefined
@@ -163,4 +182,30 @@ export async function searchAnime(key: string) {
       `搜索动漫失败: ${error instanceof Error ? error.message : error}`
     );
   }
+}
+
+/**
+ * 根据 Telegram User ID 查询 Bangumi 用户信息
+ * @param tgUserId - Telegram 用户 ID
+ * @returns 用户信息 或 null
+ */
+export async function getBangumiUserByTgId(
+  tgUserId: number
+): Promise<BangumiUser | null> {
+  if (!tgUserId) throw new Error("Telegram 用户 ID 是必需的参数");
+
+  const user = await db.collection<BangumiUser>("bangumi_users").findOne({
+    tgUserId,
+  });
+  return user || null;
+}
+
+/**
+ * 根据内部自增 id 查询 Bangumi 用户信息
+ * @param id - 内部自增 id
+ */
+export async function getBangumiUserById(id: number): Promise<BangumiUser | null> {
+  if (!id) throw new Error("id 是必需的参数");
+  const user = await db.collection<BangumiUser>("bangumi_users").findOne({ id });
+  return user || null;
 }

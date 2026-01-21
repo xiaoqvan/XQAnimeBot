@@ -3,6 +3,7 @@ import { falseAnime, nullAnime, trueAnime } from "./hasAnime.ts";
 import type { updateNewCallbackQuery as Td$updateNewCallbackQuery } from "tdlib-types";
 import type { Client } from "tdl";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
+import { colorep } from "./bangumi.ts";
 
 /**
  * 处理新的回调查询
@@ -68,6 +69,17 @@ export default async function updateNewCallbackQuery(
           message_id,
           queryId,
           raw
+        );
+        break;
+      }
+      case "colorep": {
+        await colorep(
+          client,
+          chat_id,
+          sender_user_id,
+          message_id,
+          queryId,
+          params
         );
         break;
       }

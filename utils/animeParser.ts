@@ -72,6 +72,10 @@ export function parseInfo(title: string, teamName: string | null) {
         epMatch = title.match(/\[(\d{1,3})_/);
       }
       if (!epMatch) {
+        // 适配 [03 标题] 这种格式
+        epMatch = title.match(/\[(\d{1,3}(?:v\d+)?)\s+[^\]]+\]/);
+      }
+      if (!epMatch) {
         // 适配 [03 - 总第13] 这种格式
         epMatch = title.match(/\[(\d{1,3})\s*-\s*总第\d+/);
       }
@@ -166,7 +170,7 @@ export function parseInfo(title: string, teamName: string | null) {
           /(?:OVA|OAD|SP|Extra|番外|特典)[\s\-:]?(\d{1,3})/i
         );
         if (specialEp) {
-          episode = RegExp.$1 ? RegExp.lastMatch : specialEp[0];
+          episode = specialEp[0];
         } else {
           // [OVA03]、[OAD01]、[SP1]、[Extra2]、[番外2] 这种括号内
           const bracketSpecial = title.match(

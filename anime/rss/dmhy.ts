@@ -1,6 +1,5 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import logger from "@log/index.ts";
 import type { RssAnimeItem } from "../../types/anime.ts";
 import { isTitleAllowed } from "./common.ts";
 
@@ -57,7 +56,14 @@ export function formatDmhyPubDate(pubDateString: string): string {
 export async function fetchDmhyRss() {
   try {
     const response = await axios.get(
-      "https://dmhy.org/topics/rss/sort_id/2/rss.xml"
+      "https://dmhy.org/topics/rss/sort_id/2/rss.xml",
+      {
+        timeout: 15000,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "Referer": "https://dmhy.org/"
+        }
+      }
     );
     const xml = response.data;
     const $ = cheerio.load(xml, { xmlMode: true });
@@ -108,7 +114,6 @@ export async function fetchDmhyRss() {
 
     return dmhyList;
   } catch (error) {
-    logger.error("Error fetching DMHY data:", error);
     throw error;
   }
 }

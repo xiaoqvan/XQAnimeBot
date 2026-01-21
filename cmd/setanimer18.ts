@@ -84,9 +84,8 @@ export default async function handleSetAnimeR18(
 
   const tipsmeg = await sendMessage(client, message.chat_id, {
     reply_to_message_id: message.id,
-    text: `🔄 正在更新ID为 ${animeId} 的动漫 r18 字段为 ${
-      r18Value ? "true" : "false"
-    }...`,
+    text: `🔄 正在更新ID为 ${animeId} 的动漫 r18 字段为 ${r18Value ? "true" : "false"
+      }...`,
     link_preview: true,
   });
   if (!tipsmeg) {
@@ -118,9 +117,8 @@ export default async function handleSetAnimeR18(
   );
 
   await editMessageText(client, tipsmeg.chat_id, tipsmeg.id, {
-    text: `✅ 已成功设置 ID 为 ${animeId} 的动漫 r18 字段为 ${
-      r18Value ? "true" : "false"
-    }`,
+    text: `✅ 已成功设置 ID 为 ${animeId} 的动漫 r18 字段为 ${r18Value ? "true" : "false"
+      }`,
   });
 }
 
@@ -203,7 +201,12 @@ async function updateAssociatedVideoMessagesR18(
         magnet: "",
         team: "",
       };
-      const animeText = AnimeText(anime, item);
+      if (!ep.episodeId) {
+        fail++;
+        failDetails.push(`[${fansub}] 第${ep.episode}集: 没有关联的 episodeId`);
+        continue;
+      }
+      const animeText = AnimeText(anime, item, ep.episodeId);
       // 构造新文本（AnimeText 需包含 r18 字段变化）
       const animeTdText = await parseTextEntities(client, animeText);
       // 检查是否需要更新
@@ -211,7 +214,7 @@ async function updateAssociatedVideoMessagesR18(
         messageLinkInfo.message?.content._ === "messageVideo" &&
         animeTdText.text &&
         messageLinkInfo.message?.content?.caption?.text.trim() ===
-          animeTdText.text.trim()
+        animeTdText.text.trim()
       ) {
         success++;
         continue;
@@ -243,8 +246,7 @@ async function updateAssociatedVideoMessagesR18(
       } catch (error) {
         fail++;
         failDetails.push(
-          `[${fansub}] 第${ep.episode}集: 编辑消息失败 ${
-            (error as Error).message
+          `[${fansub}] 第${ep.episode}集: 编辑消息失败 ${(error as Error).message
           }`
         );
       }
@@ -256,8 +258,7 @@ async function updateAssociatedVideoMessagesR18(
     }
   }
   await editMessageText(client, message.chat_id, message.id, {
-    text: `✅ NSFW 字段更新完成！\n总数: ${totalMessages}\n成功: ${success}\n失败: ${fail}${
-      failDetails.length ? "\n失败详情: " + failDetails.join("; ") : ""
-    }`,
+    text: `✅ NSFW 字段更新完成！\n总数: ${totalMessages}\n成功: ${success}\n失败: ${fail}${failDetails.length ? "\n失败详情: " + failDetails.join("; ") : ""
+      }`,
   });
 }

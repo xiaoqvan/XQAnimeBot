@@ -1,9 +1,9 @@
 import { addTorrent } from "../database/create.ts";
-import { getQBClient } from "../qBittorrent/index.ts";
+import { getQBClient } from "./index.ts";
 import parseTorrent, { remote, toMagnetURI } from "parse-torrent";
 import logger from "@log/index.ts";
 import { updateTorrentStatus } from "../database/update.ts";
-import type { Torrent } from "../types/torrent.ts";
+import type { Torrent } from "../types/torrent.js";
 
 const QBclient = await getQBClient();
 
@@ -60,8 +60,8 @@ export async function downloadTorrentFromUrl(
   const magnetLink = isMagnet
     ? url
     : await retryRequest(async () => {
-        return await getMagnetFromTorrent(url);
-      });
+      return await getMagnetFromTorrent(url);
+    });
 
   if (isMagnet) logger.debug("传入的是磁力链接，跳过解析: ", magnetLink);
   await addTorrent(magnetLink, "等待元数据", title);
@@ -92,18 +92,18 @@ export async function downloadAndReturnPath(
     torrent =
       data && data.torrents
         ? data.torrents.find((t) => {
-            try {
-              // 支持多种可能的字段名（raw.hash / hash / infoHash）
-              const candidateHash =
-                (t as any)?.raw?.hash ||
-                (t as any)?.hash ||
-                (t as any)?.infoHash ||
-                (t as any)?.raw?.infoHash;
-              return !!candidateHash && candidateHash === hash;
-            } catch {
-              return false;
-            }
-          })
+          try {
+            // 支持多种可能的字段名（raw.hash / hash / infoHash）
+            const candidateHash =
+              (t as any)?.raw?.hash ||
+              (t as any)?.hash ||
+              (t as any)?.infoHash ||
+              (t as any)?.raw?.infoHash;
+            return !!candidateHash && candidateHash === hash;
+          } catch {
+            return false;
+          }
+        })
         : undefined;
 
     if (torrent) {
@@ -115,8 +115,7 @@ export async function downloadAndReturnPath(
   } catch (err) {
     // 若获取列表失败则继续尝试添加（以防万一），并记录警告
     logger.warn(
-      `检查现有种子时出错，将尝试添加磁力链接: ${
-        err instanceof Error ? err.message : err
+      `检查现有种子时出错，将尝试添加磁力链接: ${err instanceof Error ? err.message : err
       }`
     );
     await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
@@ -130,20 +129,19 @@ export async function downloadAndReturnPath(
       torrent =
         data && data.torrents
           ? data.torrents.find((t) => {
-              try {
-                if (t && t.raw && t.raw.hash === hash) {
-                  return t as Torrent;
-                }
-              } catch {
-                return undefined;
+            try {
+              if (t && t.raw && t.raw.hash === hash) {
+                return t as Torrent;
               }
-            })
+            } catch {
+              return undefined;
+            }
+          })
           : undefined;
       if (torrent) break;
     } catch (err) {
       logger.warn(
-        `获取种子列表失败，稍后重试: ${
-          err instanceof Error ? err.message : err
+        `获取种子列表失败，稍后重试: ${err instanceof Error ? err.message : err
         }`
       );
     }

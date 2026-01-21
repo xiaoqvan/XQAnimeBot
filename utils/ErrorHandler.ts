@@ -15,6 +15,7 @@ export async function ErrorHandler(client: Client, error: unknown) {
 
   await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
     topic_id: {
+      _: "messageTopicForum",
       forum_topic_id: Number(env.data.ERROR_GROUP_THREAD_ID),
     },
     text: `错误信息:\n${errorText}`,

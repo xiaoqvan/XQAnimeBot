@@ -3,7 +3,7 @@ import type { Client } from "tdl";
 
 import { isUserAdmin } from "@TDLib/function/index.ts";
 import { editMessageText, sendMessage } from "@TDLib/function/message.ts";
-import { updateAnime } from "../anime/index.ts";
+import { handleExistingAnime } from "../anime/index.ts";
 import { getAnimeById } from "../database/query.ts";
 import {
   fetchBangumiTags,
@@ -73,9 +73,8 @@ export default async function addAnime(
 
   const tipsMsg = await sendMessage(client, message.chat_id, {
     reply_to_message_id: message.id,
-    text: `正在为动漫 ${
-      animeinfo.name_cn || animeinfo.name
-    } 添加BT信息，请稍候...`,
+    text: `正在为动漫 ${animeinfo.name_cn || animeinfo.name
+      } 添加BT信息，请稍候...`,
   });
   // 获取动漫信息
   let animeBtInfo;
@@ -128,15 +127,15 @@ export default async function addAnime(
     );
     const nameLocales = bangumiTag
       ? {
-          cn: bangumiTag.locale.zh_cn || "",
-          jp: bangumiTag.locale.ja || "",
-          en: bangumiTag.locale.en || "",
-        }
+        cn: bangumiTag.locale.zh_cn || "",
+        jp: bangumiTag.locale.ja || "",
+        en: bangumiTag.locale.en || "",
+      }
       : {
-          cn: "",
-          jp: "",
-          en: "",
-        };
+        cn: "",
+        jp: "",
+        en: "",
+      };
 
     const infoq = parseInfo(torrentInfo.title, team[0]?.name);
     if (!infoq) {
@@ -149,8 +148,8 @@ export default async function addAnime(
 
     infoq.names = Array.isArray(infoq.names)
       ? infoq.names
-          .map((s) => (typeof s === "string" ? s.trim() : ""))
-          .filter(Boolean)
+        .map((s) => (typeof s === "string" ? s.trim() : ""))
+        .filter(Boolean)
       : [];
 
     infoq.names = Array.from(new Set([...infoq.names, ...localeNames])).filter(
@@ -214,7 +213,7 @@ export default async function addAnime(
     return;
   }
 
-  await updateAnime(client, animeinfo, animeBtInfo);
+  await handleExistingAnime(client, animeBtInfo, animeinfo);
   if (!tipsMsg) {
     return;
   }

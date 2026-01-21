@@ -1,7 +1,7 @@
 import logger from "@log/index.ts";
 import { Plugin } from "@plugin/BasePlugin.ts";
 import type { Client } from "tdl";
-import { anime } from "./anime/index.ts";
+// import { anime } from "./anime/index.ts";
 
 export default class AnimePlugin extends Plugin {
   name = "XQ的动漫插件";
@@ -12,12 +12,36 @@ export default class AnimePlugin extends Plugin {
   constructor(client: Client) {
     super(client);
 
-    this.onLoad = async () => {
-      logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
-      anime(this.client).then();
-    };
+    // this.onLoad = async () => {
+    //   logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
+    //   anime(this.client).then();
+    // };
 
     this.cmdHandlers = {
+      start: {
+        description: "处理/start命令",
+        scope: "private",
+        handler: async (message, _) => {
+          const mod = await import("./cmd/start.ts");
+          return mod.default(this.client, message.message);
+        }
+      },
+      bindbangumi: {
+        description: "绑定Bangumi账户",
+        scope: "private",
+        handler: async (message, _) => {
+          const mod = await import("./cmd/bindbangumi.ts");
+          return mod.default(this.client, message.message);
+        },
+      },
+      exitbangumi: {
+        description: "退出Bangumi账户绑定",
+        scope: "private",
+        handler: async (message, _) => {
+          const mod = await import("./cmd/exitbangumi.ts");
+          return mod.default(this.client, message.message);
+        },
+      },
       searchanime: {
         description: "搜索频道内的动漫",
         scope: "all",

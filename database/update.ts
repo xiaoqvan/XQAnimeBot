@@ -1,4 +1,3 @@
-import { getDatabase } from "./initDb.ts";
 import { formatSubGroupName } from "../function/index.ts";
 import type {
   anime as AnimeType,
@@ -7,6 +6,8 @@ import type {
   navMessageType,
 } from "../types/anime.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
+import logger from "@log/index.ts";
+
 const db = await getDatabase();
 
 /**
@@ -158,8 +159,7 @@ export async function updateAnimeNavMessageLink(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新导航频道消息链接失败: ${
-        error instanceof Error ? error.message : error
+      `更新导航频道消息链接失败: ${error instanceof Error ? error.message : error
       }`
     );
   }
@@ -168,20 +168,23 @@ export async function updateAnimeNavMessageLink(
  * 在cacheAnime数据库中为btdata对应字幕组的其中一集添加TGMegLink
  * 如果字幕组不存在则自动创建，如果集数不存在则自动添加
  * @param animeId - 动漫的id字段值
+ * @param episodeId - 动漫集数id
  * @param subGroup - 字幕组名称
  * @param episode - 集数
  * @param Message - TG消息详细
- * @param [title] - 集数标题（可选）
- * @param [names] - 该集数的别名数组（可选）
- * @param [pubDate] - 发布时间（可选）
- * @param [videoid] - 视频ID（可选）
- * @param [unique_id] - 唯一ID（可选）
- * @param [source] - 视频来源（如：Baha, bilibili等，用于ANi和黒ネズミたち字幕组区分）
+ * @param title - 集数标题（可选）
+ * @param source - 视频来源（如：Baha, bilibili等，用于ANi和黒ネズミたち字幕组区分）
+ * @param names - 该集数的别名数组（可选）
+ * @param videoid - 视频ID（可选）
+ * @param unique_id - 唯一ID（可选）
+ * @param cacheItemId - 如果是缓存数据则传入对应的 cacheAnime 文档的 _id（可选） 
+ * @param cache - 是否操作 cacheAnime 集合，默认为 false 操作 anime 集合
  * @returns 更新成功返回true，否则返回false
  * @throws 当参数无效或数据库操作失败时抛出异常
  */
 export async function updateAnimeBtdata(
   animeId: number,
+  episodeId: number | undefined,
   subGroup: string,
   episode: string | "未知",
   Message: messageType,
@@ -201,8 +204,7 @@ export async function updateAnimeBtdata(
     (cache && !cacheItemId)
   ) {
     throw new Error(
-      `动漫ID、字幕组、集数和Message是必需的参数${
-        cache ? ", 当 cache 为 true 时，cacheItemId 也是必需的" : ""
+      `动漫ID、字幕组、集数和Message是必需的参数${cache ? ", 当 cache 为 true 时，cacheItemId 也是必需的" : ""
       }`
     );
   }
@@ -238,6 +240,7 @@ export async function updateAnimeBtdata(
         videoid: videoid ? videoid : undefined,
         names: names ? names : undefined,
         unique_id: unique_id ? unique_id : undefined,
+        episodeId: !cache ? episodeId : undefined,
       };
 
       const updateQuery = {
@@ -265,6 +268,7 @@ export async function updateAnimeBtdata(
         videoid: videoid ? videoid : undefined,
         names: names ? names : undefined,
         unique_id: unique_id ? unique_id : undefined,
+        episodeId: !cache ? episodeId : undefined,
       };
 
       const updateQuery = {
@@ -289,6 +293,9 @@ export async function updateAnimeBtdata(
           : undefined,
         [`btdata.${formattedSubGroup}.${episodeIndex}.unique_id`]: unique_id
           ? unique_id
+          : undefined,
+        [`btdata.${formattedSubGroup}.${episodeIndex}.episodeId`]: !cache
+          ? episodeId
           : undefined,
       };
 
@@ -492,8 +499,7 @@ export async function updateAnimeNavVideoMessage(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新导航频道视频消息失败: ${
-        error instanceof Error ? error.message : error
+      `更新导航频道视频消息失败: ${error instanceof Error ? error.message : error
       }`
     );
   }
@@ -618,5 +624,30 @@ export async function updateAnimeEpisodes(
     throw new Error(
       `更新动漫集数信息失败: ${error instanceof Error ? error.message : error}`
     );
+  }
+}
+
+/**
+ * 更新 Bangumi 用户信息
+ * @param id - 用户 ID
+ * @param data - 要更新的数据
+ * @returns 是否更新成功
+ */
+import type { BangumiUser } from "../types/bangumi.d.ts";
+import { getDatabase } from "@db/index.ts";
+
+export async function updateBangumiUser(
+  id: number,
+  data: Partial<BangumiUser>
+): Promise<boolean> {
+  try {
+    const result = await db.collection("bangumi_users").updateOne(
+      { id },
+      { $set: { ...data, updatedAt: new Date() } }
+    );
+    return result.modifiedCount > 0;
+  } catch (err) {
+    logger.error("updateBangumiUser Error:", err);
+    throw err;
   }
 }

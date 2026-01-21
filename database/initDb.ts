@@ -1,5 +1,5 @@
 import logger from "@log/index.ts";
-import { getMongoClient } from "@db/index.ts";
+import { getDatabase } from "@db/index.ts";
 import { JSONFilePreset } from "lowdb/node";
 import type { animeenv } from "../types/json.d.ts";
 import setjons from "./set.json?file";
@@ -15,6 +15,8 @@ export const env = await JSONFilePreset<animeenv>(setjons, {
   ANIME_GROUP_THREAD_ID: 0,
   NAV_GROUP_THREAD_ID: 0,
   ERROR_GROUP_THREAD_ID: 0,
+  BG_APP_ID: "",
+  BG_APP_SECRET: "",
 });
 
 /**
@@ -22,9 +24,7 @@ export const env = await JSONFilePreset<animeenv>(setjons, {
  * 到所需的数据库集合。
  */
 async function initdb() {
-  const dbclient = await getMongoClient();
-
-  const db = dbclient.db("anime");
+  const db = await getDatabase();
 
   // 为 torrents 集合创建 title 字段的唯一索引
   try {
@@ -44,10 +44,4 @@ async function initdb() {
 // 模块加载时只创建一次
 export const databasePromise = initdb();
 
-/**
- * 获取数据库连接
- * @returns 数据库连接的Promise
- */
-export async function getDatabase() {
-  return await databasePromise;
-}
+

@@ -65,7 +65,6 @@ export async function fetchBangumiRss() {
 
     return bangumiList;
   } catch (error) {
-    logger.error("Error fetching Bangumi data:", error);
     throw error;
   }
 }

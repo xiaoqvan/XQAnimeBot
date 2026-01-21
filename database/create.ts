@@ -1,8 +1,9 @@
 import logger from "@log/index.ts";
 import type { animeItem, anime as AnimeType, BtEntry } from "../types/anime.ts";
+import type { BangumiUser } from "../types/bangumi.d.ts";
 
-import { getDatabase } from "./initDb.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
+import { getDatabase } from "@db/index.ts";
 
 const db = await getDatabase();
 
@@ -159,8 +160,7 @@ export async function addTorrent(
     return doc._id;
   } catch (error) {
     throw new Error(
-      `保存或更新种子信息失败: ${
-        error instanceof Error ? error.message : error
+      `保存或更新种子信息失败: ${error instanceof Error ? error.message : error
       }`
     );
   }
@@ -182,6 +182,8 @@ export async function saveAnime(anime: AnimeType, cache: boolean = false) {
   const col = db.collection<AnimeType>(cache ? "cacheAnime" : "anime");
   // 确保 id 唯一索引
   await col.createIndex({ id: 1 }, { unique: true });
+  // 为 eps.list.id 建立普通索引，便于按章节 id 查询
+  await col.createIndex({ "eps.list.id": 1 }).catch(() => { });
 
   const oldDoc = await col.findOne({ id: anime.id });
 
@@ -254,5 +256,56 @@ function setField<K extends keyof AnimeType>(
 ) {
   if (source[key] !== undefined) {
     target[key] = source[key];
+  }
+}
+
+/**
+ * 创建一个新的 Bangumi 用户记录
+ * @param data - 用户初始数据
+ * @returns 新用户的自增 ID
+ */
+export async function createBangumiUser(
+  data: { tgUserId: number | string }
+): Promise<number> {
+  try {
+    const col = db.collection("bangumi_users");
+
+    await Promise.all([
+      col.createIndex({ id: 1 }, { unique: true }).catch(() => { }),
+      col.createIndex({ tgUserId: 1 }, { unique: true, sparse: true }).catch(() => { }),
+    ]);
+
+    const { tgUserId } = data;
+
+    if (tgUserId === undefined || tgUserId === null) {
+      throw new Error("createBangumiUser: tgUserId 是必需的参数");
+    }
+
+    const existing = await col.findOne({ tgUserId });
+    if (existing && existing.id !== undefined) {
+      return existing.id;
+    }
+
+    const id = await getNextSequence("bangumi_user_id");
+
+    const now = new Date();
+    const doc: BangumiUser = {
+      id,
+      ...data,
+      createdAt: now,
+      updatedAt: now,
+    } as BangumiUser;
+
+    try {
+      await col.insertOne(doc);
+      return id;
+    } catch (err) {
+      const conflict = await col.findOne({ tgUserId });
+      if (conflict && conflict.id !== undefined) return conflict.id;
+      throw err;
+    }
+  } catch (err) {
+    logger.error("createBangumiUser 出错:", err);
+    throw err;
   }
 }

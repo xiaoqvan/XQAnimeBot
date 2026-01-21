@@ -1,8 +1,15 @@
-import {parseTextEntities} from "@TDLib/function/index.ts";
-import type {anime as animeType, animeItem, BtData as BtDataType, BtEntry,} from "../types/anime.ts";
+import { parseTextEntities } from "@TDLib/function/index.ts";
+import type {
+  anime as animeType,
+  animeItem,
+  BtData as BtDataType,
+  BtEntry,
+} from "../types/anime.ts";
 
-import type {Client} from "tdl";
-import {formatTags, safeTag} from "../utils/index.ts";
+import type { Client } from "tdl";
+import { formatTags, safeTag } from "../utils/index.ts";
+
+const botStartUrl = "https://t.me/XiaoQvanAnimeBot?start="
 
 /**
  * 生成导航消息文本（首条带图，1024 文本长度限制；资源分条纯文本，每条 4096 文本长度限制）
@@ -23,16 +30,14 @@ export async function navmegtext(
     includeResources: boolean,
     resourceNavigation = ""
   ) => {
-    const title = `${animeDate(anime.airingStart)} ${NSFW(anime.r18)} ${
-      anime.name || anime.name_cn
-    }`;
+    const title = `${animeDate(anime.airingStart)} ${NSFW(anime.r18)} ${anime.name || anime.name_cn
+      }`;
     const baseInfo =
       `\n> 中文名称: ${anime.name_cn}\n` +
       `> 本季话数: ${anime.episode || "未知"}\n` +
       `> 放送开始: ${anime.airingStart || "未知"}\n` +
       `> 放送星期: ${anime.airingDay || "未知"}\n` +
-      `> 动漫评分: [${anime.score || "未知"}](https://bgm.tv/subject/${
-        anime.id
+      `> 动漫评分: [${anime.score || "未知"}](https://bgm.tv/subject/${anime.id
       }/stats)` +
       `${getBeijingDate()}`;
 
@@ -41,12 +46,12 @@ export async function navmegtext(
     // 资源区：只有在 includeResources 且确有资源时才显示
     const hasResources = includeResources && sections.length > 0;
     const resourcesPart = hasResources
-      ? `\n\n资源:\n${sections.join("\n")}`
+      ? `\n资源:\n${sections.join("\n")}`
       : resourceNavigation
-      ? `\n\n资源:\n> ${resourceNavigation}`
-      : "";
+        ? `\n资源:\n> ${resourceNavigation}`
+        : "";
 
-    const tagsPart = `\n\n标签: \n> ${formatTags(anime.tags || [])}||`;
+    const tagsPart = `\n标签: \n> ${formatTags(anime.tags || [])}||`;
 
     return `${title}${baseInfo}${summaryPart}${resourcesPart}${tagsPart}`;
   };
@@ -214,8 +219,10 @@ async function buildResourcePages(
 
 /** 格式化 时间 #<时间> */
 function animeDate(time: string | undefined) {
-    return (time ? "#" : "") +
-      (time ? time.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月") : "");
+  return (
+    (time ? "#" : "") +
+    (time ? time.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月") : "")
+  );
 }
 
 /** 格式化 NSFW #NSFW */
@@ -230,9 +237,9 @@ function summaryTrim(summary: string | undefined, id: number, maxLen = 300) {
   const truncatedSummary =
     cleanSummary.length > maxLen
       ? cleanSummary.substring(0, maxLen) +
-        `[...详细](https://bgm.tv/subject/${id})`
+      `[...详细](https://bgm.tv/subject/${id})`
       : cleanSummary;
-  return `\n\n介绍:\n> ${truncatedSummary.replace(/\n/g, "\n> ")}||`;
+  return `\n介绍:\n> ${truncatedSummary.replace(/\n/g, "\n> ")}||`;
 }
 
 /** 获取当前北京时间，格式为 yyyy-MM-dd */
@@ -352,28 +359,24 @@ function compareEpisode(a: BtEntry, b: BtEntry): number {
  * @param item - 动漫在BT站中的信息
  * @returns - 格式化后的动漫信息文本
  */
-export function AnimeText(anime: animeType, item: animeItem) {
+export function AnimeText(anime: animeType, item: animeItem, episodeId: number): string {
   const nsfwTag = anime.r18 === true ? "#NSFW " : "";
-    return `#${
-      anime.airingStart
-          ? anime.airingStart.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月")
-          : ""
-  } ${nsfwTag} ${item.title}\n>原名称: ${anime.name}\n>中文名: ${
-      anime.name_cn
-  }\n>发布组: ${formatTags(item.fansub?.map((f) => safeTag(f)) || [])}${
-      item.pubDate ? `\n>发布时间: ${item.pubDate}` : ""
-  }\n\n追踪标签：\n>名称: #${safeTag(
+  return `#${anime.airingStart
+    ? anime.airingStart.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月")
+    : ""
+    } ${nsfwTag} ${item.title}\n>原名称: ${anime.name}\n>中文名: ${anime.name_cn
+    }\n>发布组: ${formatTags(item.fansub?.map((f) => safeTag(f)) || [])}${item.pubDate ? `\n>发布时间: ${item.pubDate}` : ""
+    }\n追踪标签：\n>名称: #${safeTag(
       anime.name_cn || anime.name
-  )}\n>番剧组: ${item.fansub
+    )}\n>番剧组: ${item.fansub
       ?.map(
-          (f) =>
-              `#${safeTag(f.replace(/\s+/g, "_"))}_${safeTag(
-                  anime.name_cn || anime.name
-              )}`
+        (f) =>
+          `#${safeTag(f.replace(/\s+/g, "_"))}_${safeTag(
+            anime.name_cn || anime.name
+          )}`
       )
-      .join(" ")}${
-      anime.navMessage?.link || anime.navMessageLink
-          ? ` \n\n[番剧信息](${anime.navMessage?.link || anime.navMessageLink})`
-          : ""
-  }`;
+      .join(" ")}${anime.navMessage?.link || anime.navMessageLink
+        ? ` \n[导航](${anime.navMessage?.link || anime.navMessageLink}) | [订阅](${botStartUrl}collection-${anime.id}) | [看过](${botStartUrl}eplook-${episodeId}) | [评论](https://bgm.tv/ep/${episodeId})`
+        : ""
+    }`;
 }

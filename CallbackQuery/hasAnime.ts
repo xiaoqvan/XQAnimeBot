@@ -22,13 +22,11 @@ import {
 import { findEpisodeByCacheId, omit } from "../function/index.ts";
 import { deleteCacheAnime } from "../database/delete.ts";
 import { getSubjectById } from "../anime/get.ts";
-import { downloadTorrentFromUrl } from "../anime/torrent.ts";
-import { getQBClient } from "../qBittorrent/index.ts";
 
 import { env } from "../database/initDb.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
-
-const QBclient = await getQBClient();
+import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
+import { getEpisodeById } from "../bangumi/get.ts";
 
 /**
  * 当前匹配正确
@@ -51,7 +49,9 @@ export async function trueAnime(
     user_id: sender_user_id,
   };
 
-  const anime = await getAnimeById(id, true);
+  const episode = await getEpisodeById(id);
+
+  const anime = await getAnimeById(episode.subject_id, true);
 
   if (!anime) {
     await answerCallbackQuery(client, queryId, {
@@ -62,9 +62,8 @@ export async function trueAnime(
   }
 
   await editMessageText(client, chat_id, message_id, {
-    text: `${anime.id} - ${
-      anime.name
-    } 正在更新\n触发用户：${await chatoruserMdown(client, sender_id, true)}`,
+    text: `${anime.id} - ${anime.name
+      } 正在更新\n触发用户：${await chatoruserMdown(client, sender_id, true)}`,
   });
 
   const result = await updateAnimeLinks(
@@ -72,6 +71,7 @@ export async function trueAnime(
     chat_id,
     message_id,
     anime,
+    id,
     Cache_id
   );
 
@@ -85,11 +85,6 @@ export async function trueAnime(
   await answerCallbackQuery(client, queryId, {
     text: `确认成功`,
     show_alert: false,
-  });
-  await editMessageText(client, chat_id, message_id, {
-    text: `${anime.id} - ${
-      anime.name
-    } 更新完成\n触发用户：${await chatoruserMdown(client, sender_id, true)}`,
   });
 }
 /**
@@ -113,7 +108,9 @@ export async function falseAnime(
     user_id: sender_user_id,
   };
 
-  const anime = await getAnimeById(id, true);
+  const episode = await getEpisodeById(id);
+
+  const anime = await getAnimeById(episode.subject_id, true);
 
   if (!anime) {
     await answerCallbackQuery(client, queryId, {
@@ -128,11 +125,12 @@ export async function falseAnime(
       client,
       sender_id,
       true
-    )} ，请回复这一条消息提供正确的缓存动漫 id 或 bgm.tv 的链接\n\n回复 /cancel 取消`,
+    )} ，请回复这一条消息提供正确的 bgm.tv 章节链接或章节id\n\n回复 /cancel 取消`,
   });
 
   let status = null;
   let newAnime = null;
+  let newepid = null;
 
   // 临时用法后续建议包装该参数
   for await (const update of client.iterUpdates()) {
@@ -164,7 +162,7 @@ export async function falseAnime(
         parsedId = Number(text);
       } else {
         const m = text.match(
-          /https?:\/\/(?:bgm\.tv|bangumi\.tv)\/subject\/(\d+)(?:\/|$)/i
+          /https?:\/\/(?:bgm\.tv|bangumi\.tv)\/ep\/(\d+)(?:\/|$)/i
         );
         if (m) parsedId = Number(m[1]);
       }
@@ -175,7 +173,8 @@ export async function falseAnime(
         });
         continue;
       }
-      const Subject = await getSubjectById(parsedId);
+      newepid = await getEpisodeById(parsedId).catch(() => null);
+      const Subject = await getSubjectById(newepid.subject_id).catch(() => null);
       if (!Subject) {
         await editMessageText(client, chat_id, message_id, {
           text: `未找到相关的动漫信息，请确认 ID: ${parsedId} 是否正确。\n请重新提供一个 ID 或 bgm 链接，或者使用 /cancel 取消`,
@@ -207,6 +206,7 @@ export async function falseAnime(
     chat_id,
     message_id,
     newAnime,
+    newepid.id,
     Cache_id
   );
 
@@ -261,11 +261,13 @@ export async function nullAnime(
       client,
       sender_id,
       true
-    )} ，请回复这一条消息提供正确的缓存动漫 id 或 bgm.tv 的链接\n\n回复 /cancel 取消`,
+    )} ，请回复这一条消息提供正确的 bgm.tv 章节链接或章节id\n\n回复 /cancel 取消`,
   });
 
   let status = undefined;
   let newAnime = undefined;
+  let newepid = null;
+
   for await (const update of client.iterUpdates()) {
     if (
       update._ === "updateNewMessage" &&
@@ -294,7 +296,7 @@ export async function nullAnime(
         parsedId = Number(text);
       } else {
         const m = text.match(
-          /https?:\/\/(?:bgm\.tv|bangumi\.tv)\/subject\/(\d+)(?:\/|$)/i
+          /https?:\/\/(?:bgm\.tv|bangumi\.tv)\/ep\/(\d+)(?:\/|$)/i
         );
         if (m) parsedId = Number(m[1]);
       }
@@ -305,7 +307,8 @@ export async function nullAnime(
         });
         continue;
       }
-      const Subject = await getSubjectById(parsedId);
+      newepid = await getEpisodeById(parsedId).catch(() => null);
+      const Subject = await getSubjectById(newepid.subject_id).catch(() => null);
       if (!Subject) {
         await editMessageText(client, chat_id, message_id, {
           text: `未找到相关的动漫信息，请确认 ID: ${parsedId} 是否正确。\n请重新提供一个 ID 或 bgm 链接，或者使用 /cancel 取消`,
@@ -332,7 +335,7 @@ export async function nullAnime(
   }
 
   // 下载种子文件并获取下载路径
-  const Torrent = await downloadTorrentFromUrl(item.magnet, item.title);
+  const Torrent = await downloadAndValidateTorrent(item);
 
   if (!Torrent || !Torrent.raw.content_path) {
     return;
@@ -343,10 +346,11 @@ export async function nullAnime(
     newAnime,
     item,
     Torrent?.raw.content_path,
+    newepid.id,
     true
   );
 
-  await QBclient.removeTorrent(Torrent.id, true);
+  await removeTorrentAndData(Torrent.id);
 
   if (!cacheAnimeMeg) {
     throw new Error("发送动漫消息失败");
@@ -390,6 +394,7 @@ export async function nullAnime(
     chat_id,
     message_id,
     newAnime,
+    newepid.id,
     Cache_id
   );
 
@@ -409,15 +414,19 @@ export async function nullAnime(
 
 /**
  * 更新动漫链接
- * @param anime - 动漫对象
+ * @param client - TDLib 客户端
  * @param chat_id - 聊天ID
  * @param message_id - 消息ID
+ * @param anime - 动漫信息
+ * @param episode_id - 剧集ID
+ * @param cache_id - 缓存ID
  */
 async function updateAnimeLinks(
   client: Client,
   chat_id: number,
   message_id: number,
   anime: animeType,
+  episode_id: number,
   cache_id: number
 ) {
   const cacheItem = await getCacheItemById(cache_id);
@@ -465,7 +474,7 @@ async function updateAnimeLinks(
     logger.error(`更新后动漫信息不存在，ID: ${animeId}`);
     throw new Error("更新后动漫信息不存在");
   }
-  const animetext = AnimeText(new_Anime, cacheItem);
+  const animetext = AnimeText(new_Anime, cacheItem, episode_id);
 
   const animeMeg = await sendMessage(client, Number(env.data.ANIME_CHANNEL), {
     media: {
@@ -502,6 +511,7 @@ async function updateAnimeLinks(
 
   await updateAnimeBtdata(
     animeId,
+    episode_id,
     combineFansub(cacheItem.fansub),
     cacheItem.episode || "未知",
     {

@@ -98,12 +98,14 @@ export type anime = {
       duration?: string;
       /** 简介 */
       desc?: string;
-      /** 集数 */
+      /** 条目内的集数, 从1开始。非本篇剧集的此字段无意义 */
       ep: number;
-      /** 排序 */
+      /** 同类条目的排序和集数 */
       sort: number;
-      /** 章节 ID */
+      /** 章节id */
       id: number;
+      /** 类型 (本篇 = 0 特别篇 = 1 OP = 2 ED = 3 预告/宣传/广告 = 4 MAD = 5 其他 = 6)  */
+      type?: number;
       /** 动漫 ID */
       subject_id: number;
       /** 回复数量 */
@@ -135,7 +137,7 @@ export type anime = {
   updatedAt?: Date;
 };
 
-// 新增：单条 bt 条目的类型
+// 单条 bt 条目的类型
 export type BtEntry = {
   /** 动漫集数 */
   episode: string;
@@ -144,6 +146,8 @@ export type BtEntry = {
    * @deprecated 已被 Message 取代
    */
   TGMegLink?: string;
+  /** 章节ID */
+  episodeId?: number;
   /** 新消息详细 */
   Message?: messageType;
   /** 标题 */

@@ -91,9 +91,9 @@ export async function sendMegToNavAnime(client: Client, id: number) {
         navInfo?.message?.content?._ === "messagePhoto"
           ? navInfo.message.content.caption ?? ""
           : navInfo?.message?.content?._ === "messageText"
-          ? // 兼容极端情况：历史主消息是文本
+            ? // 兼容极端情况：历史主消息是文本
             navInfo.message.content.text ?? ""
-          : "";
+            : "";
 
       if (oldCaptionText !== newCaptionText) {
         await editMessageCaption(
@@ -331,7 +331,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     } finally {
       // 清理本地图片文件
       if (localImagePath) {
-        await fs.unlink(localImagePath).catch(() => {});
+        await fs.unlink(localImagePath).catch(() => { });
       }
     }
   }
@@ -389,33 +389,37 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
 /**
  * 发送动漫视频到动漫频道
+ * @param client - TDLib 客户端实例
  * @param anime - 数据库中动漫详细信息
  * @param item - 动漫在BT站中的信息
  * @param videoPath - 种子完整信息
- * @param newAnime - 是否为待发送的新动漫
+ * @param episodeId - 集数ID
+ * @param newAnime - 是否为待发送的新动漫默认值为 false
  */
 export async function sendMegToAnime(
   client: Client,
   anime: animeType,
   item: animeItem,
   videoPath: string,
+  episodeId?: number,
   newAnime = false
 ) {
-  const text = AnimeText(anime, item);
+
 
   await updateTorrentStatus(item.title, "上传中");
   const videoInfo = await extractVideoMetadata(videoPath);
 
-  if (newAnime) {
+  if (newAnime || !episodeId) {
     const animeMessage = await sendMessage(
       client,
       Number(env.data.ADMIN_GROUP_ID),
       {
-        text: AnimeText(anime, item),
+        text: item.title,
         topic_id: {
           _: "messageTopicForum",
           forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
         },
+        timeout: 3600,
         media: {
           video: {
             path: videoPath,
@@ -432,16 +436,17 @@ export async function sendMegToAnime(
       }
     );
     await updateTorrentStatus(item.title, "等待纠正");
-
-    fs.unlink(videoPath).catch(() => {});
-    fs.unlink(videoInfo.coverPath).catch(() => {});
+    fs.unlink(videoPath).catch(() => { });
+    fs.unlink(videoInfo.coverPath).catch(() => { });
     return animeMessage;
   }
+  const text = AnimeText(anime, item, episodeId);
   const animeMessage = await sendMessage(
     client,
     Number(env.data.ANIME_CHANNEL),
     {
       text: text,
+      timeout: 3600,
       media: {
         video: {
           path: videoPath,
@@ -458,7 +463,7 @@ export async function sendMegToAnime(
     }
   );
   await updateTorrentStatus(item.title, "完成");
-  fs.unlink(videoPath).catch(() => {});
-  fs.unlink(videoInfo.coverPath).catch(() => {});
+  fs.unlink(videoPath).catch(() => { });
+  fs.unlink(videoInfo.coverPath).catch(() => { });
   return animeMessage;
 }

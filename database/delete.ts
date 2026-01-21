@@ -1,6 +1,6 @@
 import logger from "@log/index.ts";
 import type { anime } from "../types/anime.ts";
-import { getDatabase } from "./initDb.ts";
+import { getDatabase } from "@db/index.ts";
 
 const db = await getDatabase();
 

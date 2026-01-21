@@ -1,6 +1,5 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import logger from "@log/index.ts";
 import type { RssAnimeItem } from "../../types/anime.ts";
 import { isTitleAllowed } from "./common.ts";
 
@@ -100,7 +99,6 @@ export async function fetchAcgnxRss() {
 
     return acgnxList;
   } catch (error) {
-    logger.error("Error fetching Acgnx data:", error);
     throw error;
   }
 }
