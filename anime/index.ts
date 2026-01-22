@@ -42,7 +42,7 @@ export async function anime(client: Client) {
         const validItems = rss.filter(
           (item) => item && item.title && item.pubDate && item.type
         );
-        await processItemsWithConcurrency(client, validItems, 1)
+        await processItemsWithConcurrency(client, validItems, 3)
       }
       await smartDelayWithInterval();
     } catch (error) {
