@@ -553,6 +553,7 @@ export async function promptAdminConfirmAnimeEpisodes(client: Client, anime: ani
         },
       },
     });
+    return;
   }
   await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
     topic_id: {
