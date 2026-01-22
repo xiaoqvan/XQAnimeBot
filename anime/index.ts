@@ -10,7 +10,7 @@ import {
 } from "./get.ts";
 
 import { updateAnimeBtdata } from "../database/update.ts";
-import { addCacheItem, addTorrent } from "../database/create.ts";
+import { addCacheItem, addTorrent, saveAnime } from "../database/create.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMessage } from "@TDLib/function/message.ts";
 import { fetchMergedRss } from "./rss/index.ts";
@@ -263,8 +263,6 @@ async function handleNewAnime(client: Client, item: animeItem) {
   }
   const anime = await buildAndSaveAnimeFromInfo(searchAnime.data[0], true);
 
-
-
   // 下载种子文件并获取下载路径
   const torrent = await downloadAndValidateTorrent(item);
   if (!torrent) return;
@@ -278,8 +276,9 @@ async function handleNewAnime(client: Client, item: animeItem) {
   removeTorrentAndData(torrent.id).catch();
   if (!animeMeg) {
     logger.error("发送动漫消息失败");
-    return;
+    throw new Error("发送动漫消息失败");
   }
+
 
   const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
 
@@ -330,13 +329,54 @@ async function handleNewAnime(client: Client, item: animeItem) {
 export async function handleExistingAnime(client: Client, item: animeItem, anime: animeType) {
   const matchResult = matchBangumiEpisode(anime, item.episode);
   await addTorrent(item.magnet, "等待下载", item.title);
+
+  const torrent = await downloadAndValidateTorrent(item);
+
   if (matchResult.status !== "MATCHED") {
+    const animeMeg = await sendMegToCache(
+      client,
+      anime,
+      item,
+      torrent.raw.content_path,
+    );
+    if (!animeMeg) {
+      logger.error("发送动漫消息失败");
+      throw new Error("发送动漫消息失败");
+    }
+    const canimeid = await saveAnime(anime, true);
+    const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
     const Cache_id = await addCacheItem(item);
+    await updateAnimeBtdata(
+      canimeid,
+      undefined,
+      combineFansub(item.fansub),
+      item.episode || "未知",
+      {
+        chat_id: animeMeg.chat_id,
+        message_id: animeMeg.id,
+        thread_id: animeMeg.topic_id
+          ? animeMeg.topic_id._ === "messageTopicForum"
+            ? animeMeg.topic_id.forum_topic_id
+            : 0
+          : 0,
+        link: animeLink.link,
+      },
+      item.title,
+      item.source,
+      item.names,
+      animeMeg.content._ === "messageVideo"
+        ? animeMeg.content.video.video.remote.id
+        : undefined,
+      animeMeg.content._ === "messageVideo"
+        ? animeMeg.content.video.video.remote.unique_id
+        : undefined,
+      Cache_id,
+      true
+    );
+
     await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
     return;
   }
-
-  const torrent = await downloadAndValidateTorrent(item);
   const animeMeg = await sendMegToAnime(
     client,
     anime,
