@@ -31,7 +31,7 @@ export async function addCacheItem(item: animeItem) {
 }
 
 interface SequenceConfig {
-  key: string;
+  type: string;
   seq: number;
 }
 
@@ -41,13 +41,12 @@ interface SequenceConfig {
  */
 async function getNextSequence(name: string): Promise<number> {
   try {
-    // 使用 key 字段保存序列，_id 由 MongoDB 生成为 ObjectId。
-    // upsert 时确保设置 key 字段。
+    // 使用 type 字段保存序列，_id 由 MongoDB 生成为 ObjectId。
     const result = await db
       .collection<SequenceConfig>("config")
       .findOneAndUpdate(
-        { key: name },
-        { $inc: { seq: 1 }, $setOnInsert: { key: name } }, // 自增并在插入时设置 key
+        { type: name },
+        { $inc: { seq: 1 }, $setOnInsert: { type: name } },
         {
           upsert: true, // 文档不存在就创建
           returnDocument: "after", // 返回更新后的文档
@@ -61,7 +60,7 @@ async function getNextSequence(name: string): Promise<number> {
     // 兜底查询，兼容旧格式或异常情况
     const doc = await db
       .collection<SequenceConfig>("config")
-      .findOne({ key: name });
+      .findOne({ type: name });
 
     if (doc?.seq !== undefined) {
       return doc.seq;
