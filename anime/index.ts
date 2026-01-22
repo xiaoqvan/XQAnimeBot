@@ -14,7 +14,7 @@ import { addCacheItem, addTorrent, saveAnime } from "../database/create.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMessage } from "@TDLib/function/message.ts";
 import { fetchMergedRss } from "./rss/index.ts";
-import { sendMegToAnime, sendMegToCache } from "./sendAnime.ts";
+import { sendMegToAnime, sendMegToCache, sendMegToNavAnime } from "./sendAnime.ts";
 import { env } from "../database/initDb.ts";
 
 import type {
@@ -418,6 +418,8 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
       ? animeMeg.content.video.video.remote.unique_id
       : undefined
   );
+  await sendMegToNavAnime(client, anime.id);
+  return;
 }
 
 /** 提示管理员审核动漫信息
