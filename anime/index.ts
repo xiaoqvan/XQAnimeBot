@@ -373,7 +373,7 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
       Cache_id,
       true
     );
-
+    await removeTorrentAndData(torrent.id);
     await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
     return;
   }
