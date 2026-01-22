@@ -376,7 +376,7 @@ export function AnimeText(anime: animeType, item: animeItem, episodeId: number):
           )}`
       )
       .join(" ")}${anime.navMessage?.link || anime.navMessageLink
-        ? ` \n[导航](${anime.navMessage?.link || anime.navMessageLink}) | [订阅](${botStartUrl}collection-${anime.id}) | [看过](${botStartUrl}eplook-${episodeId}) | [评论](https://bgm.tv/ep/${episodeId})`
+        ? ` \n[导航](${anime.navMessage?.link || anime.navMessageLink}) | [收藏](${botStartUrl}collection-${anime.id}) | [看过](${botStartUrl}eplook-${episodeId}) | [评论](https://bgm.tv/ep/${episodeId})`
         : ""
     }`;
 }

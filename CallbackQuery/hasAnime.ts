@@ -347,7 +347,6 @@ export async function nullAnime(
     item,
     Torrent?.raw.content_path,
     newepid.id,
-    true
   );
 
   await removeTorrentAndData(Torrent.id);
@@ -412,6 +411,142 @@ export async function nullAnime(
   });
 }
 
+/**
+ * 当前匹配错误进行纠正
+ */
+export async function nullEp(
+  client: Client,
+  chat_id: number,
+  sender_user_id: number,
+  message_id: number,
+  queryId: string,
+  raw: string
+) {
+  const query = raw.includes("?") ? raw.split("?")[1] : raw;
+  const params = new URLSearchParams(query);
+  const id = Number(params.get("id"));
+  const Cache_id = Number(params.get("c"));
+
+  const sender_id: messageSenderUser = {
+    _: "messageSenderUser",
+    user_id: sender_user_id,
+  };
+
+  const anime = await getAnimeById(id, true);
+
+  if (!anime) {
+    await answerCallbackQuery(client, queryId, {
+      text: `失败出现错误`,
+      show_alert: false,
+    });
+    return;
+  }
+
+  await editMessageText(client, chat_id, message_id, {
+    text: `${await chatoruserMdown(
+      client,
+      sender_id,
+      true
+    )} ，请回复这一条消息提供正确的缓存动漫 id 或 bgm.tv 的章节链接\n\n回复 /cancel 取消`,
+  });
+
+  let status = null;
+  let newAnime = null;
+  let parsedId = null;
+
+  for await (const update of client.iterUpdates()) {
+    if (
+      update._ === "updateNewMessage" &&
+      update.message.content._ === "messageText" &&
+      update.message.chat_id === chat_id &&
+      update.message.reply_to?._ === "messageReplyToMessage" &&
+      update.message.reply_to?.message_id === message_id
+    ) {
+      deleteMessage(client, chat_id, update.message.id, true);
+      const rawText = update.message.content?.text?.text;
+      if (!rawText) continue; // 非文本消息忽略
+
+      const text = rawText.trim();
+      const cmd = text.split(/\s+/)[0].toLowerCase();
+
+      if (cmd === "/cancel") {
+        await editMessageText(client, chat_id, message_id, {
+          text: "已取消",
+        });
+        status = "canceled";
+        break;
+      }
+
+      // 支持纯数字 ID 或 bgm 链接
+
+      if (/^\d+$/.test(text)) {
+        parsedId = Number(text);
+      } else {
+        const m = text.match(
+          /https?:\/\/(?:bgm\.tv|bangumi\.tv)\/ep\/(\d+)(?:\/|$)/i
+        );
+        if (m) parsedId = Number(m[1]);
+      }
+
+      if (!parsedId) {
+        await editMessageText(client, chat_id, message_id, {
+          text: "未识别的格式，请提供 ID（例如：502272）或 bgm 链接，或者使用 /cancel 取消",
+        });
+        continue;
+      }
+      newAnime = await getEpisodeById(parsedId).catch(() => null);
+      const Subject = await getSubjectById(newAnime.subject_id).catch(() => null);
+
+      if (!Subject) {
+        await editMessageText(client, chat_id, message_id, {
+          text: `未找到相关的动漫信息，请确认 ID: ${parsedId} 是否正确。\n请重新提供一个 ID 或 bgm 链接，或者使用 /cancel 取消`,
+        });
+        continue;
+      }
+      newAnime = await buildAndSaveAnimeFromInfo(Subject, false);
+      break;
+    }
+  }
+  if (status === "canceled") {
+    await answerCallbackQuery(client, queryId, {
+      text: `已取消`,
+      show_alert: false,
+    });
+    return;
+  }
+  if (!newAnime || !parsedId) {
+    await answerCallbackQuery(client, queryId, {
+      text: `失败出现错误newAnime不存在`,
+      show_alert: false,
+    });
+    return;
+  }
+  newAnime.btdata = anime.btdata;
+
+  const result = await updateAnimeLinks(
+    client,
+    chat_id,
+    message_id,
+    newAnime,
+    parsedId,
+    Cache_id
+  );
+
+  if (!result) {
+    await answerCallbackQuery(client, queryId, {
+      text: `失败出现错误`,
+      show_alert: false,
+    });
+    return;
+  }
+
+  await answerCallbackQuery(client, queryId, {
+    text: `成功更新动漫信息`,
+    show_alert: false,
+  });
+
+  await deleteCacheAnime(newAnime.id, Cache_id);
+}
 /**
  * 更新动漫链接
  * @param client - TDLib 客户端

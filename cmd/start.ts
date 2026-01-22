@@ -53,7 +53,7 @@ export default async function start(client: Client, message: message) {
                 const me = await getMe(access.access_token);
                 sendMessage(client, message.chat_id, {
                     reply_to_message_id: message.id,
-                    text: `账户授权成功！\n账户名：${me.nickname}\n用户ID：${me.id}\n使用 /exitbangumi 可以退出登录。\n\n如果需要更改绑定的账户,使用 /exitbangumi 退出后重新授权流程即可`,
+                    text: `账户授权成功！\n账户名：${me.nickname}\n用户ID：${me.id}\n你可以在 https://bgm.tv/ 中管理你的进度\n\n使用 /exitbangumi 可以退出登录。\n\n如果需要更改绑定的账户,使用 /exitbangumi 退出后重新授权流程即可`,
                 });
             } catch (error) {
                 sendMessage(client, message.chat_id, {

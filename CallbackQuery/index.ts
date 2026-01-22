@@ -1,5 +1,5 @@
 import logger from "@log/index.ts";
-import { falseAnime, nullAnime, trueAnime } from "./hasAnime.ts";
+import { falseAnime, nullAnime, trueAnime, nullEp } from "./hasAnime.ts";
 import type { updateNewCallbackQuery as Td$updateNewCallbackQuery } from "tdlib-types";
 import type { Client } from "tdl";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
@@ -63,6 +63,17 @@ export default async function updateNewCallbackQuery(
       }
       case "N_anime": {
         await nullAnime(
+          client,
+          chat_id,
+          sender_user_id,
+          message_id,
+          queryId,
+          raw
+        );
+        break;
+      }
+      case "N_ep": {
+        await nullEp(
           client,
           chat_id,
           sender_user_id,

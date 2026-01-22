@@ -14,7 +14,7 @@ import { addCacheItem, addTorrent } from "../database/create.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMessage } from "@TDLib/function/message.ts";
 import { fetchMergedRss } from "./rss/index.ts";
-import { sendMegToAnime } from "./sendAnime.ts";
+import { sendMegToAnime, sendMegToCache } from "./sendAnime.ts";
 import { env } from "../database/initDb.ts";
 
 import type {
@@ -42,7 +42,7 @@ export async function anime(client: Client) {
         const validItems = rss.filter(
           (item) => item && item.title && item.pubDate && item.type
         );
-        await processItemsWithConcurrency(client, validItems, 3)
+        await processItemsWithConcurrency(client, validItems, 1)
       }
       await smartDelayWithInterval();
     } catch (error) {
@@ -263,25 +263,19 @@ async function handleNewAnime(client: Client, item: animeItem) {
   }
   const anime = await buildAndSaveAnimeFromInfo(searchAnime.data[0], true);
 
-  const matchResult = matchBangumiEpisode(anime, item.episode);
-  if (matchResult.status !== "MATCHED") {
-    await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
-    return;
-  }
+
 
   // 下载种子文件并获取下载路径
   const torrent = await downloadAndValidateTorrent(item);
   if (!torrent) return;
 
-  const animeMeg = await sendMegToAnime(
+  const animeMeg = await sendMegToCache(
     client,
     anime,
     item,
     torrent.raw.content_path,
-    matchResult.episodeId,
-    true
   );
-
+  removeTorrentAndData(torrent.id).catch();
   if (!animeMeg) {
     logger.error("发送动漫消息失败");
     return;
@@ -289,9 +283,12 @@ async function handleNewAnime(client: Client, item: animeItem) {
 
   const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
 
+
+
+
   await updateAnimeBtdata(
     anime.id,
-    matchResult.episodeId,
+    undefined,
     combineFansub(item.fansub),
     item.episode || "未知",
     {
@@ -316,9 +313,13 @@ async function handleNewAnime(client: Client, item: animeItem) {
     Cache_id,
     true
   );
-
+  const matchResult = matchBangumiEpisode(anime, item.episode);
+  if (matchResult.status !== "MATCHED") {
+    await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
+    return;
+  }
   // 提示管理员确认动漫信息
-  await promptAdminConfirmAnime(client, anime, matchResult.episodeId, searchAnime, Cache_id, item);
+  await promptAdminConfirmAnime(client, anime, matchResult.episodeId, Cache_id, item);
   return;
 }
 
@@ -424,7 +425,6 @@ export async function promptAdminConfirmAnime(
   client: Client,
   anime: animeType,
   episodeId: number,
-  bgmInfo: any,
   cacheId: number,
   item: animeItem
 ) {
@@ -436,8 +436,8 @@ export async function promptAdminConfirmAnime(
       _: "messageTopicForum",
       forum_topic_id: Number(env.data.NAV_GROUP_THREAD_ID),
     },
-    text: `当前番剧为${item.title}\n\n搜索到的动漫信息：\n\n**名称：** [${bgmInfo.name_cn || bgmInfo.name
-      }](https://bgm.tv/subject/${bgmInfo.id})\n**ID：** ${bgmInfo.id
+    text: `当前番剧为${item.title}\n\n搜索到的动漫信息：\n\n**名称：** [${anime.name_cn || anime.name
+      }](https://bgm.tv/subject/${anime.id})\n**ID：** ${anime.id
       }\n剧集: [${epSort}](https://bgm.tv/ep/${episodeId})\n\n请确认是否正确`,
     link_preview: true,
     invoke: {
@@ -481,6 +481,37 @@ export async function promptAdminConfirmAnime(
  */
 export async function promptAdminConfirmAnimeEpisodes(client: Client, anime: animeType, cacheId: number, item: animeItem, matchResult: EpisodeMatchResult) {
   if (matchResult.status === "MATCHED") return
+  if (matchResult.status === "DATE_MISMATCH") {
+    await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
+      topic_id: {
+        _: "messageTopicForum",
+        forum_topic_id: Number(env.data.NAV_GROUP_THREAD_ID),
+      },
+      text: `当前番剧为${item.title}\n\n动漫信息：\n\n**名称：** [${anime.name_cn || anime.name
+        }](https://bgm.tv/subject/${anime.id})\n**ID：** ${anime.id
+        }\n匹配集数: ${item.episode}\n出现问题：${matchResult.msg}\n\n请确认是否正确`,
+      link_preview: true,
+      invoke: {
+        reply_markup: {
+          _: "replyMarkupInlineKeyboard",
+          rows: [
+            [
+              {
+                _: "inlineKeyboardButton",
+                text: "提供正确",
+                type: {
+                  _: "inlineKeyboardButtonTypeCallback",
+                  data: Buffer.from(
+                    `Y_anime?id=${matchResult.episodeId}&c=${cacheId}`
+                  ).toString("base64"),
+                },
+              },
+            ],
+          ],
+        },
+      },
+    });
+  }
   await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
     topic_id: {
       _: "messageTopicForum",
@@ -488,7 +519,7 @@ export async function promptAdminConfirmAnimeEpisodes(client: Client, anime: ani
     },
     text: `当前番剧为${item.title}\n\n动漫信息：\n\n**名称：** [${anime.name_cn || anime.name
       }](https://bgm.tv/subject/${anime.id})\n**ID：** ${anime.id
-      }\n匹配集数: ${item.episode}\n出现问题：${matchResult.msg}\n\n请确认是否正确`,
+      }\n匹配集数: ${item.episode}\n出现问题：${matchResult.msg}\n\n请提供正确的集数id`,
     link_preview: true,
     invoke: {
       reply_markup: {
@@ -497,21 +528,11 @@ export async function promptAdminConfirmAnimeEpisodes(client: Client, anime: ani
           [
             {
               _: "inlineKeyboardButton",
-              text: "正确",
+              text: "提供正确",
               type: {
                 _: "inlineKeyboardButtonTypeCallback",
                 data: Buffer.from(
-                  `Y_EP?id=${anime.id}&c=${cacheId}`
-                ).toString("base64"),
-              },
-            },
-            {
-              _: "inlineKeyboardButton",
-              text: "错误",
-              type: {
-                _: "inlineKeyboardButtonTypeCallback",
-                data: Buffer.from(
-                  `F_EP?id=${anime.id}&c=${cacheId}`
+                  `N_ep?c=${cacheId}=id${anime.id}`
                 ).toString("base64"),
               },
             },

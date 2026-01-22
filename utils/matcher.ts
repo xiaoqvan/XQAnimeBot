@@ -4,7 +4,7 @@ import type { anime } from '../types/anime.d.ts';
 export type EpisodeMatchResult =
     | { status: 'MATCHED'; episodeId: number; ep: number; sort: number } // 成功匹配到章节
     | { status: 'NOT_FOUND_IN_DB'; msg: string } // 集数在列表里找不到（如第13集不在12集的列表里）
-    | { status: 'DATE_MISMATCH'; msg: string; diffDays: number } // 严重的时间不符
+    | { status: 'DATE_MISMATCH'; msg: string; diffDays: number; episodeId: number } // 严重的时间不符
     | { status: 'INVALID_INPUT'; msg: string }; // BT标题没解析出集数
 
 /**
@@ -102,7 +102,8 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
                 return {
                     status: 'DATE_MISMATCH',
                     msg: `放送日期不在允许区间内（${formatDate(earliest)} ~ ${formatDate(latest)}）: ${formatDate(matchedDate)}`,
-                    diffDays: diff
+                    diffDays: diff,
+                    episodeId: matchedEp.id
                 };
             }
         } else {
@@ -112,7 +113,8 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
                 return {
                     status: 'DATE_MISMATCH',
                     msg: `放送日期在未来: ${formatDate(matchedDate)}`,
-                    diffDays: Math.ceil(diffHours / 24)
+                    diffDays: Math.ceil(diffHours / 24),
+                    episodeId: matchedEp.id
                 };
             }
         }

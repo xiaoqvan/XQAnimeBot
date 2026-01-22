@@ -394,50 +394,16 @@ export async function sendMegToNavAnime(client: Client, id: number) {
  * @param item - 动漫在BT站中的信息
  * @param videoPath - 种子完整信息
  * @param episodeId - 集数ID
- * @param newAnime - 是否为待发送的新动漫默认值为 false
  */
 export async function sendMegToAnime(
   client: Client,
   anime: animeType,
   item: animeItem,
   videoPath: string,
-  episodeId?: number,
-  newAnime = false
+  episodeId: number,
 ) {
   await updateTorrentStatus(item.title, "上传中");
   const videoInfo = await extractVideoMetadata(videoPath);
-
-  if (newAnime || !episodeId) {
-    const animeMessage = await sendMessage(
-      client,
-      Number(env.data.ADMIN_GROUP_ID),
-      {
-        text: item.title,
-        topic_id: {
-          _: "messageTopicForum",
-          forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
-        },
-        timeout: 3600,
-        media: {
-          video: {
-            path: videoPath,
-          },
-          cover: {
-            path: videoInfo.coverPath,
-          },
-          width: videoInfo.width,
-          height: videoInfo.height,
-          duration: Math.floor(videoInfo.duration),
-          supports_streaming: true,
-          has_spoiler: anime?.r18 === true || false,
-        },
-      }
-    );
-    await updateTorrentStatus(item.title, "等待纠正");
-    fs.unlink(videoPath).catch(() => { });
-    fs.unlink(videoInfo.coverPath).catch(() => { });
-    return animeMessage;
-  }
   const text = AnimeText(anime, item, episodeId);
   const animeMessage = await sendMessage(
     client,
@@ -461,6 +427,52 @@ export async function sendMegToAnime(
     }
   );
   await updateTorrentStatus(item.title, "完成");
+  fs.unlink(videoPath).catch(() => { });
+  fs.unlink(videoInfo.coverPath).catch(() => { });
+  return animeMessage;
+}
+
+/** 发送动漫视频到缓存频道
+ * @param client - TDLib 客户端实例
+ * @param anime - 数据库中动漫详细信息
+ * @param item - 动漫在BT站中的信息
+ * @param videoPath - 种子完整信息
+ */
+export async function sendMegToCache(
+  client: Client,
+  anime: animeType,
+  item: animeItem,
+  videoPath: string,
+) {
+  await updateTorrentStatus(item.title, "上传中");
+  const videoInfo = await extractVideoMetadata(videoPath);
+
+  const animeMessage = await sendMessage(
+    client,
+    Number(env.data.ADMIN_GROUP_ID),
+    {
+      text: item.title,
+      topic_id: {
+        _: "messageTopicForum",
+        forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
+      },
+      timeout: 3600,
+      media: {
+        video: {
+          path: videoPath,
+        },
+        cover: {
+          path: videoInfo.coverPath,
+        },
+        width: videoInfo.width,
+        height: videoInfo.height,
+        duration: Math.floor(videoInfo.duration),
+        supports_streaming: true,
+        has_spoiler: anime?.r18 === true || false,
+      },
+    }
+  );
+  await updateTorrentStatus(item.title, "等待纠正");
   fs.unlink(videoPath).catch(() => { });
   fs.unlink(videoInfo.coverPath).catch(() => { });
   return animeMessage;

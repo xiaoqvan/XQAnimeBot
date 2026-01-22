@@ -8,12 +8,10 @@ import type { Torrent } from "../types/torrent.js";
 const QBclient = await getQBClient();
 
 const seedingStates = [
-  'uploading',
+  'stoppedUP',
   'stalledUP',
-  'queuedUP',
-  'forcedUP',
-  'checkingUP',
-  'pausedUP'
+  "forcedUP",
+  "uploading"
 ];
 
 /**
@@ -91,35 +89,21 @@ export async function downloadAndReturnPath(
   const hash = infoHash;
 
   if (!hash) {
-    QBclient.removeTorrent(magnetLink);
+    qbRequestWithRetry(() => QBclient.removeTorrent(magnetLink));
   }
 
   let torrent: Torrent | undefined;
 
   try {
     const data = await qbRequestWithRetry(() => QBclient.getAllData());
-    torrent =
-      data && data.torrents
-        ? data.torrents.find((t) => {
-          try {
-            const candidateHash =
-              t?.raw?.hash ||
-              t?.raw?.infoHash;
-            return !!candidateHash && candidateHash === hash;
-          } catch {
-            return false;
-          }
-        })
-        : undefined;
-
+    torrent = data.torrents.find(t => t.id === hash) ?? torrent;
     if (torrent) {
       logger.debug(`已存在 hash=${hash} 的种子，跳过添加，直接开始判断状态`);
     } else {
-      // 使用重试封装来调用 QBclient.addMagnet，防止偶发超时导致抛出
+      // 添加种子
       await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
     }
   } catch (err) {
-    // 若获取列表失败则继续尝试添加（以防万一），并记录警告
     logger.warn(
       `检查现有种子时出错，将尝试添加磁力链接: ${err instanceof Error ? err.message : err
       }`
@@ -133,17 +117,7 @@ export async function downloadAndReturnPath(
       // 使用重试封装获取全部数据
       const data = await qbRequestWithRetry(() => QBclient.getAllData());
       torrent =
-        data && data.torrents
-          ? data.torrents.find((t) => {
-            try {
-              if (t && t.raw && t.raw.hash === hash) {
-                return t as Torrent;
-              }
-            } catch {
-              return undefined;
-            }
-          })
-          : undefined;
+        (data && data.torrents.find((t) => t.id === hash)) ?? torrent
       if (torrent) break;
     } catch (err) {
       logger.warn(
@@ -167,7 +141,7 @@ export async function downloadAndReturnPath(
       continue;
     }
     const data = await qbRequestWithRetry(() => QBclient.getAllData());
-    torrent = data.torrents.find((t) => t.id === torrentId) || torrent;
+    torrent = data.torrents.find((t) => t.id === torrentId) ?? torrent;
 
     // 检查多种可能的位置上的 has_metadata 字段
     const raw = torrent?.raw || torrent;
@@ -187,18 +161,21 @@ export async function downloadAndReturnPath(
   await updateTorrentStatus(title, "下载中");
 
   // 2. 等待下载完成
-  while (torrent && !torrent.isCompleted && seedingStates.includes(torrent.state)) {
-    await wait(10000); // 每10秒检查一次
+  while (torrent && (!torrent.isCompleted && !seedingStates.includes(torrent.raw.state))) {
+    await wait(5000); // 每10秒检查一次
     const data = await QBclient.getAllData();
-    // 兼容返回结构，若为空则保留上次的 torrent 对象
-    torrent =
-      data.torrents.find((t) => {
-        if (torrent && t.id === torrent.id) {
-          return t as Torrent;
-        } else return torrent;
-      }) || torrent;
+    torrent = data.torrents.find(t => t.id === torrent?.id) ?? torrent;
+    logger.debug(
+      `\x1b[36m[QBclient][${torrent.id}][${title}][${torrent.raw.state}][${torrent.isCompleted ? "完成" : "未完成"}]\x1b[0m 下载中... 进度: ${(
+        (torrent.raw.progress || 0) * 100
+      ).toFixed(2)}%`
+    );
   }
-
+  logger.debug(
+    `\x1b[36m[QBclient][${torrent.id}][${title}][${torrent.raw.state}][${torrent.isCompleted ? "完成" : "未完成"}]\x1b[0m 下载完成... 进度: ${(
+      (torrent.raw.progress || 0) * 100
+    ).toFixed(2)}%`
+  );
   await updateTorrentStatus(title, "下载完成");
   return torrent as Torrent;
 }
