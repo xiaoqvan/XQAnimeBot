@@ -419,28 +419,41 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   猎户发布组: (title: string) => {
     // 支持 [猎户压制部]、[猎户手抄部]、[学院部＆不鸽] 等
     let t = title;
-    
+
     // 移除包含"猎户"的字幕组标识
     t = t.replace(/^\[[^\]]*猎户[^\]]*\]\s*/, "");
-    
+
     // 如果没有匹配到猎户，尝试移除联合字幕组标识（包含＆或&）
     if (t === title) {
       t = t.replace(/^\[[^\]]*[＆&][^\]]*\]\s*/, "");
     }
-    
+
+    // 移除常见来源域名尾部（例如 bgm.tv、bilibili 等），避免被当作名称
+    t = t.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
+
     // 提取到第一个 [集数] 或尾部技术标记前的内容作为番剧名称
     // 使用更精确的模式：匹配 [数字] 或 [分辨率] 或 [语言标记] 等
     t = t.split(/\s*\[\d{1,3}(?:-\d{1,3})?\]|\s*\[\d{3,4}p?\]|\s*\[简日内嵌\]|\s*\[\d{4}年\d{1,2}月番\]/i)[0].trim();
-    
+
     // 移除尾部可能残留的技术标记（防御性处理）
     t = t.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
-    
-    // 按 / 分割多个名称
-    const names = t
-      .split(/\s*\/\s*/)
+
+    // 按 / 或全角／ 分割多个名称
+    let names = t
+      .split(/\s*\/\s*|\s*／\s*/)
       .map((s) => s.trim())
       .filter(Boolean);
-      
+
+    // 回退策略：如果未解析到名称，则尽量从标题中取第一个[]之后、下一个[]之前的文本
+    if (names.length === 0) {
+      let fallback = title.replace(/^\[[^\]]+\]\s*/, "").split(/\s*\[/)[0].trim();
+      fallback = fallback.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
+      names = fallback
+        .split(/\s*\/\s*|\s*／\s*/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+    }
+
     return sortNamesByPriority(names, title);
   },
   // 奇怪机翻组：字幕组后直接是番剧名，用 / 分割，到 - 集数前，支持检索用标记
