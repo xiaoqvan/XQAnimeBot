@@ -575,7 +575,7 @@ export async function promptAdminConfirmAnimeEpisodes(client: Client, anime: ani
               type: {
                 _: "inlineKeyboardButtonTypeCallback",
                 data: Buffer.from(
-                  `N_ep?c=${cacheId}=id${anime.id}`
+                  `N_ep?c=${cacheId}&id=${anime.id}`
                 ).toString("base64"),
               },
             },
