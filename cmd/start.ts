@@ -104,7 +104,7 @@ export default async function start(client: Client, message: message) {
                 break;
             }
 
-            const epUpdated = await updateEpisodeCollectionInfo(epResult.access_token, Number(episodeId), 0);
+            const epUpdated = await updateEpisodeCollectionInfo(epResult.access_token, Number(episodeId), 2);
             if (!epUpdated) {
                 sendMessage(client, message.chat_id, {
                     reply_to_message_id: message.id,
