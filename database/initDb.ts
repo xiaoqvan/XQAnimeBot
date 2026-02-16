@@ -38,6 +38,34 @@ async function initdb() {
     throw err;
   }
 
+  // 为 anime 集合创建搜索索引
+  try {
+    const anime = db.collection("anime");
+
+    // 为 name 字段创建索引（用于文本搜索）
+    await anime.createIndex(
+      { name: 1 },
+      { name: "name_idx" }
+    );
+
+    // 为 name_cn 字段创建索引（用于文本搜索）
+    await anime.createIndex(
+      { name_cn: 1 },
+      { name: "name_cn_idx" }
+    );
+
+    // 为 names 数组字段创建索引（用于文本搜索）
+    await anime.createIndex(
+      { names: 1 },
+      { name: "names_idx" }
+    );
+
+    logger.info("anime 集合索引创建成功");
+  } catch (err) {
+    logger.error("为 anime 创建索引时出错", err);
+    throw err;
+  }
+
   return db;
 }
 

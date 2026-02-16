@@ -130,9 +130,18 @@ export async function getCacheItemById(id: number) {
 }
 
 /**
+ * 转义正则表达式特殊字符
+ * @param str - 要转义的字符串
+ * @returns 转义后的字符串
+ */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
  * 搜索动漫信息
  * @param keyword - 搜索关键词
- * @returns 搜索结果数组，包含匹配的动漫信息
+ * @returns 搜索结果数组，包含匹配的动漫信息，限制返回前20条
  * @throws 数据库查询错误时抛出异常
  */
 export async function searchAnime(key: string) {
@@ -141,8 +150,6 @@ export async function searchAnime(key: string) {
   }
 
   try {
-    let searchQuery;
-
     // 按关键词模糊搜索
     const keyword = String(key).trim();
 
@@ -150,31 +157,56 @@ export async function searchAnime(key: string) {
       throw new Error("关键词搜索至少需要2个字符");
     }
 
+    // 转义正则特殊字符，防止正则注入
+    const escapedKeyword = escapeRegExp(keyword);
+
     // 创建正则表达式进行模糊匹配
-    const regex = new RegExp(keyword, "i"); // 'i' 表示不区分大小写
+    const regex = new RegExp(escapedKeyword, "i"); // 'i' 表示不区分大小写
 
-    searchQuery = {
-      $or: [
-        { name: { $regex: regex } },
-        { name_cn: { $regex: regex } },
-        { names: { $regex: regex } },
-      ],
-    };
-
-    // 查询动漫，只返回需要的字段
-    const animes = await db
+    // 先搜索 name 和 name_cn
+    let animes = await db
       .collection("anime")
-      .find(searchQuery, {
-        projection: {
-          id: 1,
-          name: 1,
-          name_cn: 1,
-          names: 1, // 需要参与查询但不显示
-          navMessage: 1, // 新版导航频道消息
-          navMessageLink: 1, // 频道消息链接（备用）
+      .find(
+        {
+          $or: [
+            { name: { $regex: regex } },
+            { name_cn: { $regex: regex } },
+          ],
         },
-      })
+        {
+          projection: {
+            id: 1,
+            name: 1,
+            name_cn: 1,
+            navMessage: 1, // 新版导航频道消息
+            navMessageLink: 1, // 频道消息链接（备用）
+          },
+        }
+      )
+      .limit(20) // 限制返回前20条
       .toArray();
+
+    // 如果在 name 和 name_cn 中没找到，再搜索 names 数组
+    if (animes.length === 0) {
+      animes = await db
+        .collection("anime")
+        .find(
+          {
+            names: { $regex: regex },
+          },
+          {
+            projection: {
+              id: 1,
+              name: 1,
+              name_cn: 1,
+              navMessage: 1,
+              navMessageLink: 1,
+            },
+          }
+        )
+        .limit(20) // 限制返回前20条
+        .toArray();
+    }
 
     return animes;
   } catch (error) {
