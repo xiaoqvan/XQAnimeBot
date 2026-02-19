@@ -2,6 +2,7 @@ import axios from "axios";
 import * as cheerio from "cheerio";
 import logger from "@log/index.ts";
 import type { bangumiAnime, bangumiSearchResult } from "../types/anime.d.ts";
+import { env } from "../database/initDb.ts";
 
 /**
  * 重试请求函数
@@ -59,6 +60,7 @@ export async function animeinfo(keyword: string) {
       {
         headers: {
           "User-Agent": "xiaoqvan/my-private-project",
+          Authorization: `Bearer ${env.data.BG_ACCESS_TOKEN}`,
         },
       }
     );
@@ -81,6 +83,7 @@ export async function getSubjectById(
     return await axios.get(`https://api.bgm.tv/v0/subjects/${id}`, {
       headers: {
         "User-Agent": "xiaoqvan/my-private-project",
+        Authorization: `Bearer ${env.data.BG_ACCESS_TOKEN}`,
       },
     });
   });
@@ -195,6 +198,7 @@ export async function getEpisodeInfo(id: number | string) {
       {
         headers: {
           "User-Agent": "xiaoqvan/my-private-project",
+          Authorization: `Bearer ${env.data.BG_ACCESS_TOKEN}`,
         },
       }
     );

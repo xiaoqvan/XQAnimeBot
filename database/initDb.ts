@@ -2,10 +2,14 @@ import logger from "@log/index.ts";
 import { getDatabase } from "@db/index.ts";
 import { JSONFilePreset } from "lowdb/node";
 import type { animeenv } from "../types/json.d.ts";
-import setjons from "./set.json?file";
+import { fileURLToPath } from "url";
 
+
+const configFile = fileURLToPath(
+  new URL("./set.json", import.meta.url)
+);
 // 初始化，set.json 文件不存在时会用默认值创建
-export const env = await JSONFilePreset<animeenv>(setjons, {
+export const env = await JSONFilePreset<animeenv>(configFile, {
   QBITTORRENT_HOST: "",
   QBITTORRENT_USERNAME: "",
   QBITTORRENT_PASSWORD: "",
@@ -17,6 +21,7 @@ export const env = await JSONFilePreset<animeenv>(setjons, {
   ERROR_GROUP_THREAD_ID: 0,
   BG_APP_ID: "",
   BG_APP_SECRET: "",
+  BG_ACCESS_TOKEN: ""
 });
 
 /**

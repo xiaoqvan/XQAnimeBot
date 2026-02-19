@@ -10,4 +10,5 @@ export interface animeenv {
   ERROR_GROUP_THREAD_ID: number;
   BG_APP_ID: string;
   BG_APP_SECRET: string;
+  BG_ACCESS_TOKEN: string;
 }
