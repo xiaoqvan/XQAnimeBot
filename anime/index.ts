@@ -99,7 +99,7 @@ async function processItemsWithConcurrency(
 /**
  * 3.处理单个RSS动漫项
  * @param client - TDLib 客户端实例
- * @param {Object} item - 待处理的动漫项
+ * @param item - 待处理的动漫项
  */
 async function handleRssAnimeItem(client: Client, item: RssAnimeItem) {
   // 检查种子是否已存在
@@ -271,9 +271,9 @@ async function handleNewAnime(client: Client, item: animeItem) {
     client,
     anime,
     item,
-    torrent.raw.content_path,
+    torrent.content_path,
   );
-  removeTorrentAndData(torrent.id).catch();
+  removeTorrentAndData(torrent.hash).catch();
   if (!animeMeg) {
     logger.error("发送动漫消息失败");
     throw new Error("发送动漫消息失败");
@@ -337,7 +337,7 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
       client,
       anime,
       item,
-      torrent.raw.content_path,
+      torrent.content_path,
     );
     if (!animeMeg) {
       logger.error("发送动漫消息失败");
@@ -382,6 +382,7 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
     anime,
     item,
     torrent.raw.content_path, matchResult.episodeId
+    torrent.content_path, matchResult.episodeId,
   );
 
   if (!animeMeg) {

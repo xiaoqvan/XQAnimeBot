@@ -53,7 +53,7 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
     // 核心逻辑：时间检查 (Time Validation)
     // 使用原生 Date，起始放送时间来源于 dbAnime.dbAnime（格式示例："2026年1月16日"），
     // 结束时间取 eps.list 中最后一集的 airdate（格式示例："2026-03-20"）。
-    // 允许的匹配区间为: 起始放送时间 -7 天  到  最后一集放送时间 +30 天。
+    // 允许的匹配区间为: 起始放送时间 -8 天  到  最后一集放送时间 +30 天。
     if (matchedEp.airdate) {
         const parseDate = (s: string | undefined): Date | null => {
             if (!s) return null;
@@ -91,7 +91,7 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
         // 如果有完整的起止时间，则使用区间判断；否则回退到简单的未来 24 小时 检查
         if (startDate && lastDate) {
             const msDay = 24 * 60 * 60 * 1000;
-            const earliest = new Date(startDate.getTime() - 7 * msDay);
+            const earliest = new Date(startDate.getTime() - 8 * msDay);
             const latest = new Date(lastDate.getTime() + 30 * msDay);
 
             if (matchedDate < earliest || matchedDate > latest) {
@@ -107,9 +107,9 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
                 };
             }
         } else {
-            // 回退逻辑：如果放送日期比现在晚超过24小时，则认为异常
             const diffHours = Math.ceil((matchedDate.getTime() - now.getTime()) / (1000 * 60 * 60));
-            if (diffHours > 24) {
+            const maxFutureHours = 8 * 24;
+            if (diffHours > maxFutureHours) {
                 return {
                     status: 'DATE_MISMATCH',
                     msg: `放送日期在未来: ${formatDate(matchedDate)}`,

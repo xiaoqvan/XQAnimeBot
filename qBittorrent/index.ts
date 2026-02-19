@@ -1,25 +1,25 @@
-import { QBittorrent } from "@ctrl/qbittorrent";
+import { QbittorrentClient } from "./client.ts";
 import logger from "@log/index.ts";
 import { env } from "../database/initDb.ts";
 
-let QBclient: QBittorrent | null = null;
+let QBclient: QbittorrentClient | undefined = undefined;
 
 /** 创建并登录 qBittorrent 客户端实例
  * @returns 已登录的 QBittorrent 实例
  */
 async function createQBClient() {
-  const client = new QBittorrent({
-    baseUrl: env.data.QBITTORRENT_HOST,
+  const client = new QbittorrentClient({
+    baseURL: env.data.QBITTORRENT_HOST,
     username: env.data.QBITTORRENT_USERNAME,
     password: env.data.QBITTORRENT_PASSWORD,
-    timeout: 360 * 1000 * 10,
+    autoLogin: true
   });
 
   try {
     await client.login();
     return client;
-  } catch {
-    logger.error("qBittorrent链接失败: 请检查Web UI是否开启或密码是否正确。");
+  } catch (error) {
+    logger.error("[XQ动漫插件]qBittorrent链接失败: 请检查Web UI是否开启或密码是否正确。", error);
     process.exit(1);
   }
 }
@@ -33,9 +33,11 @@ export async function getQBClient() {
     QBclient = await createQBClient();
   } else {
     try {
-      await QBclient.getAppVersion();
-    } catch {
-      await QBclient.login();
+      const version = await QBclient.getAppVersion();
+      logger.info("[XQ动漫插件]qBittorrent连接成功，版本: " + version);
+    } catch (error) {
+      logger.warn("[XQ动漫插件]qBittorrent连接失效，尝试重新登录。", error);
+      QBclient = await createQBClient();
     }
   }
   return QBclient;

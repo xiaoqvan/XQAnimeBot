@@ -3,7 +3,7 @@ import { getQBClient } from "./index.ts";
 import parseTorrent, { remote, toMagnetURI } from "parse-torrent";
 import logger from "@log/index.ts";
 import { updateTorrentStatus } from "../database/update.ts";
-import type { Torrent } from "../types/torrent.js";
+import type { TorrentInfo } from "../types/qb.d.ts";
 
 const QBclient = await getQBClient();
 
@@ -15,44 +15,6 @@ const seedingStates = [
 ];
 
 /**
- * 通用的 QB 请求重试封装
- * @param fn - 要执行的请求函数
- * @param maxRetries - 最大重试次数
- * @param initialDelay - 初始延迟时间（毫秒）
- * @returns - 请求结果
- */
-async function qbRequestWithRetry<T>(
-  fn: () => Promise<T>,
-  maxRetries = 3,
-  initialDelay = 5000
-): Promise<T> {
-  let attempt = 0;
-  let delay = initialDelay;
-  let lastErr: any;
-
-  while (attempt <= maxRetries) {
-    try {
-      return await fn();
-    } catch (err: any) {
-      lastErr = err;
-      attempt++;
-      if (attempt > maxRetries) break;
-      logger.warn(
-        `QB 请求失败（第 ${attempt}/${maxRetries} 次尝试）。${Math.round(
-          delay / 1000
-        )} 秒后重试: ${err instanceof Error ? err.message : err}`
-      );
-      // 指数退避
-      await wait(delay);
-      delay = Math.min(delay * 2, 10000);
-    }
-  }
-
-  // 最后一次尝试失败，抛出原始错误
-  throw lastErr;
-}
-
-/**
  * 下载种子文件并返回文件路径
  * @param url - 种子文件的URL
  * @param title - 任务标题
@@ -61,7 +23,7 @@ async function qbRequestWithRetry<T>(
 export async function downloadTorrentFromUrl(
   url: string,
   title: string
-): Promise<Torrent | null> {
+): Promise<TorrentInfo | null> {
   // 如果传入的就是磁力链接，直接使用；否则从种子文件解析磁力链接并支持重试
   const isMagnet = url.trim().toLowerCase().startsWith("magnet:");
   const magnetLink = isMagnet
@@ -84,68 +46,47 @@ export async function downloadTorrentFromUrl(
 export async function downloadAndReturnPath(
   magnetLink: string,
   title: string
-): Promise<Torrent | null> {
+): Promise<TorrentInfo | null> {
   const { infoHash } = await getMagnetHash(magnetLink);
   const hash = infoHash;
 
   if (!hash) {
-    qbRequestWithRetry(() => QBclient.removeTorrent(magnetLink));
+    throw new Error("无法从磁力链接中提取 infoHash");
   }
 
-  let torrent: Torrent | undefined;
+  let torrent: TorrentInfo | null = null;
 
+  // 首先检查是否已经存在相同 hash 的种子，避免重复添加
   try {
-    const data = await qbRequestWithRetry(() => QBclient.getAllData());
-    torrent = data.torrents.find(t => t.id === hash) ?? torrent;
+    const data = await QBclient.getTorrentByHash(hash);
+
+    torrent = data
+
     if (torrent) {
       logger.debug(`已存在 hash=${hash} 的种子，跳过添加，直接开始判断状态`);
     } else {
-      // 添加种子
-      await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
+      await QBclient.addTorrentByMagnet(magnetLink);
     }
   } catch (err) {
     logger.warn(
       `检查现有种子时出错，将尝试添加磁力链接: ${err instanceof Error ? err.message : err
       }`
     );
-    await qbRequestWithRetry(() => QBclient.addMagnet(magnetLink));
+    await QBclient.addTorrentByMagnet(magnetLink);
   }
 
-  // 循环直到找到对应 hash 的 torrent（每 2 秒重试一次）
-  while (!torrent) {
-    try {
-      // 使用重试封装获取全部数据
-      const data = await qbRequestWithRetry(() => QBclient.getAllData());
-      torrent =
-        (data && data.torrents.find((t) => t.id === hash)) ?? torrent
-      if (torrent) break;
-    } catch (err) {
-      logger.warn(
-        `获取种子列表失败，稍后重试: ${err instanceof Error ? err.message : err
-        }`
-      );
-    }
-    logger.debug(`未找到 hash=${hash} 的种子，2 秒后重试...`);
-    await wait(2000);
-  }
-
-  logger.debug(
-    `\x1b[36m[QBclient][${torrent.id}][${title}]\x1b[0m \x1b[32m种子已添加，等待元数据...\x1b[0m`
-  );
 
   // 1. 等待种子信息获取（has_metadata）
   while (true) {
-    const torrentId: string = torrent?.id;
-    if (!torrentId) {
+    const data = await QBclient.getTorrentByHash(hash);
+    torrent = data;
+    if (!torrent) {
+      logger.warn(`获取种子信息失败，hash=${hash}`);
       await wait(2000);
       continue;
     }
-    const data = await qbRequestWithRetry(() => QBclient.getAllData());
-    torrent = data.torrents.find((t) => t.id === torrentId) ?? torrent;
 
-    // 检查多种可能的位置上的 has_metadata 字段
-    const raw = torrent?.raw || torrent;
-    const hasMetadata = raw?.has_metadata === true;
+    const hasMetadata = torrent?.has_metadata === true;
 
     // 仍保留 progress > 0 作为后备判断
     const progressReady =
@@ -156,28 +97,32 @@ export async function downloadAndReturnPath(
   }
 
   logger.debug(
-    `\x1b[36m[QBclient][${torrent.id}][${title}]\x1b[0m \x1b[32m元数据已获取，开始下载\x1b[0m`
+    `\x1b[36m[QBclient][${torrent.hash}][${title}]\x1b[0m \x1b[32m元数据已获取，开始下载\x1b[0m`
   );
   await updateTorrentStatus(title, "下载中");
 
   // 2. 等待下载完成
-  while (torrent && (!torrent.isCompleted && !seedingStates.includes(torrent.raw.state))) {
+  while (torrent && (!seedingStates.includes(torrent.state))) {
     await wait(5000); // 每10秒检查一次
-    const data = await QBclient.getAllData();
-    torrent = data.torrents.find(t => t.id === torrent?.id) ?? torrent;
+    const data = await QBclient.getTorrentByHash(hash);
+    torrent = data;
+    if (!torrent) {
+      logger.warn(`下载过程中获取种子信息失败，hash=${hash}`);
+      continue;
+    }
     logger.debug(
-      `\x1b[36m[QBclient][${torrent.id}][${title}][${torrent.raw.state}][${torrent.isCompleted ? "完成" : "未完成"}]\x1b[0m 下载中... 进度: ${(
-        (torrent.raw.progress || 0) * 100
+      `\x1b[36m[QBclient][${torrent.hash}][${title}][${torrent.state}][${torrent.state === "uploading" ? "完成" : "未完成"}]\x1b[0m 下载中... 进度: ${(
+        (torrent.progress || 0) * 100
       ).toFixed(2)}%`
     );
   }
   logger.debug(
-    `\x1b[36m[QBclient][${torrent.id}][${title}][${torrent.raw.state}][${torrent.isCompleted ? "完成" : "未完成"}]\x1b[0m 下载完成... 进度: ${(
-      (torrent.raw.progress || 0) * 100
+    `\x1b[36m[QBclient][${torrent?.hash}][${title}][${torrent?.state}][${torrent?.state === "uploading" ? "完成" : "未完成"}]\x1b[0m 下载完成... 进度: ${(
+      (torrent?.progress || 0) * 100
     ).toFixed(2)}%`
   );
   await updateTorrentStatus(title, "下载完成");
-  return torrent as Torrent;
+  return torrent
 }
 
 /**
