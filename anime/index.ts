@@ -19,10 +19,12 @@ import { env } from "../database/initDb.ts";
 
 import type {
   RssAnimeItem,
+  albumMessageType,
   anime as animeType,
   animeItem,
 } from "../types/anime.d.ts";
 import type { Client } from "tdl";
+import type { message } from "tdlib-types";
 import { parseInfo } from "../utils/animeParser.ts";
 import { combineFansub, smartDelayWithInterval } from "../utils/index.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
@@ -272,6 +274,7 @@ async function handleNewAnime(client: Client, item: animeItem) {
     anime,
     item,
     torrent.content_path,
+    torrent.segments
   );
   removeTorrentAndData(torrent.hash).catch();
   if (!animeMeg) {
@@ -279,11 +282,22 @@ async function handleNewAnime(client: Client, item: animeItem) {
     throw new Error("发送动漫消息失败");
   }
 
+  // 提取主消息（单条或相册第一条）
+  const megList = animeMeg._ === "messages" ? animeMeg.messages.filter((m): m is message => m !== null) : [animeMeg];
+  const primaryMeg = megList[0];
+  if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
 
-  const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
+  const allMsgData: albumMessageType[] = megList.map((msg) => ({
+    chat_id: msg.chat_id,
+    message_id: msg.id,
+    topic_id: msg.topic_id,
+    videoid: msg.content._ === "messageVideo" ? msg.content.video.video.remote.id : undefined,
+    unique_id: msg.content._ === "messageVideo" ? msg.content.video.video.remote.unique_id : undefined,
+  }));
+  const allVideoids = allMsgData.map((m) => m.videoid).filter((id): id is string => !!id);
+  const allUniqueIds = allMsgData.map((m) => m.unique_id).filter((id): id is string => !!id);
 
-
-
+  const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
 
   await updateAnimeBtdata(
     anime.id,
@@ -291,11 +305,11 @@ async function handleNewAnime(client: Client, item: animeItem) {
     combineFansub(item.fansub),
     item.episode || "未知",
     {
-      chat_id: animeMeg.chat_id,
-      message_id: animeMeg.id,
-      thread_id: animeMeg.topic_id
-        ? animeMeg.topic_id._ === "messageTopicForum"
-          ? animeMeg.topic_id.forum_topic_id
+      chat_id: primaryMeg.chat_id,
+      message_id: primaryMeg.id,
+      thread_id: primaryMeg.topic_id
+        ? primaryMeg.topic_id._ === "messageTopicForum"
+          ? primaryMeg.topic_id.forum_topic_id
           : 0
         : 0,
       link: animeLink.link,
@@ -303,14 +317,13 @@ async function handleNewAnime(client: Client, item: animeItem) {
     item.title,
     item.source,
     item.names,
-    animeMeg.content._ === "messageVideo"
-      ? animeMeg.content.video.video.remote.id
-      : undefined,
-    animeMeg.content._ === "messageVideo"
-      ? animeMeg.content.video.video.remote.unique_id
-      : undefined,
+    allVideoids[0],
+    allUniqueIds[0],
     Cache_id,
-    true
+    true,
+    allVideoids.length > 1 ? allVideoids : undefined,
+    allUniqueIds.length > 1 ? allUniqueIds : undefined,
+    allMsgData.length > 1 ? allMsgData : undefined
   );
   const matchResult = matchBangumiEpisode(anime, item.episode);
   if (matchResult.status !== "MATCHED") {
@@ -338,13 +351,31 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
       anime,
       item,
       torrent.content_path,
+      torrent.segments
     );
     if (!animeMeg) {
       logger.error("发送动漫消息失败");
       throw new Error("发送动漫消息失败");
     }
+
+
+    // 提取主消息（单条或相册第一条）
+    const cacheMegList = animeMeg._ === "messages" ? animeMeg.messages.filter((m): m is message => m !== null) : [animeMeg];
+    const primaryCacheMeg = cacheMegList[0];
+    if (!primaryCacheMeg) throw new Error("发送动漫消息失败: 无有效消息");
+
+    const cacheAllMsgData: albumMessageType[] = cacheMegList.map((msg) => ({
+      chat_id: msg.chat_id,
+      message_id: msg.id,
+      topic_id: msg.topic_id,
+      videoid: msg.content._ === "messageVideo" ? msg.content.video.video.remote.id : undefined,
+      unique_id: msg.content._ === "messageVideo" ? msg.content.video.video.remote.unique_id : undefined,
+    }));
+    const cacheAllVideoids = cacheAllMsgData.map((m) => m.videoid).filter((id): id is string => !!id);
+    const cacheAllUniqueIds = cacheAllMsgData.map((m) => m.unique_id).filter((id): id is string => !!id);
+
     const canimeid = await saveAnime(anime, true);
-    const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
+    const animeLink = await getMessageLink(client, primaryCacheMeg.chat_id, primaryCacheMeg.id);
     const Cache_id = await addCacheItem(item);
     await updateAnimeBtdata(
       canimeid,
@@ -352,11 +383,11 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
       combineFansub(item.fansub),
       item.episode || "未知",
       {
-        chat_id: animeMeg.chat_id,
-        message_id: animeMeg.id,
-        thread_id: animeMeg.topic_id
-          ? animeMeg.topic_id._ === "messageTopicForum"
-            ? animeMeg.topic_id.forum_topic_id
+        chat_id: primaryCacheMeg.chat_id,
+        message_id: primaryCacheMeg.id,
+        thread_id: primaryCacheMeg.topic_id
+          ? primaryCacheMeg.topic_id._ === "messageTopicForum"
+            ? primaryCacheMeg.topic_id.forum_topic_id
             : 0
           : 0,
         link: animeLink.link,
@@ -364,16 +395,15 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
       item.title,
       item.source,
       item.names,
-      animeMeg.content._ === "messageVideo"
-        ? animeMeg.content.video.video.remote.id
-        : undefined,
-      animeMeg.content._ === "messageVideo"
-        ? animeMeg.content.video.video.remote.unique_id
-        : undefined,
+      cacheAllVideoids[0],
+      cacheAllUniqueIds[0],
       Cache_id,
-      true
+      true,
+      cacheAllVideoids.length > 1 ? cacheAllVideoids : undefined,
+      cacheAllUniqueIds.length > 1 ? cacheAllUniqueIds : undefined,
+      cacheAllMsgData.length > 1 ? cacheAllMsgData : undefined
     );
-    await removeTorrentAndData(torrent.id);
+    await removeTorrentAndData(torrent.hash);
     await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
     return;
   }
@@ -381,17 +411,32 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
     client,
     anime,
     item,
-    torrent.raw.content_path, matchResult.episodeId
     torrent.content_path, matchResult.episodeId,
+    torrent.segments
   );
 
   if (!animeMeg) {
-    await removeTorrentAndData(torrent.id);
+    await removeTorrentAndData(torrent.hash);
     throw new Error(`发送动漫消息失败${item.title}`);
   }
-  await removeTorrentAndData(torrent.id);
+  await removeTorrentAndData(torrent.hash);
 
-  const animeLink = await getMessageLink(client, animeMeg.chat_id, animeMeg.id);
+  // 提取主消息（单条或相册第一条）
+  const animeMegList = animeMeg._ === "messages" ? animeMeg.messages.filter((m): m is message => m !== null) : [animeMeg];
+  const primaryAnimeMeg = animeMegList[0];
+  if (!primaryAnimeMeg) throw new Error(`发送动漫消息失败: 无有效消息 ${item.title}`);
+
+  const animeAllMsgData: albumMessageType[] = animeMegList.map((msg) => ({
+    chat_id: msg.chat_id,
+    message_id: msg.id,
+    topic_id: msg.topic_id,
+    videoid: msg.content._ === "messageVideo" ? msg.content.video.video.remote.id : undefined,
+    unique_id: msg.content._ === "messageVideo" ? msg.content.video.video.remote.unique_id : undefined,
+  }));
+  const animeAllVideoids = animeAllMsgData.map((m) => m.videoid).filter((id): id is string => !!id);
+  const animeAllUniqueIds = animeAllMsgData.map((m) => m.unique_id).filter((id): id is string => !!id);
+
+  const animeLink = await getMessageLink(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id);
 
   // 更新动漫的数据库信息
   await updateAnimeBtdata(
@@ -400,11 +445,11 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
     combineFansub(item.fansub),
     item.episode || "未知",
     {
-      chat_id: animeMeg.chat_id,
-      message_id: animeMeg.id,
-      thread_id: animeMeg.topic_id
-        ? animeMeg.topic_id._ === "messageTopicForum"
-          ? animeMeg.topic_id.forum_topic_id
+      chat_id: primaryAnimeMeg.chat_id,
+      message_id: primaryAnimeMeg.id,
+      thread_id: primaryAnimeMeg.topic_id
+        ? primaryAnimeMeg.topic_id._ === "messageTopicForum"
+          ? primaryAnimeMeg.topic_id.forum_topic_id
           : 0
         : 0,
       link: animeLink.link,
@@ -412,12 +457,13 @@ export async function handleExistingAnime(client: Client, item: animeItem, anime
     item.title,
     item.source,
     item.names,
-    animeMeg.content._ === "messageVideo"
-      ? animeMeg.content.video.video.remote.id
-      : undefined,
-    animeMeg.content._ === "messageVideo"
-      ? animeMeg.content.video.video.remote.unique_id
-      : undefined
+    animeAllVideoids[0],
+    animeAllUniqueIds[0],
+    undefined,
+    false,
+    animeAllVideoids.length > 1 ? animeAllVideoids : undefined,
+    animeAllUniqueIds.length > 1 ? animeAllUniqueIds : undefined,
+    animeAllMsgData.length > 1 ? animeAllMsgData : undefined
   );
   await sendMegToNavAnime(client, anime.id);
   return;

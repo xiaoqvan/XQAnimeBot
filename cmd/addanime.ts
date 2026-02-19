@@ -16,6 +16,7 @@ import { formatDmhyPubDate } from "../anime/rss/dmhy.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
 import { parseInfo } from "../utils/animeParser.ts";
+import { getEpisodeById } from "../bangumi/get.ts";
 
 export default async function addAnime(
   client: Client,
@@ -46,27 +47,28 @@ export default async function addAnime(
   if (!commandParts || commandParts.length < 2) {
     await sendMessage(client, message.chat_id, {
       reply_to_message_id: message.id,
-      text: "❌ 用法错误！\n\n**正确用法**:\n`/addanime <动漫ID> <图片URL>` - 为指定ID的动漫添加BT信息\n\n**示例**:\n`/addanime 12345 https://example.com/torrent`",
+      text: "❌ 用法错误！\n\n**正确用法**:\n`/addanime <动漫集数ID> <磁力URL>` - 为指定ID的动漫添加BT信息\n\n**示例**:\n`/addanime 12345 https://example.com/torrent`",
       link_preview: true,
     });
     return;
   }
-  const anime = commandParts[0];
+  const epid = commandParts[0];
   const url = commandParts[1];
-  if (!anime || !url) {
+  if (!epid || !url) {
     await sendMessage(client, message.chat_id, {
       reply_to_message_id: message.id,
-      text: "用法: /addanime <动漫名称> <图片URL>",
+      text: "用法: /addanime <动漫集数ID> <磁力URL>",
       link_preview: true,
     });
     return;
   }
-  const animeinfo = await getAnimeById(Number(anime));
+  const epinfo = await getEpisodeById(Number(epid));
+  const animeinfo = await getAnimeById(epinfo?.subject_id || 0);
 
   if (!animeinfo) {
     await sendMessage(client, message.chat_id, {
       reply_to_message_id: message.id,
-      text: `未找到ID为 ${anime} 的动漫信息。请确保ID正确。`,
+      text: `未找到ID为 ${epinfo?.subject_id} 的动漫信息。请确保ID正确。`,
     });
     return;
   }

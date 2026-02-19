@@ -137,6 +137,24 @@ export type anime = {
   updatedAt?: Date;
 };
 
+/**
+ * 分段/相册上传时每条消息的基本信息
+ */
+export type albumMessageType = {
+  /** 消息所属的聊天 ID */
+  chat_id: number;
+  /** 消息 ID */
+  message_id: number;
+  /** 线程 ID */
+  thread_id?: number;
+  /** 主题 ID */
+  topic_id?: MessageTopic$Input;
+  /** TG 视频远程 ID */
+  videoid?: string;
+  /** TG 视频唯一 ID */
+  unique_id?: string;
+};
+
 // 单条 bt 条目的类型
 export type BtEntry = {
   /** 动漫集数 */
@@ -148,16 +166,22 @@ export type BtEntry = {
   TGMegLink?: string;
   /** 章节ID */
   episodeId?: number;
-  /** 新消息详细 */
+  /** 新消息详细（单视频） */
   Message?: messageType;
   /** 标题 */
   title: string;
   /** 缓存数据库中的 ID */
   cache_id?: number | string;
-  /** TG视频唯一 ID */
+  /** TG视频唯一 ID（单视频） */
   videoid?: string;
-  /** TG视频远程 ID */
+  /** TG视频远程 ID（单视频） */
   unique_id?: string;
+  /** 分段上传时所有消息的基本信息列表 */
+  Messages?: albumMessageType[];
+  /** 分段上传时所有视频的远程 ID 列表 */
+  videoids?: string[];
+  /** 分段上传时所有视频的唯一 ID 列表 */
+  unique_ids?: string[];
 };
 
 // 新增：btdata 是以字符串键映射到 BtEntry 数组的对象

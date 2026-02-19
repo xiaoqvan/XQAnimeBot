@@ -15,6 +15,7 @@ import {
   editMessageCaption,
   editMessageText,
   sendMessage,
+  sendMessageAlbum,
 } from "@TDLib/function/message.ts";
 import { getAnimeById } from "../database/query.ts";
 import { AnimeText, navmegtext } from "./text.ts";
@@ -394,6 +395,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
  * @param item - 动漫在BT站中的信息
  * @param videoPath - 种子完整信息
  * @param episodeId - 集数ID
+ * @param segments - 可选的分段视频路径数组，如果提供则发送分段视频而非单一视频
  */
 export async function sendMegToAnime(
   client: Client,
@@ -401,8 +403,48 @@ export async function sendMegToAnime(
   item: animeItem,
   videoPath: string,
   episodeId: number,
+  segments?: string[]
 ) {
   await updateTorrentStatus(item.title, "上传中");
+  if (segments) {
+    const text = AnimeText(anime, item, episodeId);
+    let videoInfos = [];
+    for (const path of segments) {
+      const videoInfo = await extractVideoMetadata(path);
+      videoInfos.push(videoInfo);
+    }
+    const animeMessages = await sendMessageAlbum(
+      client,
+      Number(env.data.ANIME_CHANNEL),
+      {
+        timeout: 3600,
+        medias: videoInfos.map((videoInfo, index) => ({
+          video: {
+            path: segments[index],
+          },
+          cover: {
+            path: videoInfo.coverPath,
+          },
+          width: videoInfo.width,
+          height: videoInfo.height,
+          duration: Math.floor(videoInfo.duration),
+          supports_streaming: true,
+          has_spoiler: anime?.r18 === true || false,
+          caption: index === 0 ? text : undefined
+        }))
+      }
+    )
+
+    // 清理视频文件和封面
+    for (const path of segments) {
+      fs.unlink(path).catch(() => { });
+    }
+    for (const videoInfo of videoInfos) {
+      fs.unlink(videoInfo.coverPath).catch(() => { });
+    }
+
+    return animeMessages;
+  }
   const videoInfo = await extractVideoMetadata(videoPath);
   const text = AnimeText(anime, item, episodeId);
   const animeMessage = await sendMessage(
@@ -437,16 +479,59 @@ export async function sendMegToAnime(
  * @param anime - 数据库中动漫详细信息
  * @param item - 动漫在BT站中的信息
  * @param videoPath - 种子完整信息
+ * @param segments - 可选的分段视频路径数组，如果提供则发送分段视频而非单一视频
  */
 export async function sendMegToCache(
   client: Client,
   anime: animeType,
   item: animeItem,
   videoPath: string,
+  segments?: string[]
 ) {
   await updateTorrentStatus(item.title, "上传中");
-  const videoInfo = await extractVideoMetadata(videoPath);
+  if (segments) {
+    let videoInfos = [];
+    for (const path of segments) {
+      const videoInfo = await extractVideoMetadata(path);
+      videoInfos.push(videoInfo);
+    }
+    const animeMessages = await sendMessageAlbum(
+      client,
+      Number(env.data.ADMIN_GROUP_ID),
+      {
+        topic_id: {
+          _: "messageTopicForum",
+          forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
+        },
+        timeout: 3600,
+        medias: videoInfos.map((videoInfo, index) => ({
+          video: {
+            path: segments[index],
+          },
+          cover: {
+            path: videoInfo.coverPath,
+          },
+          width: videoInfo.width,
+          height: videoInfo.height,
+          duration: Math.floor(videoInfo.duration),
+          supports_streaming: true,
+          has_spoiler: anime?.r18 === true || false,
+          caption: index === 0 ? item.title : undefined,
+        }))
+      }
+    )
 
+    // 清理 segments 文件和封面
+    for (const path of segments) {
+      fs.unlink(path).catch(() => { });
+    }
+    for (const videoInfo of videoInfos) {
+      fs.unlink(videoInfo.coverPath).catch(() => { });
+    }
+
+    return animeMessages;
+  }
+  const videoInfo = await extractVideoMetadata(videoPath);
   const animeMessage = await sendMessage(
     client,
     Number(env.data.ADMIN_GROUP_ID),

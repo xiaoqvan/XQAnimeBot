@@ -1,5 +1,6 @@
 import { formatSubGroupName } from "../function/index.ts";
 import type {
+  albumMessageType,
   anime as AnimeType,
   bangumiAnime,
   messageType,
@@ -194,7 +195,10 @@ export async function updateAnimeBtdata(
   videoid: string | undefined,
   unique_id: string | undefined,
   cacheItemId: number | undefined = undefined,
-  cache: boolean = false
+  cache: boolean = false,
+  videoids: string[] | undefined = undefined,
+  unique_ids: string[] | undefined = undefined,
+  Messages: albumMessageType[] | undefined = undefined
 ) {
   if (
     !animeId ||
@@ -241,6 +245,9 @@ export async function updateAnimeBtdata(
         names: names ? names : undefined,
         unique_id: unique_id ? unique_id : undefined,
         episodeId: !cache ? episodeId : undefined,
+        videoids: videoids ? videoids : undefined,
+        unique_ids: unique_ids ? unique_ids : undefined,
+        Messages: Messages ? Messages : undefined,
       };
 
       const updateQuery = {
@@ -269,6 +276,9 @@ export async function updateAnimeBtdata(
         names: names ? names : undefined,
         unique_id: unique_id ? unique_id : undefined,
         episodeId: !cache ? episodeId : undefined,
+        videoids: videoids ? videoids : undefined,
+        unique_ids: unique_ids ? unique_ids : undefined,
+        Messages: Messages ? Messages : undefined,
       };
 
       const updateQuery = {
@@ -296,6 +306,15 @@ export async function updateAnimeBtdata(
           : undefined,
         [`btdata.${formattedSubGroup}.${episodeIndex}.episodeId`]: !cache
           ? episodeId
+          : undefined,
+        [`btdata.${formattedSubGroup}.${episodeIndex}.videoids`]: videoids
+          ? videoids
+          : undefined,
+        [`btdata.${formattedSubGroup}.${episodeIndex}.unique_ids`]: unique_ids
+          ? unique_ids
+          : undefined,
+        [`btdata.${formattedSubGroup}.${episodeIndex}.Messages`]: Messages
+          ? Messages
           : undefined,
       };
 

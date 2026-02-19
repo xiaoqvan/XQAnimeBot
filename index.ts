@@ -85,6 +85,15 @@ export default class AnimePlugin extends Plugin {
           return mod.default(this.client, message.message, commandParts);
         },
       },
+      addnewanime: {
+        description: "添加新的动漫并关联BT信息",
+        scope: "private",
+        permission: "admin",
+        handler: async (message, commandParts) => {
+          const mod = await import("./cmd/addnewanime.ts");
+          return mod.default(this.client, message.message, commandParts);
+        },
+      },
       updateanime: {
         description: "更新指定ID动漫的信息",
         scope: "private",

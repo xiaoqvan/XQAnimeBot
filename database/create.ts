@@ -193,6 +193,7 @@ export async function saveAnime(anime: AnimeType, cache: boolean = false) {
     "summary",
     "tags",
     "episode",
+    "eps",
     "score",
     "airingDay",
     "airingStart",
