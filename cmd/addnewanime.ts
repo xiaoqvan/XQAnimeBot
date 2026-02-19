@@ -3,7 +3,7 @@ import type { message as messageType } from "tdlib-types";
 import type { Client } from "tdl";
 
 import { isUserAdmin } from "@TDLib/function/index.ts";
-import { editMessageText, sendMessage } from "@TDLib/function/message.ts";
+import { editMessageCaption, editMessageText, sendMessage } from "@TDLib/function/message.ts";
 import { getAnimeById } from "../database/query.ts";
 import {
     fetchBangumiTags,
@@ -293,11 +293,11 @@ export default async function addAnime(
         }
         const text = AnimeText(nanime, animeBtInfo, Number(epid));
         if (animeMeg._ === "messages" && animeMeg.messages[0]) {
-            await editMessageText(client, animeMeg.messages[0].chat_id, animeMeg.messages[0].id, {
+            await editMessageCaption(client, animeMeg.messages[0].chat_id, animeMeg.messages[0].id, {
                 text,
             });
         } else {
-            await editMessageText(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id, {
+            await editMessageCaption(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id, {
                 text,
             });
         }
