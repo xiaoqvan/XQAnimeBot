@@ -71,13 +71,11 @@ export async function mkvToMp4(mkv: string): Promise<string> {
       "-c:v",
       "libx264",
       "-preset",
-      "veryfast",
+      "fast",
       "-crf",
-      "23",
+      "20",
       "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
+      "copy",
       outPath,
     ]);
   } else {
