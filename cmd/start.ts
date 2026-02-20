@@ -83,7 +83,58 @@ export default async function start(client: Client, message: message) {
             await updateSubjectCollectionInfo(tokenResult.access_token, animeId, 3);
             sendMessage(client, message.chat_id, {
                 reply_to_message_id: message.id,
-                text: `收藏动漫: [${anime?.name_cn || anime?.name}](https://bgm.tv/subject/${animeId}) 成功！状态已更改为: 在看\n`,
+                text: `收藏动漫: [${anime?.name_cn || anime?.name}](https://bgm.tv/subject/${animeId}) 成功！\n当前状态: **在看**\n\n点击下方按钮更改收藏状态：`,
+                invoke: {
+                    reply_markup: {
+                        _: "replyMarkupInlineKeyboard",
+                        rows: [
+                            [
+                                {
+                                    _: "inlineKeyboardButton",
+                                    text: "想看",
+                                    type: {
+                                        _: "inlineKeyboardButtonTypeCallback",
+                                        data: Buffer.from(
+                                            `chgcol?id=${animeId}&status=1`
+                                        ).toString("base64"),
+                                    },
+                                },
+                                {
+                                    _: "inlineKeyboardButton",
+                                    text: "看过",
+                                    type: {
+                                        _: "inlineKeyboardButtonTypeCallback",
+                                        data: Buffer.from(
+                                            `chgcol?id=${animeId}&status=2`
+                                        ).toString("base64"),
+                                    },
+                                },
+                            ],
+                            [
+                                {
+                                    _: "inlineKeyboardButton",
+                                    text: "搁置",
+                                    type: {
+                                        _: "inlineKeyboardButtonTypeCallback",
+                                        data: Buffer.from(
+                                            `chgcol?id=${animeId}&status=4`
+                                        ).toString("base64"),
+                                    },
+                                },
+                                {
+                                    _: "inlineKeyboardButton",
+                                    text: "抛弃",
+                                    type: {
+                                        _: "inlineKeyboardButtonTypeCallback",
+                                        data: Buffer.from(
+                                            `chgcol?id=${animeId}&status=5`
+                                        ).toString("base64"),
+                                    },
+                                },
+                            ],
+                        ],
+                    },
+                },
             });
             break;
         case "eplook":

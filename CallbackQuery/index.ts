@@ -3,7 +3,7 @@ import { falseAnime, nullAnime, trueAnime, nullEp } from "./hasAnime.ts";
 import type { updateNewCallbackQuery as Td$updateNewCallbackQuery } from "tdlib-types";
 import type { Client } from "tdl";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
-import { colorep } from "./bangumi.ts";
+import { colorep, changeCollectionStatus } from "./bangumi.ts";
 
 /**
  * 处理新的回调查询
@@ -85,6 +85,17 @@ export default async function updateNewCallbackQuery(
       }
       case "colorep": {
         await colorep(
+          client,
+          chat_id,
+          sender_user_id,
+          message_id,
+          queryId,
+          params
+        );
+        break;
+      }
+      case "chgcol": {
+        await changeCollectionStatus(
           client,
           chat_id,
           sender_user_id,
