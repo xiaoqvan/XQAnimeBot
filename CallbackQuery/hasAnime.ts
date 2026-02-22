@@ -725,7 +725,7 @@ async function updateAnimeLinks(
   let primaryAnimeMeg: message;
 
   if (videoInfos.length > 1) {
-    // 多分段：使用 sendMessageAlbum，每段均携带封面
+
     const albumResult = await sendMessageAlbum(client, Number(env.data.ANIME_CHANNEL), {
       medias: videoInfos.map((info, index) => ({
         video: { id: info.videoId },
@@ -735,7 +735,7 @@ async function updateAnimeLinks(
         duration: info.duration,
         supports_streaming: true,
         has_spoiler: new_Anime?.r18 === true || false,
-        text: index === 0 ? animetext : undefined,
+        caption: index === 0 ? animetext : undefined,
       })),
     });
     if (!albumResult || !albumResult.messages || albumResult.messages.length === 0) {
