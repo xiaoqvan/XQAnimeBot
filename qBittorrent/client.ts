@@ -1,5 +1,7 @@
 import axios from 'axios';
 import type { AxiosInstance, AxiosRequestConfig, AxiosResponse, InternalAxiosRequestConfig } from 'axios';
+import http from 'http';
+import https from 'https';
 import type {
     TorrentInfo,
     TorrentProperties,
@@ -59,6 +61,18 @@ export class QbittorrentClient {
                 'Content-Type': 'application/x-www-form-urlencoded',
             },
             withCredentials: true,
+            httpAgent: new http.Agent({
+                keepAlive: true,
+                keepAliveMsecs: 30000,
+                maxSockets: 50,
+                maxFreeSockets: 10,
+            }),
+            httpsAgent: new https.Agent({
+                keepAlive: true,
+                keepAliveMsecs: 30000,
+                maxSockets: 50,
+                maxFreeSockets: 10,
+            }),
         });
 
         // 请求拦截器
@@ -112,25 +126,50 @@ export class QbittorrentClient {
         config: AxiosRequestConfig,
         signal?: AbortSignal
     ): Promise<T> {
-        try {
-            const response: AxiosResponse<T> = await this.axios.request({
-                ...config,
-                signal,
-            });
-            return response.data;
-        } catch (error) {
-            if (error instanceof ApiError && error.statusCode === 403 && this.autoLogin) {
-                // 尝试自动登录
-                await this.login();
-                // 重试请求
+        let lastError: Error | ApiError | unknown;
+        const maxRetries = 3;
+        const retryDelayMs = 30000; // 30秒
+
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+            try {
                 const response: AxiosResponse<T> = await this.axios.request({
                     ...config,
                     signal,
                 });
                 return response.data;
+            } catch (error) {
+                lastError = error;
+                const errorMessage = (error as Error).message || '';
+
+                if (
+                    errorMessage.includes('socket hang up') ||
+                    errorMessage.includes('ECONNRESET') ||
+                    errorMessage.includes('ECONNABORTED')
+                ) {
+                    if (attempt < maxRetries) {
+                        // 等待30秒后重试
+                        await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+                        continue;
+                    }
+                }
+
+                // 处理 403 自动登录
+                if (error instanceof ApiError && error.statusCode === 403 && this.autoLogin) {
+                    try {
+                        await this.login();
+                        const response: AxiosResponse<T> = await this.axios.request({
+                            ...config,
+                            signal,
+                        });
+                        return response.data;
+                    } catch {
+                        // 登录失败，继续抛出原错误
+                    }
+                }
+                throw error;
             }
-            throw error;
         }
+        throw lastError;
     }
 
     /**
