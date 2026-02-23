@@ -76,6 +76,73 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       .filter(Boolean);
     return sortNamesByPriority(names, title);
   },
+  // 雪飘工作室
+  雪飘工作室: (title: string) => {
+    const searchMatch =
+      title.match(/（\s*检索(?:用)?[:：]\s*([^）]+)\s*）/) ||
+      title.match(/\(\s*检索(?:用)?[:：]\s*([^)]+)\s*\)/);
+    const searchName = searchMatch ? searchMatch[1].trim() : null;
+
+    const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
+    let names: string[] = [];
+
+    if (brackets.length >= 2) {
+      let nameField = brackets[1].trim();
+
+      // 移除常见的技术标记
+      nameField = nameField.replace(
+        /\b(?:1080P|720P|1080p|720p|MP4|MKV|WEBRip|HEVC|x265|x264|简繁外挂|简体内嵌|简繁|简体|繁体|外挂|内嵌)\b/ig,
+        ""
+      ).trim();
+
+      names = nameField
+        .split(/\s*\/\s*|\/|／|_|　/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => s.replace(/[\u3000_]/g, "").trim());
+    }
+
+    if (searchName) names.unshift(searchName);
+
+    names = names.filter(
+      (n) => n && n.length > 1 && !/^\d{1,3}$/.test(n) && !/^(?:简体|繁体|外挂|内嵌)$/i.test(n)
+    );
+
+    return sortNamesByPriority(names, title);
+  },
+  "雪飄工作室(FLsnow)": (title: string) => {
+    const searchMatch =
+      title.match(/（\s*检索(?:用)?[:：]\s*([^）]+)\s*）/) ||
+      title.match(/\(\s*检索(?:用)?[:：]\s*([^)]+)\s*\)/);
+    const searchName = searchMatch ? searchMatch[1].trim() : null;
+
+    const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
+    let names: string[] = [];
+
+    if (brackets.length >= 2) {
+      let nameField = brackets[1].trim();
+
+      // 移除常见的技术标记
+      nameField = nameField.replace(
+        /\b(?:1080P|720P|1080p|720p|MP4|MKV|WEBRip|HEVC|x265|x264|简繁外挂|简体内嵌|简繁|简体|繁体|外挂|内嵌)\b/ig,
+        ""
+      ).trim();
+
+      names = nameField
+        .split(/\s*\/\s*|\/|／|_|　/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .map((s) => s.replace(/[\u3000_]/g, "").trim());
+    }
+
+    if (searchName) names.unshift(searchName);
+
+    names = names.filter(
+      (n) => n && n.length > 1 && !/^\d{1,3}$/.test(n) && !/^(?:简体|繁体|外挂|内嵌)$/i.test(n)
+    );
+
+    return sortNamesByPriority(names, title);
+  },
   // 轻之国度字幕组：番剧名在第二个[]，支持中英文名用 / 分割，过滤集数和技术标记
   轻之国度字幕组: (title: string) => {
     // 提取所有[]内的内容
