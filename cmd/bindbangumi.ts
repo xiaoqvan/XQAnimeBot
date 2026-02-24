@@ -12,7 +12,7 @@ export default async function bindbangumi(client: Client, message: message) {
     const authUrl = await getAuthUrl(user_id);
     sendMessage(client, message.chat_id, {
         reply_to_message_id: message.id,
-        text: `请点击以下方按钮进行Bangumi账户授权：\n如果没有跳转授权页面而是返回主页，请退出Bangumi账户后再次点击链接登录账户。`,
+        text: `请点击以下方按钮进行![☺️](tg://emoji?id=6057366942199586325)Bangumi账户授权\n\n注:\n如果你是新用户第一次使用Bangumi,你需要知道\n> Bangumi 用于管理 ACG 收藏与收视进度\n>Bangumi 不提供 资源下载与观看\n我们使用Bangumi的API接口进行 ACG 收藏与收视进度与管理`,
         invoke: {
             reply_markup: {
                 _: "replyMarkupInlineKeyboard",
