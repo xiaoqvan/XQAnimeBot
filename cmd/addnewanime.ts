@@ -75,7 +75,6 @@ export default async function addAnime(
         return;
     }
     const epinfo = await getEpisodeById(Number(epid));
-    const animeinfo = await getAnimeById(epinfo?.subject_id || 0);
 
     const anime = await getSubjectById(epinfo?.subject_id || 0);
     const tipsMsg = await sendMessage(client, message.chat_id, {
@@ -286,22 +285,24 @@ export default async function addAnime(
         animeAllMsgData.length > 1 ? animeAllMsgData : undefined
     );
     await sendMegToNavAnime(client, newanime.id);
-    if (!animeinfo) {
-        const nanime = await getAnimeById(anime.id);
-        if (!nanime) {
-            return
-        }
-        const text = AnimeText(nanime, animeBtInfo, Number(epid));
-        if (animeMeg._ === "messages" && animeMeg.messages[0]) {
-            await editMessageCaption(client, animeMeg.messages[0].chat_id, animeMeg.messages[0].id, {
-                text,
-            });
-        } else {
-            await editMessageCaption(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id, {
-                text,
-            });
-        }
+
+    const nanime = await getAnimeById(anime.id);
+    if (!nanime) {
+        return
     }
+
+    const text = AnimeText(nanime, animeBtInfo, Number(epid));
+
+    if (animeMeg._ === "messages" && animeMeg.messages[0]) {
+        await editMessageCaption(client, animeMeg.messages[0].chat_id, animeMeg.messages[0].id, {
+            text,
+        });
+    } else {
+        await editMessageCaption(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id, {
+            text,
+        });
+    }
+
     if (!tipsMsg) {
         return;
     }
