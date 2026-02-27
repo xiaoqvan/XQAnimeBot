@@ -53,6 +53,8 @@ export type animeItem = {
   pubDate: string;
   /** 磁力链接 */
   magnet: string;
+  /** 动漫链接 */
+  link: string;
   /** 动漫发布组 */
   team: string;
   /** 发布组列表 */

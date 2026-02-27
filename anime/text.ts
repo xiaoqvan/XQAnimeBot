@@ -361,10 +361,11 @@ function compareEpisode(a: BtEntry, b: BtEntry): number {
  */
 export function AnimeText(anime: animeType, item: animeItem, episodeId: number): string {
   const nsfwTag = anime.r18 === true ? "#NSFW " : "";
+  const title = item.link ? `[${item.title}](${item.link})` : item.title;
   return `#${anime.airingStart
     ? anime.airingStart.replace(/(\d{4})年(\d{1,2})月.*/, "$1年$2月")
     : ""
-    } ${nsfwTag} ${item.title}\n>原名称: ${anime.name}\n>中文名: ${anime.name_cn
+    } ${nsfwTag} ${title}\n>原名称: ${anime.name}\n>中文名: ${anime.name_cn
     }\n>发布组: ${formatTags(item.fansub?.map((f) => safeTag(f)) || [])}${item.pubDate ? `\n>发布时间: ${item.pubDate}` : ""
     }\n追踪标签：\n>名称: #${safeTag(
       anime.name_cn || anime.name

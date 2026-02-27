@@ -194,6 +194,7 @@ async function handleRssAnimeItem(client: Client, item: RssAnimeItem) {
     newitem = {
       title: item.title,
       pubDate: item.pubDate,
+      link: item.link,
       magnet: torrentInfo.magnet,
       team: team[0]?.name,
       fansub,
@@ -209,6 +210,7 @@ async function handleRssAnimeItem(client: Client, item: RssAnimeItem) {
       title: item.title,
       pubDate: item.pubDate,
       magnet: item.magnet,
+      link: item.link,
       team: item.author,
       fansub,
       ...infoq,
