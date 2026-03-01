@@ -42,6 +42,8 @@ export class QbittorrentClient {
     private autoLogin: boolean;
     private loggedIn: boolean = false;
     private cookieJar: string[] = [];
+    private httpAgent: http.Agent;
+    private httpsAgent: https.Agent;
 
     /**
      * 创建 qBittorrent 客户端实例
@@ -54,6 +56,19 @@ export class QbittorrentClient {
         this.password = password;
         this.autoLogin = autoLogin;
 
+        this.httpAgent = new http.Agent({
+            keepAlive: true,
+            keepAliveMsecs: 30000,
+            maxSockets: 50,
+            maxFreeSockets: 10,
+        });
+        this.httpsAgent = new https.Agent({
+            keepAlive: true,
+            keepAliveMsecs: 30000,
+            maxSockets: 50,
+            maxFreeSockets: 10,
+        });
+
         this.axios = axios.create({
             baseURL,
             timeout: 30000,
@@ -61,18 +76,8 @@ export class QbittorrentClient {
                 'Content-Type': 'application/x-www-form-urlencoded',
             },
             withCredentials: true,
-            httpAgent: new http.Agent({
-                keepAlive: true,
-                keepAliveMsecs: 30000,
-                maxSockets: 50,
-                maxFreeSockets: 10,
-            }),
-            httpsAgent: new https.Agent({
-                keepAlive: true,
-                keepAliveMsecs: 30000,
-                maxSockets: 50,
-                maxFreeSockets: 10,
-            }),
+            httpAgent: this.httpAgent,
+            httpsAgent: this.httpsAgent,
         });
 
         // 请求拦截器
@@ -120,6 +125,42 @@ export class QbittorrentClient {
     }
 
     /**
+     * 断开旧连接，重建连接池并重新认证
+     */
+    private async reconnect(): Promise<void> {
+        // 销毁旧连接池，释放所有 keep-alive socket
+        this.httpAgent.destroy();
+        this.httpsAgent.destroy();
+
+        // 重建连接池
+        this.httpAgent = new http.Agent({
+            keepAlive: true,
+            keepAliveMsecs: 30000,
+            maxSockets: 50,
+            maxFreeSockets: 10,
+        });
+        this.httpsAgent = new https.Agent({
+            keepAlive: true,
+            keepAliveMsecs: 30000,
+            maxSockets: 50,
+            maxFreeSockets: 10,
+        });
+
+        // 更新 axios 实例使用新 Agent
+        this.axios.defaults.httpAgent = this.httpAgent;
+        this.axios.defaults.httpsAgent = this.httpsAgent;
+
+        // 清除认证状态
+        this.loggedIn = false;
+        this.cookieJar = [];
+
+        // 若启用自动登录，重新认证
+        if (this.autoLogin && this.username && this.password) {
+            await this.login();
+        }
+    }
+
+    /**
      * 通用请求方法
      */
     private async request<T>(
@@ -141,13 +182,24 @@ export class QbittorrentClient {
                 lastError = error;
                 const errorMessage = (error as Error).message || '';
 
-                if (
+                const isTimeout =
+                    errorMessage.includes('timeout') ||
+                    (error as { code?: string }).code === 'ETIMEDOUT';
+                const isNetworkError =
                     errorMessage.includes('socket hang up') ||
                     errorMessage.includes('ECONNRESET') ||
-                    errorMessage.includes('ECONNABORTED')
-                ) {
+                    errorMessage.includes('ECONNABORTED');
+
+                if (isTimeout || isNetworkError) {
                     if (attempt < maxRetries) {
-                        // 等待30秒后重试
+                        if (isTimeout) {
+                            // 超时：断开旧连接，重建连接池并重新认证后再重试
+                            try {
+                                await this.reconnect();
+                            } catch {
+                                // 重连失败，等待后继续重试
+                            }
+                        }
                         await new Promise(resolve => setTimeout(resolve, retryDelayMs));
                         continue;
                     }
