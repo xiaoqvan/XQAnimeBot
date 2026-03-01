@@ -63,103 +63,28 @@ export default async function start(client: Client, message: message) {
             }
             break;
         case "collection":
-            const animeId = Number(values[0] ?? "");
-            const tokenResult = await getBgmToken(user_id);
-            if (!tokenResult.success || !tokenResult.access_token) {
-                sendMessage(client, message.chat_id, {
-                    text: tokenResult.message || "获取Bangumi访问令牌失败，请先绑定Bangumi账户。",
-                });
-                break;
-            }
-            const anime = await getAnimeById(animeId);
+            try {
+                const animeId = Number(values[0] ?? "");
+                const tokenResult = await getBgmToken(user_id);
+                if (!tokenResult.success || !tokenResult.access_token) {
+                    sendMessage(client, message.chat_id, {
+                        text: tokenResult.message || "获取Bangumi访问令牌失败，请先绑定Bangumi账户。",
+                    });
+                    break;
+                }
+                const anime = await getAnimeById(animeId);
 
-            if (!anime || !tokenResult.access_token) {
+                if (!anime || !tokenResult.access_token) {
+                    sendMessage(client, message.chat_id, {
+                        reply_to_message_id: message.id,
+                        text: `收藏失败，ID：${animeId}\n当前频道未添加该动漫信息，请确认后再试！`,
+                    });
+                    break;
+                }
+                await updateSubjectCollectionInfo(tokenResult.access_token, animeId, 3);
                 sendMessage(client, message.chat_id, {
                     reply_to_message_id: message.id,
-                    text: `收藏失败，ID：${animeId}\n当前频道未添加该动漫信息，请确认后再试！`,
-                });
-                break;
-            }
-            await updateSubjectCollectionInfo(tokenResult.access_token, animeId, 3);
-            sendMessage(client, message.chat_id, {
-                reply_to_message_id: message.id,
-                text: `收藏动漫: [${anime?.name_cn || anime?.name}](https://bgm.tv/subject/${animeId}) 成功！\n当前状态: **在看**\n\n点击下方按钮更改收藏状态：`,
-                invoke: {
-                    reply_markup: {
-                        _: "replyMarkupInlineKeyboard",
-                        rows: [
-                            [
-                                {
-                                    _: "inlineKeyboardButton",
-                                    text: "想看",
-                                    type: {
-                                        _: "inlineKeyboardButtonTypeCallback",
-                                        data: Buffer.from(
-                                            `chgcol?id=${animeId}&status=1`
-                                        ).toString("base64"),
-                                    },
-                                },
-                                {
-                                    _: "inlineKeyboardButton",
-                                    text: "看过",
-                                    type: {
-                                        _: "inlineKeyboardButtonTypeCallback",
-                                        data: Buffer.from(
-                                            `chgcol?id=${animeId}&status=2`
-                                        ).toString("base64"),
-                                    },
-                                },
-                            ],
-                            [
-                                {
-                                    _: "inlineKeyboardButton",
-                                    text: "搁置",
-                                    type: {
-                                        _: "inlineKeyboardButtonTypeCallback",
-                                        data: Buffer.from(
-                                            `chgcol?id=${animeId}&status=4`
-                                        ).toString("base64"),
-                                    },
-                                },
-                                {
-                                    _: "inlineKeyboardButton",
-                                    text: "抛弃",
-                                    type: {
-                                        _: "inlineKeyboardButtonTypeCallback",
-                                        data: Buffer.from(
-                                            `chgcol?id=${animeId}&status=5`
-                                        ).toString("base64"),
-                                    },
-                                },
-                            ],
-                        ],
-                    },
-                },
-            });
-            break;
-        case "eplook":
-            const episodeId = values[0] ?? "";
-            const epResult = await getBgmToken(user_id);
-            if (!epResult.success || !epResult.access_token) {
-                sendMessage(client, message.chat_id, {
-                    text: epResult.message || "获取Bangumi访问令牌失败，请先绑定Bangumi账户。",
-                });
-                break;
-            }
-            const animeFromEpisode = await getAnimeByEpisodeId(Number(episodeId));
-            if (!animeFromEpisode) {
-                sendMessage(client, message.chat_id, {
-                    reply_to_message_id: message.id,
-                    text: `标记失败，找不到对应的动漫信息，剧集ID：${episodeId}`,
-                });
-                break;
-            }
-
-            const epUpdated = await updateEpisodeCollectionInfo(epResult.access_token, Number(episodeId), 2);
-            if (!epUpdated) {
-                sendMessage(client, message.chat_id, {
-                    reply_to_message_id: message.id,
-                    text: `标记失败：当前用户未收藏该条目 [${animeFromEpisode.name_cn || animeFromEpisode.name}](https://bgm.tv/subject/${animeFromEpisode.id})\n请先收藏该条目后再标记看过！\n\n下方按钮可以快捷操作：\n1-收藏该动漫为 *\_在看\_* ,且将本集标记为 *\_看过\_* \n2- 收藏该动漫和本集为 *\_看过\_* `,
+                    text: `收藏动漫: [${anime?.name_cn || anime?.name}](https://bgm.tv/subject/${animeId}) 成功！\n当前状态: **在看**\n\n点击下方按钮更改收藏状态：`,
                     invoke: {
                         reply_markup: {
                             _: "replyMarkupInlineKeyboard",
@@ -167,21 +92,43 @@ export default async function start(client: Client, message: message) {
                                 [
                                     {
                                         _: "inlineKeyboardButton",
-                                        text: "1",
+                                        text: "想看",
                                         type: {
                                             _: "inlineKeyboardButtonTypeCallback",
                                             data: Buffer.from(
-                                                `colorep?id=${animeFromEpisode.id}&at=3&ep=${episodeId}&et=2`
+                                                `chgcol?id=${animeId}&status=1`
                                             ).toString("base64"),
                                         },
                                     },
                                     {
                                         _: "inlineKeyboardButton",
-                                        text: "2",
+                                        text: "看过",
                                         type: {
                                             _: "inlineKeyboardButtonTypeCallback",
                                             data: Buffer.from(
-                                                `colorep?id=${animeFromEpisode.id}&at=2&ep=${episodeId}&et=2`
+                                                `chgcol?id=${animeId}&status=2`
+                                            ).toString("base64"),
+                                        },
+                                    },
+                                ],
+                                [
+                                    {
+                                        _: "inlineKeyboardButton",
+                                        text: "搁置",
+                                        type: {
+                                            _: "inlineKeyboardButtonTypeCallback",
+                                            data: Buffer.from(
+                                                `chgcol?id=${animeId}&status=4`
+                                            ).toString("base64"),
+                                        },
+                                    },
+                                    {
+                                        _: "inlineKeyboardButton",
+                                        text: "抛弃",
+                                        type: {
+                                            _: "inlineKeyboardButtonTypeCallback",
+                                            data: Buffer.from(
+                                                `chgcol?id=${animeId}&status=5`
                                             ).toString("base64"),
                                         },
                                     },
@@ -190,16 +137,83 @@ export default async function start(client: Client, message: message) {
                         },
                     },
                 });
-                break;
+            } catch (error) {
+                sendMessage(client, message.chat_id, {
+                    reply_to_message_id: message.id,
+                    text: `收藏失败，发生错误：${(error as Error).message}`,
+                });
             }
-            // 查找该章节的 sort（作为集数显示）
-            const epEntry = animeFromEpisode.eps?.list?.find(e => e.id === Number(episodeId));
-            const epSort = epEntry?.sort ?? episodeId;
+            break;
+        case "eplook":
+            try {
+                const episodeId = values[0] ?? "";
+                const epResult = await getBgmToken(user_id);
+                if (!epResult.success || !epResult.access_token) {
+                    sendMessage(client, message.chat_id, {
+                        text: epResult.message || "获取Bangumi访问令牌失败，请先绑定Bangumi账户。",
+                    });
+                    break;
+                }
+                const animeFromEpisode = await getAnimeByEpisodeId(Number(episodeId));
+                if (!animeFromEpisode) {
+                    sendMessage(client, message.chat_id, {
+                        reply_to_message_id: message.id,
+                        text: `标记失败，找不到对应的动漫信息，剧集ID：${episodeId}`,
+                    });
+                    break;
+                }
 
-            sendMessage(client, message.chat_id, {
-                reply_to_message_id: message.id,
-                text: `动漫: [${animeFromEpisode.name_cn || animeFromEpisode.name}](https://bgm.tv/subject/${animeFromEpisode.id})\n集数: [${epSort}](https://bgm.tv/ep/${episodeId}) 标记为 看过 成功！`,
-            });
+                const epUpdated = await updateEpisodeCollectionInfo(epResult.access_token, Number(episodeId), 2);
+                if (!epUpdated) {
+                    sendMessage(client, message.chat_id, {
+                        reply_to_message_id: message.id,
+                        text: `标记失败：当前用户未收藏该条目 [${animeFromEpisode.name_cn || animeFromEpisode.name}](https://bgm.tv/subject/${animeFromEpisode.id})\n请先收藏该条目后再标记看过！\n\n下方按钮可以快捷操作：\n1-收藏该动漫为 *\_在看\_* ,且将本集标记为 *\_看过\_* \n2- 收藏该动漫和本集为 *\_看过\_* `,
+                        invoke: {
+                            reply_markup: {
+                                _: "replyMarkupInlineKeyboard",
+                                rows: [
+                                    [
+                                        {
+                                            _: "inlineKeyboardButton",
+                                            text: "1",
+                                            type: {
+                                                _: "inlineKeyboardButtonTypeCallback",
+                                                data: Buffer.from(
+                                                    `colorep?id=${animeFromEpisode.id}&at=3&ep=${episodeId}&et=2`
+                                                ).toString("base64"),
+                                            },
+                                        },
+                                        {
+                                            _: "inlineKeyboardButton",
+                                            text: "2",
+                                            type: {
+                                                _: "inlineKeyboardButtonTypeCallback",
+                                                data: Buffer.from(
+                                                    `colorep?id=${animeFromEpisode.id}&at=2&ep=${episodeId}&et=2`
+                                                ).toString("base64"),
+                                            },
+                                        },
+                                    ],
+                                ],
+                            },
+                        },
+                    });
+                    break;
+                }
+                // 查找该章节的 sort（作为集数显示）
+                const epEntry = animeFromEpisode.eps?.list?.find(e => e.id === Number(episodeId));
+                const epSort = epEntry?.sort ?? episodeId;
+
+                sendMessage(client, message.chat_id, {
+                    reply_to_message_id: message.id,
+                    text: `动漫: [${animeFromEpisode.name_cn || animeFromEpisode.name}](https://bgm.tv/subject/${animeFromEpisode.id})\n集数: [${epSort}](https://bgm.tv/ep/${episodeId}) 标记为 看过 成功！`,
+                });
+            } catch (error) {
+                sendMessage(client, message.chat_id, {
+                    reply_to_message_id: message.id,
+                    text: `标记失败，发生错误：${(error as Error).message}`,
+                });
+            }
             break;
         default:
             break;

@@ -39,18 +39,23 @@ export async function colorep(
         });
         return;
     }
-    // 先更新动漫收藏状态
-    await updateSubjectCollectionInfo(tokenResult.access_token, Number(animeId), Number(at));
-    // 然后更新剧集状态
-    // 注意这里没有对更新结果进行检查，可以根据需要添加
-    await updateEpisodeCollectionInfo(tokenResult.access_token, Number(episodeId), Number(et));
-    editMessageText(client, chat_id, message_id, {
-        text: `动漫ID: ${animeId} 和 剧集ID: ${episodeId} 标记成功！\n动漫收藏状态已更新为: ${at}, 剧集状态已更新为: ${et}\n\n条目收藏状态类型 (1: 想看, 2: 看过, 3: 在看, 4: 搁置, 5: 抛弃)\n章节收藏状态类型 (0: 未收藏, 1: 想看, 2: 看过, 3: 抛弃)`,
-    });
-    await answerCallbackQuery(client, queryId, {
-        text: `操作成功！`,
-        show_alert: false,
-    });
+    try {
+        // 先更新动漫收藏状态
+        await updateSubjectCollectionInfo(tokenResult.access_token, Number(animeId), Number(at));
+        // 然后更新剧集状态
+        await updateEpisodeCollectionInfo(tokenResult.access_token, Number(episodeId), Number(et));
+        editMessageText(client, chat_id, message_id, {
+            text: `动漫ID: ${animeId} 和 剧集ID: ${episodeId} 标记成功！\n动漫收藏状态已更新为: ${at}, 剧集状态已更新为: ${et}\n\n条目收藏状态类型 (1: 想看, 2: 看过, 3: 在看, 4: 搁置, 5: 抛弃)\n章节收藏状态类型 (0: 未收藏, 1: 想看, 2: 看过, 3: 抛弃)`,
+        });
+        await answerCallbackQuery(client, queryId, {
+            text: `操作成功！`,
+            show_alert: false,
+        });
+    } catch (error) {
+        editMessageText(client, chat_id, message_id, {
+            text: `操作失败，发生错误：${(error as Error).message}`,
+        });
+    }
 }
 
 /**
@@ -89,12 +94,18 @@ export async function changeCollectionStatus(
     }
 
     const statusNum = Number(status);
-    await updateSubjectCollectionInfo(tokenResult.access_token, Number(animeId), statusNum);
-    editMessageText(client, chat_id, message_id, {
-        text: `动漫已标记为: ${statusMap[statusNum] || "未知状态"}`,
-    });
-    await answerCallbackQuery(client, queryId, {
-        text: `操作成功！`,
-        show_alert: false,
-    });
+    try {
+        await updateSubjectCollectionInfo(tokenResult.access_token, Number(animeId), statusNum);
+        editMessageText(client, chat_id, message_id, {
+            text: `动漫已标记为: ${statusMap[statusNum] || "未知状态"}`,
+        });
+        await answerCallbackQuery(client, queryId, {
+            text: `操作成功！`,
+            show_alert: false,
+        });
+    } catch (error) {
+        editMessageText(client, chat_id, message_id, {
+            text: `操作失败，发生错误：${(error as Error).message}`,
+        });
+    }
 }
