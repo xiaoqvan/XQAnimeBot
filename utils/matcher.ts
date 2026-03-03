@@ -46,7 +46,19 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
     if (!matchedEp) {
         // 场景：数据库只有 1-12 集，BT 是 13 集
         // 结果：返回 NOT_FOUND，提示调用者这是潜在的新季或错误
-        return { status: 'NOT_FOUND_IN_DB', msg: `未在当前季度找到第 ${epNum} 集（当前季可能最多 ${dbAnime.eps.total} 集）` };
+        const mainEpisodeSorts = dbAnime.eps.list
+            .filter(e => e.type === 0 || e.type === undefined)
+            .map(e => Number(e.sort))
+            .filter(sort => !isNaN(sort));
+
+        const minEpisode = mainEpisodeSorts.length > 0 ? Math.min(...mainEpisodeSorts) : 1;
+        const maxEpisode = mainEpisodeSorts.length > 0 ? Math.max(...mainEpisodeSorts) : Math.max(1, Number(dbAnime.eps.total) || 1);
+        const episodeRange = minEpisode === maxEpisode ? `${minEpisode}` : `${minEpisode}-${maxEpisode}`;
+
+        return {
+            status: 'NOT_FOUND_IN_DB',
+            msg: `未在当前季度找到第 ${epNum} 集（当前季集数范围：${episodeRange} 集）`
+        };
     }
 
     // ==========================================
