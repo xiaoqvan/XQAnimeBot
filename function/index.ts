@@ -1,4 +1,4 @@
-import { execSync } from "child_process";
+import { execSync, spawnSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import axios from "axios";
@@ -93,16 +93,35 @@ export async function extractVideoMetadata(videoPath: string): Promise<{
   let ffprobeFormatOutput = "";
 
   try {
-    ffprobeStreamOutput = execSync(
-      `ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of default=noprint_wrappers=1:nokey=0 "${videoPath}"`,
-      { stdio: ["ignore", "pipe", "ignore"] }
-    ).toString();
-    ffprobeFormatOutput = execSync(
-      `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=0 "${videoPath}"`,
-      { stdio: ["ignore", "pipe", "ignore"] }
-    ).toString();
-  } catch {
-    throw new Error("ffprobe 获取视频信息失败");
+    const streamResult = spawnSync(
+      "ffprobe",
+      ["-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=width,height",
+        "-of", "default=noprint_wrappers=1:nokey=0",
+        videoPath],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    if (streamResult.status !== 0) {
+      const stderr = streamResult.stderr?.toString().trim() ?? "";
+      throw new Error(`ffprobe 获取视频流信息失败 (exit ${streamResult.status})${stderr ? `\nstderr: ${stderr}` : ""}`);
+    }
+    ffprobeStreamOutput = streamResult.stdout.toString();
+
+    const formatResult = spawnSync(
+      "ffprobe",
+      ["-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=0",
+        videoPath],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    if (formatResult.status !== 0) {
+      const stderr = formatResult.stderr?.toString().trim() ?? "";
+      throw new Error(`ffprobe 获取时长信息失败 (exit ${formatResult.status})${stderr ? `\nstderr: ${stderr}` : ""}`);
+    }
+    ffprobeFormatOutput = formatResult.stdout.toString();
+  } catch (err) {
+    throw new Error(`ffprobe 获取视频信息失败\n文件: ${videoPath}\n${(err as Error).message}`);
   }
   ffprobeStreamOutput.split("\n").forEach((line) => {
     if (line.startsWith("width=")) width = parseInt(line.replace("width=", ""));
@@ -144,12 +163,18 @@ export async function extractVideoMetadata(videoPath: string): Promise<{
   );
   try {
     // 截取第10秒的帧作为封面
-    execSync(
-      `ffmpeg -y -ss 10 -i "${videoPath}" -frames:v 1 -q:v 2 "${coverPath}"`,
-      { stdio: ["ignore", "ignore", "ignore"] }
+    const coverResult = spawnSync(
+      "ffmpeg",
+      ["-y", "-ss", "10", "-i", videoPath,
+        "-frames:v", "1", "-q:v", "2", coverPath],
+      { stdio: ["ignore", "ignore", "pipe"] }
     );
-  } catch {
-    throw new Error("ffmpeg 截图失败");
+    if (coverResult.status !== 0) {
+      const stderr = coverResult.stderr?.toString().trim() ?? "";
+      throw new Error(`ffmpeg 截图失败 (exit ${coverResult.status})${stderr ? `\nstderr: ${stderr}` : ""}`);
+    }
+  } catch (err) {
+    throw new Error(`ffmpeg 截图失败\n文件: ${videoPath}\n${(err as Error).message}`);
   }
 
   return { width, height, duration, coverPath };

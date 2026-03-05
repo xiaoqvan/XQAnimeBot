@@ -11,10 +11,17 @@ import { spawn } from "child_process";
  */
 function run(cmd: string, args: string[]) {
   return new Promise<void>((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: "ignore" });
-    p.on("error", reject);
+    const p = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    p.stderr?.on("data", (d) => (stderr += d.toString()));
+    p.on("error", (err) => reject(new Error(`${cmd} 启动失败: ${err.message}`)));
     p.on("close", (code) => {
-      code === 0 ? resolve() : reject(new Error(`${cmd} exited with ${code}`));
+      if (code === 0) {
+        resolve();
+      } else {
+        const detail = stderr.trim() ? `\nstderr: ${stderr.trim()}` : "";
+        reject(new Error(`${cmd} exited with ${code}${detail}`));
+      }
     });
   });
 }
@@ -56,7 +63,10 @@ export async function mkvToMp4(mkv: string): Promise<string> {
   const hasSub = subtitleIndex !== null || (await hasAnySubtitles(mkv));
 
   if (hasSub) {
-    const safePath = mkv.replace(/'/g, "\\'");
+    const safePath = mkv
+      .replace(/\\/g, "\\\\")
+      .replace(/:/g, "\\:")
+      .replace(/'/g, "\\'");
     const vf =
       subtitleIndex !== null
         ? `subtitles='${safePath}':si=${subtitleIndex}`
