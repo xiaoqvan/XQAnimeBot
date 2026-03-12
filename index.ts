@@ -103,6 +103,15 @@ export default class AnimePlugin extends Plugin {
           return mod.default(this.client, message.message, commandParts);
         },
       },
+      progress: {
+        description: "查看当前动漫下载/处理进度",
+        scope: "private",
+        permission: "admin",
+        handler: async (message, _) => {
+          const mod = await import("./cmd/progress.ts");
+          return mod.default(this.client, message.message);
+        },
+      },
     };
 
     this.updateHandlers = {
