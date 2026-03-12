@@ -78,10 +78,23 @@ export async function sendMegToNavAnime(client: Client, id: number) {
     // 更新集数信息
     const episodeInfo = await getEpisodeInfo(Anime.id);
 
-    updateAnimeInfo(Anime.id, animeInfo);
-    updateAnimeEpisodes(Anime.id, episodeInfo);
+    // 并行持久化评分、简介和集数信息，并捕获错误避免影响后续导航消息更新
+    await Promise.allSettled([
+      updateAnimeInfo(Anime.id, animeInfo),
+      updateAnimeEpisodes(Anime.id, episodeInfo),
+    ]);
 
-    Anime.score = animeInfo?.rating?.score || Anime.score;
+    // 同步内存中的 Anime 对象，确保导航消息文本使用最新数据
+    Anime.score = animeInfo?.rating?.score ?? Anime.score;
+    if (episodeInfo?.total) {
+      Anime.episode = String(episodeInfo.total);
+    }
+    if (Array.isArray(episodeInfo?.data) && episodeInfo.data.length > 0) {
+      Anime.eps = {
+        total: episodeInfo.total,
+        list: episodeInfo.data,
+      };
+    }
     const megtexts = await navmegtext(client, Anime); // megtexts[0] 为主导航，1.. 为资源
 
     // 主导航消息（应为 messagePhoto）：仅在文本变化时才编辑
@@ -390,6 +403,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
 /**
  * 发送动漫视频到动漫频道
+ * 超时时间为 30 分钟，失败或超时后自动重试一次
  * @param client - TDLib 客户端实例
  * @param anime - 数据库中动漫详细信息
  * @param item - 动漫在BT站中的信息
@@ -406,72 +420,68 @@ export async function sendMegToAnime(
   segments?: string[]
 ) {
   await updateTorrentStatus(item.title, "上传中");
+
+  const coverPaths: string[] = [];
+  let sendOnce: () => ReturnType<typeof sendMessage | typeof sendMessageAlbum>;
+
   if (segments) {
     const text = AnimeText(anime, item, episodeId);
-    let videoInfos = [];
+    const videoInfos: Awaited<ReturnType<typeof extractVideoMetadata>>[] = [];
     for (const path of segments) {
       const videoInfo = await extractVideoMetadata(path);
       videoInfos.push(videoInfo);
+      coverPaths.push(videoInfo.coverPath);
     }
-    const animeMessages = await sendMessageAlbum(
-      client,
-      Number(env.data.ANIME_CHANNEL),
-      {
-        timeout: 3600,
+    sendOnce = () =>
+      sendMessageAlbum(client, Number(env.data.ANIME_CHANNEL), {
+        timeout: 1800,
         medias: videoInfos.map((videoInfo, index) => ({
-          video: {
-            path: segments[index],
-          },
-          cover: {
-            path: videoInfo.coverPath,
-          },
+          video: { path: segments[index] },
+          cover: { path: videoInfo.coverPath },
           width: videoInfo.width,
           height: videoInfo.height,
           duration: Math.floor(videoInfo.duration),
           supports_streaming: true,
           has_spoiler: anime?.r18 === true || false,
-          caption: index === 0 ? text : undefined
-        }))
-      }
-    )
-
-    // 清理视频文件和封面
-    for (const path of segments) {
-      fs.unlink(path).catch(() => { });
-    }
-    for (const videoInfo of videoInfos) {
-      fs.unlink(videoInfo.coverPath).catch(() => { });
-    }
-
-    return animeMessages;
+          caption: index === 0 ? text : undefined,
+        })),
+      });
+  } else {
+    const videoInfo = await extractVideoMetadata(videoPath);
+    coverPaths.push(videoInfo.coverPath);
+    const text = AnimeText(anime, item, episodeId);
+    sendOnce = () =>
+      sendMessage(client, Number(env.data.ANIME_CHANNEL), {
+        text,
+        timeout: 1800,
+        media: {
+          video: { path: videoPath },
+          cover: { path: videoInfo.coverPath },
+          width: videoInfo.width,
+          height: videoInfo.height,
+          duration: Math.floor(videoInfo.duration),
+          supports_streaming: true,
+          has_spoiler: anime?.r18 === true || false,
+        },
+      });
   }
-  const videoInfo = await extractVideoMetadata(videoPath);
-  const text = AnimeText(anime, item, episodeId);
-  const animeMessage = await sendMessage(
-    client,
-    Number(env.data.ANIME_CHANNEL),
-    {
-      text: text,
-      timeout: 3600,
-      media: {
-        video: {
-          path: videoPath,
-        },
-        cover: {
-          path: videoInfo.coverPath,
-        },
-        width: videoInfo.width,
-        height: videoInfo.height,
-        duration: Math.floor(videoInfo.duration),
-        supports_streaming: true,
-        has_spoiler: anime?.r18 === true || false,
-      },
-    }
-  );
+
+  let result;
+  try {
+    result = await sendOnce();
+  } catch (firstError) {
+    logger.warn(`sendMegToAnime 首次发送失败，准备重试: ${item.title}`, firstError);
+    result = await sendOnce();
+  }
+
   await updateTorrentStatus(item.title, "完成");
-  fs.unlink(videoPath).catch(() => { });
-  fs.unlink(videoInfo.coverPath).catch(() => { });
-  return animeMessage;
+
+  // 统一清理视频文件和封面
+  const videoPaths = segments ?? [videoPath];
+  for (const p of videoPaths) fs.unlink(p).catch(() => { });
+  for (const p of coverPaths) fs.unlink(p).catch(() => { });
+
+  return result;
 }
 
 /** 发送动漫视频到缓存频道
