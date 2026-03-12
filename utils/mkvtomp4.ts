@@ -63,31 +63,90 @@ export async function mkvToMp4(mkv: string): Promise<string> {
   const hasSub = subtitleIndex !== null || (await hasAnySubtitles(mkv));
 
   if (hasSub) {
-    const safePath = mkv
-      .replace(/\\/g, "\\\\")
-      .replace(/:/g, "\\:")
-      .replace(/'/g, "\\'");
-    const vf =
-      subtitleIndex !== null
-        ? `subtitles='${safePath}':si=${subtitleIndex}`
-        : `subtitles='${safePath}'`;
+    // 先将字幕流提取为独立 .ass 文件，避免 subtitles 滤镜重新解析原文件时
+    const subStreamIndex = subtitleIndex ?? 0;
+    const subPath = path.join(outDir, `${base}_sub_${hash}.ass`);
+    let subExtracted = false;
 
-    await run("ffmpeg", [
-      "-y",
-      "-i",
-      mkv,
-      "-vf",
-      vf,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "fast",
-      "-crf",
-      "20",
-      "-c:a",
-      "copy",
-      outPath,
-    ]);
+    try {
+      await run("ffmpeg", [
+        "-y",
+        "-i",
+        mkv,
+        "-map",
+        `0:s:${subStreamIndex}`,
+        subPath,
+      ]);
+      subExtracted = true;
+    } catch {
+      // 字幕提取失败，降级为无字幕转码
+    }
+
+    if (subExtracted) {
+      const safeSubPath = subPath
+        .replace(/\\/g, "\\\\")
+        .replace(/:/g, "\\:")
+        .replace(/'/g, "\\'");
+
+      try {
+        await run("ffmpeg", [
+          "-y",
+          "-i",
+          mkv,
+          "-vf",
+          `subtitles='${safeSubPath}'`,
+          "-c:v",
+          "libx264",
+          "-preset",
+          "fast",
+          "-crf",
+          "20",
+          "-c:a",
+          "copy",
+          outPath,
+        ]);
+      } finally {
+        await fs.unlink(subPath).catch(() => { });
+      }
+    } else {
+      // 降级：无字幕兼容性转码
+      await run("ffmpeg", [
+        "-y",
+        "-err_detect",
+        "ignore_err",
+        "-fflags",
+        "+genpts",
+        "-i",
+        mkv,
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-profile:v",
+        "high",
+        "-level",
+        "4.1",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        "-crf",
+        "23",
+        "-c:a",
+        "aac",
+        "-b:a",
+        "192k",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
+        "-map_metadata",
+        "-1",
+        "-map_chapters",
+        "-1",
+        outPath,
+      ]);
+    }
   } else {
     await run("ffmpeg", [
       "-y",
@@ -214,7 +273,8 @@ async function findSimplifiedChineseSubtitleIndex(
         const data = JSON.parse(out);
         const streams = data.streams ?? [];
 
-        for (const s of streams) {
+        for (let i = 0; i < streams.length; i++) {
+          const s = streams[i];
           const lang = (s.tags?.language || "").toLowerCase();
           const title = (s.tags?.title || "").toLowerCase();
 
@@ -224,8 +284,8 @@ async function findSimplifiedChineseSubtitleIndex(
             title.includes("chs") ||
             title.includes("simplified");
 
-          if (isZH && typeof s.index === "number") {
-            return resolve(s.index);
+          if (isZH) {
+            return resolve(i);
           }
         }
 
