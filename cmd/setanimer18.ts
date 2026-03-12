@@ -200,6 +200,7 @@ async function updateAssociatedVideoMessagesR18(
         pubDate: "",
         magnet: "",
         team: "",
+        link: "",
       };
       if (!ep.episodeId) {
         fail++;

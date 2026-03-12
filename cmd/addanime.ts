@@ -3,7 +3,8 @@ import type { Client } from "tdl";
 
 import { isUserAdmin } from "@TDLib/function/index.ts";
 import { editMessageText, sendMessage } from "@TDLib/function/message.ts";
-import { handleExistingAnime } from "../anime/index.ts";
+import { handleExistingAnime } from "../anime/animeHandlers.ts";
+import { animeProcessor } from "../anime/AnimeProcessorManager.ts";
 import { getAnimeById } from "../database/query.ts";
 import {
   fetchBangumiTags,
@@ -168,6 +169,7 @@ export default async function addAnime(
       pubDate: formatPubDate(torrentInfo.pubDate),
       magnet: torrentInfo.magnet,
       team: team[0]?.name,
+      link: url,
       fansub,
       ...infoq,
     };
@@ -204,6 +206,7 @@ export default async function addAnime(
       pubDate: formatPubDate(formatDmhyPubDate(dmhyinfo.pubDate)),
       magnet: dmhyinfo.magnet,
       team: dmhyinfo.team,
+      link: url,
       fansub,
       ...infoq,
     };
@@ -215,7 +218,7 @@ export default async function addAnime(
     return;
   }
 
-  await handleExistingAnime(client, animeBtInfo, animeinfo);
+  await handleExistingAnime(client, animeBtInfo, animeinfo, animeProcessor);
   if (!tipsMsg) {
     return;
   }

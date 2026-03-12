@@ -19,7 +19,7 @@ export default async function ConAnimeInformation(
     message.sender_id
   );
 
-  const config = await getConfig("admin");
+  const config = await getConfig("admin")
   const isBotAdmin =
     message.sender_id._ === "messageSenderUser" &&
     message.sender_id.user_id === config?.super_admin;
@@ -69,8 +69,7 @@ export default async function ConAnimeInformation(
         _: "inputMessageText",
         text: await parseTextEntities(
           client,
-          `番剧缓存信息为：${anime?.name_cn || anime?.name || "未知"}(id:${
-            anime?.id
+          `番剧缓存信息为：${anime?.name_cn || anime?.name || "未知"}(id:${anime?.id
           })\n缓存: ${cache?.title}(id:${Cache_id}) `
         ),
       },

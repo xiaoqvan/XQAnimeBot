@@ -172,6 +172,7 @@ export default async function addAnime(
             pubDate: formatPubDate(torrentInfo.pubDate),
             magnet: torrentInfo.magnet,
             team: team[0]?.name,
+            link: url,
             fansub,
             ...infoq,
         };
@@ -209,6 +210,7 @@ export default async function addAnime(
             magnet: dmhyinfo.magnet,
             team: dmhyinfo.team,
             fansub,
+            link: url,
             ...infoq,
         };
     } else {

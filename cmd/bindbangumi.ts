@@ -22,6 +22,9 @@ export default async function bindbangumi(client: Client, message: message) {
                             _: "inlineKeyboardButton",
                             text: "前往 Bangumi 授权页面",
                             icon_custom_emoji_id: "6057366942199586325",
+                            style: {
+                                _: "buttonStyleSuccess"
+                            },
                             type: {
                                 _: "inlineKeyboardButtonTypeUrl",
                                 url: authUrl,
