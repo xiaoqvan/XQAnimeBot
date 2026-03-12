@@ -1,0 +1,182 @@
+import logger from "@log/index.ts";
+import { hasTorrentTitle, hasAnimeSend } from "../database/query.ts";
+import { parseInfo } from "../utils/animeParser.ts";
+import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
+import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
+import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
+import type { RssAnimeItem, animeItem } from "../types/anime.d.ts";
+import type { Client } from "tdl";
+
+/**
+ * 处理单个 RSS 动漫条目的完整入口流程：
+ * 检查重复 → 提取字幕组 → 按平台解析详情 → 调用 {@link animeDownload} 分发
+ *
+ * @param client - TDLib 客户端实例
+ * @param item - 来自 RSS 源的原始动漫条目
+ * @param manager - 并发处理管理器，用于全程更新进度阶段
+ */
+export async function handleRssAnimeItem(
+    client: Client,
+    item: RssAnimeItem,
+    manager: AnimeProcessorManager
+): Promise<void> {
+    manager.updateProgress(item.title, "检查种子缓存");
+
+    const torrentExists = await hasTorrentTitle(item.title);
+    if (torrentExists) return;
+
+    // 从标题开头提取字幕组名称（支持 [SubGroup] 和 【SubGroup】 两种格式）
+    const match = item.title.match(/^(?:\[([^\]]+)]|【([^】]+)】)/);
+    if (!match) return;
+
+    const raw = match[1] || match[2];
+    const fansub = raw
+        .split(/\s*[&/|｜、]\s*/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+    if (!fansub || fansub.length === 0) return;
+
+    manager.updateProgress(item.title, "解析RSS信息");
+
+    let newitem: animeItem | undefined;
+
+    if (item.type === "bangumi") {
+        newitem = await parseBangumiItem(item, fansub, manager);
+    } else if (item.type === "dmhy" || item.type === "acgnx") {
+        newitem = await parseDmhyOrAcgnxItem(item, fansub);
+    } else {
+        return;
+    }
+
+    if (!newitem) return;
+
+    await animeDownload(client, newitem, manager);
+}
+
+/**
+ * 解析 bangumi.moe 类型的 RSS 条目，补充字幕组/标签/多语言名称信息
+ *
+ * @param item - bangumi.moe RSS 原始条目
+ * @param fansub - 从标题提取到的字幕组列表
+ * @param manager - 并发处理管理器，用于更新进度阶段
+ * @returns 完整填充的 {@link animeItem}，解析失败时返回 undefined
+ */
+async function parseBangumiItem(
+    item: RssAnimeItem & { type: "bangumi" },
+    fansub: string[],
+    manager: AnimeProcessorManager
+): Promise<animeItem | undefined> {
+    manager.updateProgress(item.title, "获取Bangumi详情");
+
+    const torrentInfo = await fetchBangumiTorrent(item.id);
+
+    let team: { name?: string }[] = [];
+    if (torrentInfo.team_id) {
+        team = await fetchBangumiTeam(torrentInfo.team_id);
+    } else {
+        team = [{ name: fansub[0] }];
+    }
+
+    const tags =
+        torrentInfo.tag_ids && torrentInfo.tag_ids.length > 0
+            ? await fetchBangumiTags(torrentInfo.tag_ids)
+            : [];
+
+    // 从 tags 中找到 type === "bangumi" 的条目并提取多语言名称
+    const bangumiTag = tags.find(
+        (tag: {
+            type?: string;
+            locale?: { zh_cn?: string; ja?: string; en?: string };
+        }) => tag.type === "bangumi"
+    );
+
+    const nameLocales = bangumiTag
+        ? {
+            cn: bangumiTag.locale.zh_cn || "",
+            jp: bangumiTag.locale.ja || "",
+            en: bangumiTag.locale.en || "",
+        }
+        : { cn: "", jp: "", en: "" };
+
+    const infoq = parseInfo(item.title, team[0]?.name ?? null);
+    if (!infoq) return undefined;
+
+    // 将多语言名合并进 infoq.names，去重去空
+    const localeNames = [nameLocales.cn, nameLocales.jp, nameLocales.en]
+        .filter((s) => typeof s === "string" && s.trim() !== "")
+        .map((s) => s.trim());
+
+    infoq.names = Array.isArray(infoq.names)
+        ? infoq.names.map((s) => (typeof s === "string" ? s.trim() : "")).filter(Boolean)
+        : [];
+    infoq.names = Array.from(new Set([...infoq.names, ...localeNames])).filter(Boolean);
+
+    // 白名单机制：names 为空则跳过
+    if (!infoq.names || infoq.names.length === 0) return undefined;
+
+    return {
+        title: item.title,
+        pubDate: item.pubDate,
+        link: item.link,
+        magnet: torrentInfo.magnet,
+        team: team[0]?.name ?? fansub[0],
+        fansub,
+        ...infoq,
+    };
+}
+
+/**
+ * 解析动漫花园（dmhy）或末日动漫（acgnx）类型的 RSS 条目
+ *
+ * @param item - dmhy / acgnx RSS 原始条目
+ * @param fansub - 从标题提取到的字幕组列表
+ * @returns 完整填充的 {@link animeItem}，标题解析失败时返回 undefined
+ */
+async function parseDmhyOrAcgnxItem(
+    item: RssAnimeItem & { type: "dmhy" | "acgnx" },
+    fansub: string[]
+): Promise<animeItem | undefined> {
+    const infoq = parseInfo(item.title, item.author);
+    if (!infoq) return undefined;
+
+    return {
+        title: item.title,
+        pubDate: item.pubDate,
+        magnet: item.magnet,
+        link: item.link,
+        team: item.author,
+        fansub,
+        ...infoq,
+    };
+}
+
+/**
+ * 根据数据库查询结果，将条目分发给新番处理器或已有番处理器
+ *
+ * @param client - TDLib 客户端实例
+ * @param item - 已解析的动漫 BT 条目
+ * @param manager - 并发处理管理器，用于更新进度阶段
+ */
+async function animeDownload(
+    client: Client,
+    item: animeItem,
+    manager: AnimeProcessorManager
+): Promise<void> {
+    manager.updateProgress(item.title, "查询数据库", { animeName: item.names[0] });
+
+    const anime = await hasAnimeSend(item.names);
+
+    if (!anime) {
+        logger.info(`✨ 发现潜在新番: ${item.title}`);
+        manager.updateProgress(item.title, "处理新番剧", { animeName: item.names[0] });
+        await handleNewAnime(client, item, manager);
+        return;
+    }
+
+    logger.info(`找到匹配的番剧，准备下载: ${item.title}`);
+    manager.updateProgress(item.title, "处理已有番剧", {
+        animeName: anime.name_cn || anime.name,
+    });
+    await handleExistingAnime(client, item, anime, manager);
+}
