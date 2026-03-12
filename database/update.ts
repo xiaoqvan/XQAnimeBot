@@ -547,14 +547,16 @@ export async function updateAnimeInfo(
       throw new Error(`未找到ID为 ${animeId} 的动漫`);
     }
 
-    // 更新导航频道消息并移除旧的 navMessageLink 字段
+    const newScore = animeInfo.rating?.score ?? undefined;
+
     const result = await db.collection("anime").updateOne(
       { id: animeId },
       {
         $set: {
           name_cn: animeInfo.name_cn ?? anime.name_cn,
           summary: animeInfo.summary ?? anime.summary,
-
+          // 仅当 API 返回了有效评分时才覆盖（避免用 undefined 覆盖已有值）
+          ...(newScore !== undefined ? { score: newScore } : {}),
           updatedAt: new Date(),
         },
       }
@@ -563,7 +565,7 @@ export async function updateAnimeInfo(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新导航频道消息失败: ${error instanceof Error ? error.message : error}`
+      `更新动漫基础信息失败: ${error instanceof Error ? error.message : error}`
     );
   }
 }
@@ -631,6 +633,8 @@ export async function updateAnimeEpisodes(
       { id: animeId },
       {
         $set: {
+          // 同步更新 episode 字符串字段（导航消息「本季话数」的数据来源）
+          episode: String(EpisodeInfo.total || 0),
           "eps.total": EpisodeInfo.total || 0,
           "eps.list": list,
           updatedAt: new Date(),
