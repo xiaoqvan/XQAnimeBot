@@ -833,18 +833,73 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // 百冬练习组：番剧名在第二个【】中，用 _ 分割
   百冬练习组: (title: string) => {
-    // 提取所有【】内的内容
-    const brackets = [...title.matchAll(/【([^】]+)】/g)].map((m) => m[1]);
+    // 手动解析【】块（支持嵌套）
+    const brackets: string[] = [];
+    let depth = 0;
+    let start = -1;
+
+    for (let i = 0; i < title.length; i++) {
+      const c = title[i];
+
+      if (c === "【") {
+        if (depth === 0) start = i + 1;
+        depth++;
+      } else if (c === "】") {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          brackets.push(title.slice(start, i));
+          start = -1;
+        }
+      }
+    }
+
     // 取第二个【】作为番剧名称
     if (brackets.length >= 2) {
-      let animeName = brackets[1];
-      // 按 _ 分割名称
+      const animeName = brackets[1];
+
       const names = animeName
         .split("_")
-        .map((s) => s.trim())
+        .map((s) => s.replace(/[【】]/g, "").trim())
         .filter(Boolean);
+
       return sortNamesByPriority(names, title);
     }
+
+    return [];
+  },
+  百冬練習組: (title: string) => {
+    // 手动解析【】块（支持嵌套）
+    const brackets: string[] = [];
+    let depth = 0;
+    let start = -1;
+
+    for (let i = 0; i < title.length; i++) {
+      const c = title[i];
+
+      if (c === "【") {
+        if (depth === 0) start = i + 1;
+        depth++;
+      } else if (c === "】") {
+        depth--;
+        if (depth === 0 && start !== -1) {
+          brackets.push(title.slice(start, i));
+          start = -1;
+        }
+      }
+    }
+
+    // 取第二个【】作为番剧名称
+    if (brackets.length >= 2) {
+      const animeName = brackets[1];
+
+      const names = animeName
+        .split("_")
+        .map((s) => s.replace(/[【】]/g, "").trim())
+        .filter(Boolean);
+
+      return sortNamesByPriority(names, title);
+    }
+
     return [];
   },
 };
