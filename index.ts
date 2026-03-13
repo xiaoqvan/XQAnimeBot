@@ -112,6 +112,15 @@ export default class AnimePlugin extends Plugin {
           return mod.default(this.client, message.message);
         },
       },
+      canceltask: {
+        description: "取消当前堵塞任务并释放并发槽位",
+        scope: "private",
+        permission: "admin",
+        handler: async (message, commandParts) => {
+          const mod = await import("./cmd/canceltask.ts");
+          return mod.default(this.client, message.message, commandParts);
+        },
+      },
     };
 
     this.updateHandlers = {

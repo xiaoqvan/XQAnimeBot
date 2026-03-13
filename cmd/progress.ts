@@ -7,6 +7,7 @@ import { animeProcessor } from "../anime/AnimeProcessorManager.ts";
 import { getQBClient } from "../qBittorrent/index.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
+import { getSmartDelayInfo } from "../utils/index.ts";
 
 /** qBittorrent 种子状态对照表（英文状态码 → 人类可读中文） */
 const QB_STATE_ZH: Record<string, string> = {
@@ -48,6 +49,19 @@ function formatDuration(startTime: Date): string {
 }
 
 /**
+ * 将毫秒时长格式化为简短倒计时文本
+ * @param ms - 毫秒数
+ * @returns 如 "42秒"、"3分12秒"、"1时02分" 的文本
+ */
+function formatCountdown(ms: number): string {
+    const seconds = Math.max(0, Math.floor(ms / 1000));
+    if (seconds < 60) return `${seconds}秒`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}分${seconds % 60}秒`;
+    return `${Math.floor(minutes / 60)}时${String(minutes % 60).padStart(2, "0")}分`;
+}
+
+/**
  * 处理 `/progress` 命令，向管理员展示当前所有活跃的动漫下载/处理进度
  *
  * 显示内容包括：
@@ -79,9 +93,16 @@ export default async function progress(
     const activeItems = animeProcessor.getProgress();
     const queueSize = animeProcessor.getQueueSize();
     const activeCount = animeProcessor.getActiveCount();
+    const delayInfo = getSmartDelayInfo();
+    const nextRefreshText = delayInfo.waitEnd.toLocaleString("zh-CN", {
+        hour12: false,
+    });
+    const policyMinutes = Math.round(delayInfo.intervalMs / 60000);
 
     let text = `**📊 动漫处理进度**\n\n`;
-    text += `🔄 活跃任务: **${activeCount}** | 📋 排队中: **${queueSize}**\n\n`;
+    text += `🔄 活跃任务: **${activeCount}** | 📋 排队中: **${queueSize}**\n`;
+    text += `🕒 下次RSS刷新: **${nextRefreshText}**（约 ${formatCountdown(delayInfo.waitMs)} 后）\n`;
+    text += `⏱️ 当前smartDelay间隔: **${policyMinutes} 分钟**\n\n`;
 
     if (activeItems.length === 0) {
         text += queueSize === 0

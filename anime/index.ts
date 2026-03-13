@@ -31,7 +31,11 @@ export async function anime(client: Client): Promise<void> {
                         `获取到 ${validItems.length} 个 RSS 条目，加入处理队列` +
                         `（活跃: ${animeProcessor.getActiveCount()}, 排队: ${animeProcessor.getQueueSize()}）`
                     );
-                    animeProcessor.enqueue(client, validItems);
+                    const enqueueResult = await animeProcessor.enqueue(client, validItems);
+                    logger.debug(
+                        `入队完成：新增 ${enqueueResult.added}，过滤已存在 ${enqueueResult.filtered}` +
+                        `（活跃: ${animeProcessor.getActiveCount()}, 排队: ${animeProcessor.getQueueSize()}）`
+                    );
                 }
             }
         } catch (error) {

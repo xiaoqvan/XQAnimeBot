@@ -1,6 +1,7 @@
 import logger from "@log/index.ts";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
 import { handleRssAnimeItem } from "./rssItemHandler.ts";
+import { hasTorrentTitle } from "../database/query.ts";
 import type { RssAnimeItem } from "../types/anime.d.ts";
 import type { Client } from "tdl";
 
@@ -20,6 +21,16 @@ export interface ProgressInfo {
     startTime: Date;
     /** 最后一次阶段更新的时间 */
     updatedAt: Date;
+}
+
+/** 取消任务的执行结果 */
+export interface CancelResult {
+    /** 是否执行成功 */
+    ok: boolean;
+    /** 目标任务标题 */
+    title?: string;
+    /** 结果描述 */
+    message: string;
 }
 
 /** 内部队列条目，封装了 client 和 RSS 条目 */
@@ -49,6 +60,9 @@ export class AnimeProcessorManager {
     /** 当前正在运行的 worker 数量（原子计数） */
     private activeCount = 0;
 
+    /** 记录已经被“强制释放槽位”的任务标题，避免 finally 重复扣减 activeCount */
+    private readonly forceReleasedTitles: Set<string> = new Set();
+
     /**
      * 创建管理器实例
      * @param maxConcurrency - 最大并发 worker 数量，默认 3
@@ -58,15 +72,36 @@ export class AnimeProcessorManager {
     }
 
     /**
-     * 将 RSS 条目批量加入队列，并立即尝试启动新 worker 填满空闲槽位
+     * 将 RSS 条目批量加入队列（入队前先按种子标题做数据库去重过滤），并立即尝试启动新 worker 填满空闲槽位
      * @param client - TDLib 客户端实例
      * @param items - 需要处理的 RSS 动漫条目列表
+     * @returns 入队统计：added 为成功入队数量，filtered 为被 hasTorrentTitle 过滤掉的数量
      */
-    enqueue(client: Client, items: RssAnimeItem[]): void {
+    async enqueue(
+        client: Client,
+        items: RssAnimeItem[]
+    ): Promise<{ added: number; filtered: number }> {
+        let added = 0;
+        let filtered = 0;
+
         for (const item of items) {
+            try {
+                const exists = await hasTorrentTitle(item.title);
+                if (exists) {
+                    filtered++;
+                    continue;
+                }
+            } catch (error) {
+                // 查询失败时不阻塞主流程，保守策略为继续入队
+                logger.warn(`[AnimeProcessor] 入队前去重查询失败，继续入队: ${item.title}`, error);
+            }
+
             this.queue.push({ client, item });
+            added++;
         }
+
         this.trySpawnWorkers();
+        return { added, filtered };
     }
 
     /**
@@ -91,6 +126,64 @@ export class AnimeProcessorManager {
      */
     getActiveCount(): number {
         return this.activeCount;
+    }
+
+    /**
+     * 按 /progress 展示顺序取消指定序号的活跃任务
+     * @param index - 任务序号（从 1 开始）
+     * @returns 取消结果
+     */
+    cancelActiveByIndex(index: number): CancelResult {
+        const items = this.getProgress();
+        if (!Number.isInteger(index) || index < 1 || index > items.length) {
+            return {
+                ok: false,
+                message: `无效序号: ${index}，当前活跃任务数为 ${items.length}`,
+            };
+        }
+        const target = items[index - 1];
+        return this.cancelActiveByTitle(target.title);
+    }
+
+    /**
+     * 按标题取消活跃任务，并立即释放并发槽位
+     * @param title - 任务标题
+     * @returns 取消结果
+     */
+    cancelActiveByTitle(title: string): CancelResult {
+        const current = this.progressMap.get(title);
+        if (!current) {
+            return {
+                ok: false,
+                message: `未找到活跃任务: ${title}`,
+            };
+        }
+
+        this.progressMap.delete(title);
+        if (!this.forceReleasedTitles.has(title)) {
+            this.forceReleasedTitles.add(title);
+            this.activeCount = Math.max(0, this.activeCount - 1);
+        }
+        // 立即尝试补位，避免因为堵塞任务占槽而停滞
+        this.trySpawnWorkers();
+
+        return {
+            ok: true,
+            title,
+            message: `已取消任务并释放并发槽位: ${title}`,
+        };
+    }
+
+    /**
+     * 取消当前全部活跃任务，并立即释放并发槽位
+     * @returns 取消结果列表
+     */
+    cancelAllActive(): CancelResult[] {
+        const items = this.getProgress();
+        if (items.length === 0) {
+            return [{ ok: false, message: "当前没有可取消的活跃任务" }];
+        }
+        return items.map((item) => this.cancelActiveByTitle(item.title));
     }
 
     /**
@@ -152,8 +245,11 @@ export class AnimeProcessorManager {
                 ).catch(() => { });
             })
             .finally(() => {
-                this.activeCount--;
-                this.progressMap.delete(item.title);
+                const wasForceReleased = this.forceReleasedTitles.delete(item.title);
+                if (!wasForceReleased) {
+                    this.activeCount = Math.max(0, this.activeCount - 1);
+                    this.progressMap.delete(item.title);
+                }
                 // Worker 退出后立即尝试补充新任务，保持槽位始终满载
                 this.trySpawnWorkers();
             });

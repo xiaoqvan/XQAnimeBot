@@ -1,6 +1,22 @@
 import logger from "@log/index.ts";
 import { getTagExcludeList } from "../database/query.ts";
 
+/** smartDelay 计算结果 */
+export interface SmartDelayInfo {
+  /** 当前时间段的基础间隔（毫秒） */
+  intervalMs: number;
+  /** 距离下一个时间段切换点的时长（毫秒） */
+  timeToNextChangeMs: number;
+  /** 本轮实际等待时长（毫秒） */
+  waitMs: number;
+  /** 本轮等待结束时间 */
+  waitEnd: Date;
+  /** 北京时间小时（0-23） */
+  currentHourInBeijing: number;
+  /** 下一个切换点小时（北京时间） */
+  nextChangeHourInBeijing: number;
+}
+
 /**
  * 延迟函数
  * @param ms
@@ -21,11 +37,11 @@ export function combineFansub(fansub: string[] | null) {
 }
 
 /**
- * 智能延迟与时间段计算方法
- * 根据当前时间动态调整请求间隔
+ * 计算 smartDelay 的下一次刷新信息（不执行 sleep）
+ * @param now - 可选基准时间，默认当前时间
+ * @returns smartDelay 的等待信息快照
  */
-export async function smartDelayWithInterval() {
-  const now = new Date();
+export function getSmartDelayInfo(now: Date = new Date()): SmartDelayInfo {
   // 获取北京时间
   const beijingTime = new Date(now.getTime() + 8 * 60 * 60 * 1000);
   const currentHour = beijingTime.getUTCHours();
@@ -34,52 +50,68 @@ export async function smartDelayWithInterval() {
   const changeHours = [2, 11, 14, 18, 21];
 
   // 获取请求间隔
-  let interval;
+  let intervalMs;
   if (currentHour >= 21 || currentHour < 2) {
-    interval = 60 * 1000;
+    intervalMs = 60 * 1000;
   } else if (currentHour >= 18 && currentHour < 21) {
-    interval = 3 * 60 * 1000;
+    intervalMs = 3 * 60 * 1000;
   } else if (currentHour >= 11 && currentHour < 14) {
-    interval = 5 * 60 * 1000;
+    intervalMs = 5 * 60 * 1000;
   } else {
-    interval = 15 * 60 * 1000;
+    intervalMs = 15 * 60 * 1000;
   }
 
   // 找到下一个切换点
   let nextChangeHour = changeHours.find((hour) => hour > currentHour);
-  let timeToNextChange;
-  let waitMs;
-  let waitEnd;
+  let timeToNextChangeMs;
+
   if (!nextChangeHour) {
     nextChangeHour = 2;
     const tomorrow = new Date(beijingTime);
     tomorrow.setUTCDate(tomorrow.getUTCDate() + 1);
     tomorrow.setUTCHours(2, 0, 0, 0);
     const tomorrowLocal = new Date(tomorrow.getTime() - 8 * 60 * 60 * 1000);
-    timeToNextChange = tomorrowLocal.getTime() - now.getTime();
+    timeToNextChangeMs = tomorrowLocal.getTime() - now.getTime();
   } else {
     const nextChange = new Date(beijingTime);
     nextChange.setUTCHours(nextChangeHour, 0, 0, 0);
     const nextChangeLocal = new Date(nextChange.getTime() - 8 * 60 * 60 * 1000);
-    timeToNextChange = nextChangeLocal.getTime() - now.getTime();
+    timeToNextChangeMs = nextChangeLocal.getTime() - now.getTime();
   }
 
-  if (timeToNextChange < interval) {
-    waitMs = timeToNextChange + 1000;
-    waitEnd = new Date(now.getTime() + waitMs);
+  const waitMs = timeToNextChangeMs < intervalMs ? timeToNextChangeMs + 1000 : intervalMs;
+  const waitEnd = new Date(now.getTime() + waitMs);
+
+  return {
+    intervalMs,
+    timeToNextChangeMs,
+    waitMs,
+    waitEnd,
+    currentHourInBeijing: currentHour,
+    nextChangeHourInBeijing: nextChangeHour,
+  };
+}
+
+/**
+ * 智能延迟与时间段计算方法
+ * 根据当前时间动态调整请求间隔
+ */
+export async function smartDelayWithInterval() {
+  const now = new Date();
+  const info = getSmartDelayInfo(now);
+
+  if (info.timeToNextChangeMs < info.intervalMs) {
     logger.debug(
       `距离下一个时间段切换还有 ${Math.round(
-        timeToNextChange / 60000
-      )} 分钟，将在切换点立即检查，等待 ${waitMs} ms，结束时间: ${waitEnd.toLocaleString()}`
+        info.timeToNextChangeMs / 60000
+      )} 分钟，将在切换点立即检查，等待 ${info.waitMs} ms，结束时间: ${info.waitEnd.toLocaleString()}`
     );
-    await delay(waitMs);
+    await delay(info.waitMs);
   } else {
-    waitMs = interval;
-    waitEnd = new Date(now.getTime() + waitMs);
     logger.debug(
-      `本次等待 ${waitMs} ms，结束时间: ${waitEnd.toLocaleString()}`
+      `本次等待 ${info.waitMs} ms，结束时间: ${info.waitEnd.toLocaleString()}`
     );
-    await delay(waitMs);
+    await delay(info.waitMs);
   }
 }
 
