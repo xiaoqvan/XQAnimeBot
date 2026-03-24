@@ -359,13 +359,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
   const navMessage: messageType = {
     chat_id: navmeg.chat_id,
     message_id: navmeg.id,
-    topic_id: {
-      _: "messageTopicForum",
-      forum_topic_id:
-        navmeg.topic_id?._ === "messageTopicForum"
-          ? navmeg.topic_id.forum_topic_id
-          : 0,
-    },
+    topic_id: navmeg.topic_id,
     link: navLink.link,
   };
   await updateAnimeNavMessage(Anime.id, navMessage);
@@ -499,6 +493,11 @@ export async function sendMegToCache(
   segments?: string[]
 ) {
   await updateTorrentStatus(item.title, "上传中");
+  const cacheTopicId = Number(env.data.ANIME_GROUP_THREAD_ID);
+  const validCacheTopic =
+    Number.isFinite(cacheTopicId) && cacheTopicId > 0
+      ? { _: "messageTopicForum" as const, forum_topic_id: cacheTopicId }
+      : undefined;
   if (segments) {
     let videoInfos = [];
     for (const path of segments) {
@@ -509,10 +508,7 @@ export async function sendMegToCache(
       client,
       Number(env.data.ADMIN_GROUP_ID),
       {
-        topic_id: {
-          _: "messageTopicForum",
-          forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
-        },
+        topic_id: validCacheTopic,
         timeout: 3600,
         medias: videoInfos.map((videoInfo, index) => ({
           video: {
@@ -547,10 +543,7 @@ export async function sendMegToCache(
     Number(env.data.ADMIN_GROUP_ID),
     {
       text: item.title,
-      topic_id: {
-        _: "messageTopicForum",
-        forum_topic_id: Number(env.data.ANIME_GROUP_THREAD_ID) || 0,
-      },
+      topic_id: validCacheTopic,
       timeout: 3600,
       media: {
         video: {
