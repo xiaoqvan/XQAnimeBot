@@ -259,6 +259,8 @@ export interface TransferInfo {
     up_info_speed: number;
     /** 上传速率限制（字节/秒） */
     up_rate_limit: number;
+    /** 当前可用磁盘空间（字节） */
+    free_space_on_disk?: number;
 }
 
 /**

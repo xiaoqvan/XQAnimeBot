@@ -96,6 +96,20 @@ export async function downloadAndReturnPath(
     await wait(5000); // 每3秒轮询一次
   }
 
+  // 元数据获取后进行空间校验：当文件大小达到剩余空间的 2 倍时直接报错
+  const transferInfo = await QBclient.getTransferInfo();
+  const freeSpaceOnDisk = transferInfo.free_space_on_disk;
+  const torrentSize = torrent.total_size || torrent.size || 0;
+  if (
+    typeof freeSpaceOnDisk === "number" &&
+    freeSpaceOnDisk > 0 &&
+    torrentSize >= freeSpaceOnDisk * 2
+  ) {
+    throw new Error(
+      `磁盘空间不足：文件大小 ${torrentSize} 字节，当前剩余空间 ${freeSpaceOnDisk} 字节（需要至少文件大小的 1/2 以上可用空间）。`
+    );
+  }
+
   logger.debug(
     `\x1b[36m[QBclient][${torrent.hash}][${title}]\x1b[0m \x1b[32m元数据已获取，开始下载\x1b[0m`
   );
