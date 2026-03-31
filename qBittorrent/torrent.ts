@@ -105,6 +105,7 @@ export async function downloadAndReturnPath(
     freeSpaceOnDisk > 0 &&
     torrentSize >= freeSpaceOnDisk * 2
   ) {
+    await QBclient.deleteTorrent(hash, true);
     throw new Error(
       `磁盘空间不足：文件大小 ${torrentSize} 字节，当前剩余空间 ${freeSpaceOnDisk} 字节（需要至少文件大小的 1/2 以上可用空间）。`
     );
