@@ -77,7 +77,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     return sortNamesByPriority(names, title);
   },
   // 雪飘工作室
-  雪飘工作室: (title: string) => {
+  雪飄工作室: (title: string) => {
     const searchMatch =
       title.match(/（\s*检索(?:用)?[:：]\s*([^）]+)\s*）/) ||
       title.match(/\(\s*检索(?:用)?[:：]\s*([^)]+)\s*\)/);
