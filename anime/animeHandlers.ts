@@ -3,6 +3,7 @@ import parseTorrent from "parse-torrent";
 import { animeinfo } from "./get.ts";
 import { updateAnimeBtdata } from "../database/update.ts";
 import { addCacheItem, addTorrent, saveAnime } from "../database/create.ts";
+import { getEpisodeMetasBySubjectId } from "../database/query.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMegToAnime, sendMegToCache, sendMegToNavAnime } from "./sendAnime.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
@@ -15,7 +16,9 @@ import {
     promptAdminConfirmAnimeEpisodes,
 } from "./adminPrompts.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
-import type { albumMessageType, anime as animeType, animeItem } from "../types/anime.d.ts";
+import type { anime as animeType } from "../types/anime.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
+import type { albumMessageType } from "../types/message.d.ts";
 import type { Client } from "tdl";
 import type { message } from "tdlib-types";
 
@@ -77,7 +80,7 @@ function normalizeMsgResult(
  * 2. 创建缓存条目，记录种子信息防止重复处理
  * 3. 下载 BT 视频文件
  * 4. 将视频发送到管理员缓冲频道（待审核）
- * 5. 更新数据库中的 btdata 记录
+ * 5. 更新数据库中的资源记录
  * 6. 通知管理员审核番剧信息及集数匹配
  *
  * @param client - TDLib 客户端实例
@@ -171,7 +174,8 @@ export async function handleNewAnime(
         allMsgData.length > 1 ? allMsgData : undefined
     );
 
-    const matchResult = matchBangumiEpisode(anime, item.episode);
+    const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
+    const matchResult = matchBangumiEpisode(anime, episodeMetas, item.episode);
     if (matchResult.status !== "MATCHED") {
         manager.updateProgress(item.title, "通知管理员确认集数");
         await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
@@ -186,7 +190,7 @@ export async function handleNewAnime(
  * 处理数据库中已存在番剧的新集数 BT：
  * 1. 匹配 BT 集数与 bangumi 章节 ID
  * 2. 下载 BT 视频文件
- * 3a. 若集数匹配成功：发送到正式动漫频道，更新 btdata 和导航消息
+ * 3a. 若集数匹配成功：发送到正式动漫频道，更新资源记录和导航消息
  * 3b. 若集数匹配失败：发送到缓冲频道，通知管理员人工确认集数
  *
  * @param client - TDLib 客户端实例
@@ -200,7 +204,8 @@ export async function handleExistingAnime(
     anime: animeType,
     manager: AnimeProcessorManager
 ): Promise<void> {
-    const matchResult = matchBangumiEpisode(anime, item.episode);
+    const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
+    const matchResult = matchBangumiEpisode(anime, episodeMetas, item.episode);
     await addTorrent(item.magnet, "等待下载", item.title);
 
     // 解析磁力 hash 以供进度追踪（失败不阻断主流程）

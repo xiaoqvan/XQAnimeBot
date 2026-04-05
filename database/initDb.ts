@@ -71,6 +71,66 @@ async function initdb() {
     throw err;
   }
 
+  // 为 episodes_meta 集合创建索引
+  try {
+    const episodesMeta = db.collection("episodes_meta");
+
+    await episodesMeta.createIndex(
+      { subject_id: 1, id: 1 },
+      { unique: true, name: "subject_episode_unique_idx" }
+    );
+
+    await episodesMeta.createIndex(
+      { subject_id: 1, sort: 1 },
+      { name: "subject_sort_idx" }
+    );
+
+    logger.info("episodes_meta 集合索引创建成功");
+  } catch (err) {
+    logger.error("为 episodes_meta 创建索引时出错", err);
+    throw err;
+  }
+
+  // 为 resources 集合创建索引
+  try {
+    const resources = db.collection("resources");
+
+    await resources.createIndex(
+      { anime_id: 1, episodeId: 1 },
+      { name: "anime_episode_idx" }
+    );
+
+    await resources.createIndex(
+      { anime_id: 1, groups: 1, episode: 1 },
+      { name: "anime_group_episode_idx" }
+    );
+
+    logger.info("resources 集合索引创建成功");
+  } catch (err) {
+    logger.error("为 resources 创建索引时出错", err);
+    throw err;
+  }
+
+  // 为 cache_resources 集合创建索引
+  try {
+    const cacheResources = db.collection("cache_resources");
+
+    await cacheResources.createIndex(
+      { anime_id: 1, cache_id: 1, groups: 1, episode: 1 },
+      { unique: true, name: "cache_anime_cacheid_group_episode_unique_idx" }
+    );
+
+    await cacheResources.createIndex(
+      { anime_id: 1, cache_id: 1 },
+      { name: "cache_anime_cacheid_idx" }
+    );
+
+    logger.info("cache_resources 集合索引创建成功");
+  } catch (err) {
+    logger.error("为 cache_resources 创建索引时出错", err);
+    throw err;
+  }
+
   return db;
 }
 

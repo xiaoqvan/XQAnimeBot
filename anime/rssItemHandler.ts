@@ -4,7 +4,7 @@ import { parseInfo } from "../utils/animeParser.ts";
 import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
 import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
-import type { RssAnimeItem, animeItem } from "../types/anime.d.ts";
+import type { RssAnimeItem, animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
 
 /**

@@ -1,12 +1,101 @@
 import type {
   AnimeBlacklistConfig,
   TagExcludeListConfig,
-} from "../types/database.ts";
-import type { animeItem, anime as animeType } from "../types/anime.ts";
+} from "../types/database.d.ts";
+import type { anime as animeType } from "../types/anime.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
 import type { BangumiUser } from "../types/bangumi.d.ts";
+import type { EpisodeMetaDoc } from "../types/episodeMeta.d.ts";
+import type { EpisodeResourceDoc } from "../types/episodeResource.d.ts";
 import { getDatabase } from "@db/index.ts";
 
 const db = await getDatabase();
+
+type AnimeWithRelations = animeType & {
+  eps?: {
+    total: number;
+    list: EpisodeMetaDoc[];
+  };
+  btdata?: Record<string, any[]>;
+};
+
+/**
+ * 从 resources 集合构建旧逻辑需要的 btdata 结构。
+ * @param animeId - 番剧 ID
+ */
+export async function getBtDataByAnimeId(
+  animeId: number,
+  collectionName: "resources" | "cache_resources" = "resources"
+): Promise<Record<string, any[]>> {
+  const resources = await db
+    .collection<EpisodeResourceDoc & { updatedAt?: Date }>(collectionName)
+    .find({ anime_id: animeId })
+    .sort({ createdAt: 1 })
+    .toArray();
+
+  const grouped: Record<string, any[]> = {};
+
+  for (const resource of resources) {
+    const groupName =
+      Array.isArray(resource.groups) && resource.groups.length > 0
+        ? resource.groups[0]
+        : "unknown";
+
+    if (!grouped[groupName]) grouped[groupName] = [];
+
+    grouped[groupName].push({
+      episode: resource.episode,
+      episodeId: resource.episodeId,
+      title: resource.title,
+      names: resource.names,
+      Message: resource.message,
+      Messages: resource.messages,
+      TGMegLink: resource.message?.link,
+      videoid: resource.videoid,
+      unique_id: resource.unique_id,
+      cache_id: resource.cache_id,
+      source: resource.source,
+      videoids: (resource as any).videoids,
+      unique_ids: (resource as any).unique_ids,
+    });
+  }
+
+  return grouped;
+}
+
+/**
+ * 从 episodes_meta 集合构建 eps 字段。
+ * @param animeId - 番剧 ID
+ */
+async function buildEpisodesByAnimeId(animeId: number): Promise<{
+  total: number;
+  list: EpisodeMetaDoc[];
+}> {
+  const list = await getEpisodeMetasBySubjectId(animeId);
+
+  return {
+    total: list.length,
+    list,
+  };
+}
+
+/**
+ * 根据番剧 ID 查询章节元数据，并按 sort/id 升序返回。
+ * @param animeId - 番剧 ID（Bangumi subject_id）
+ */
+export async function getEpisodeMetasBySubjectId(
+  animeId: number
+): Promise<EpisodeMetaDoc[]> {
+  if (!animeId) {
+    throw new Error("动漫ID是必需的参数");
+  }
+
+  return db
+    .collection<EpisodeMetaDoc>("episodes_meta")
+    .find({ subject_id: animeId })
+    .sort({ sort: 1, id: 1 })
+    .toArray();
+}
 
 /**
  * 获取动漫拉黑列表
@@ -73,7 +162,7 @@ export async function getTagExcludeList() {
 export async function getAnimeById(
   animeId: number,
   cache: boolean = false
-): Promise<animeType | null> {
+): Promise<AnimeWithRelations | null> {
   if (!animeId) {
     throw new Error("动漫ID是必需的参数");
   }
@@ -82,7 +171,26 @@ export async function getAnimeById(
     const anime = await db
       .collection<animeType>(cache ? "cacheAnime" : "anime")
       .findOne({ id: animeId });
-    return anime;
+
+    if (!anime) return null;
+    if (cache) {
+      const btdata = await getBtDataByAnimeId(animeId, "cache_resources");
+      return {
+        ...(anime as AnimeWithRelations),
+        btdata,
+      };
+    }
+
+    const [eps, btdata] = await Promise.all([
+      buildEpisodesByAnimeId(animeId),
+      getBtDataByAnimeId(animeId),
+    ]);
+
+    return {
+      ...(anime as AnimeWithRelations),
+      eps,
+      btdata,
+    };
   } catch (error) {
     throw new Error(
       `查询动漫信息失败: ${error instanceof Error ? error.message : error}`
@@ -91,18 +199,81 @@ export async function getAnimeById(
 }
 
 /**
+ * 按缓存ID查询某个缓存番剧下的资源条目。
+ * @param animeId - 缓存番剧 ID（cacheAnime.id）
+ * @param cacheId - 缓存条目 ID（cacheItem.id）
+ * @param title - 可选标题，用于兜底匹配
+ * @returns 命中时返回资源分组及资源条目，否则返回 null
+ */
+export async function getCacheResourceByCacheId(
+  animeId: number,
+  cacheId: string | number,
+  title?: string
+): Promise<{ group: string; episode: any } | null> {
+  if (!animeId || cacheId === undefined || cacheId === null) {
+    throw new Error("animeId 和 cacheId 是必需的参数");
+  }
+
+  const targetStr = String(cacheId);
+  const resources = db.collection<EpisodeResourceDoc & { videoids?: string[]; unique_ids?: string[] }>("cache_resources");
+
+  const list = await resources.find({ anime_id: animeId }).toArray();
+
+  const byCacheId = list.find((item) => String(item.cache_id) === targetStr);
+  const target = byCacheId ?? (
+    title
+      ? list.find((item) => {
+        const candidates = [item.title, item.videoid, item.unique_id, item.episode]
+          .filter((x): x is string => typeof x === "string" && x.length > 0)
+          .map((x) => x.toLowerCase());
+        return candidates.includes(String(title).toLowerCase());
+      })
+      : undefined
+  );
+
+  if (!target) return null;
+
+  const group =
+    Array.isArray(target.groups) && target.groups.length > 0
+      ? target.groups[0]
+      : "unknown";
+
+  return {
+    group,
+    episode: {
+      episode: target.episode,
+      episodeId: target.episodeId,
+      title: target.title,
+      names: target.names,
+      Message: target.message,
+      Messages: target.messages,
+      TGMegLink: target.message?.link,
+      videoid: target.videoid,
+      unique_id: target.unique_id,
+      cache_id: target.cache_id,
+      source: target.source,
+      videoids: target.videoids,
+      unique_ids: target.unique_ids,
+    },
+  };
+}
+
+/**
  * 根据章节（episode）ID 查询所属的动漫条目
  * @param episodeId - Bangumi 章节 ID
  */
 export async function getAnimeByEpisodeId(
   episodeId: number
-): Promise<animeType | null> {
+): Promise<AnimeWithRelations | null> {
   if (!episodeId) throw new Error("章节 id 是必需的参数");
   try {
-    const anime = await db
-      .collection<animeType>("anime")
-      .findOne({ "eps.list.id": episodeId });
-    return anime || null;
+    const episodeMeta = await db
+      .collection<EpisodeMetaDoc>("episodes_meta")
+      .findOne({ id: episodeId });
+
+    if (!episodeMeta?.subject_id) return null;
+
+    return getAnimeById(episodeMeta.subject_id, false);
   } catch (error) {
     throw new Error(`查询章节所属动漫失败: ${error instanceof Error ? error.message : error}`);
   }
@@ -179,7 +350,6 @@ export async function searchAnime(key: string) {
             name: 1,
             name_cn: 1,
             navMessage: 1, // 新版导航频道消息
-            navMessageLink: 1, // 频道消息链接（备用）
           },
         }
       )
@@ -200,7 +370,6 @@ export async function searchAnime(key: string) {
               name: 1,
               name_cn: 1,
               navMessage: 1,
-              navMessageLink: 1,
             },
           }
         )

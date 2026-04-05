@@ -1,7 +1,9 @@
 import { sendMessage } from "@TDLib/function/message.ts";
 import { env } from "../database/initDb.ts";
+import { getEpisodeMetasBySubjectId } from "../database/query.ts";
 import type { EpisodeMatchResult } from "../utils/matcher.ts";
-import type { anime as animeType, animeItem } from "../types/anime.d.ts";
+import type { anime as animeType } from "../types/anime.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
 
 /**
@@ -64,9 +66,15 @@ export async function promptAdminConfirmAnime(
     cacheId: number,
     item: animeItem
 ): Promise<void> {
-    // 根据 episodeId 找到对应剧集的显示集数（sort 字段）
-    const epEntry = anime.eps?.list?.find((e) => e.id === Number(episodeId));
-    const epSort = epEntry?.sort ?? episodeId;
+    // 根据 episodeId 从 episodes_meta 找到对应剧集的显示集数（sort 字段）
+    let epSort: number = episodeId;
+    try {
+        const episodes = await getEpisodeMetasBySubjectId(anime.id);
+        const epEntry = episodes.find((e) => e.id === Number(episodeId));
+        epSort = epEntry?.sort ?? episodeId;
+    } catch {
+        epSort = episodeId;
+    }
 
     await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
         topic_id: {

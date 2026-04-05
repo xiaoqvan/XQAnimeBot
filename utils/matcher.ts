@@ -1,4 +1,5 @@
 import type { anime } from '../types/anime.d.ts';
+import type { EpisodeMetaDoc } from '../types/episodeMeta.d.ts';
 
 /** 匹配结果接口 */
 export type EpisodeMatchResult =
@@ -10,9 +11,14 @@ export type EpisodeMatchResult =
 /**
  * 将 BT 的集数匹配到 Bangumi 章节 ID 支持越界和时间检查
  * @param dbAnime 数据库中已存的番剧信息
+ * @param episodes 从剧集数据库读取的该番剧全部章节（建议已按 sort 排序）
  * @param btEpisodeStr BT 标题提取出的集数 (如 "02", "13", "05v2", "SP01")
  */
-export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undefined): EpisodeMatchResult {
+export function matchBangumiEpisode(
+    dbAnime: anime,
+    episodes: EpisodeMetaDoc[],
+    btEpisodeStr: string | undefined
+): EpisodeMatchResult {
     if (!btEpisodeStr) {
         return { status: 'INVALID_INPUT', msg: 'BT 条目未包含集数' };
     }
@@ -29,16 +35,22 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
     }
 
     // 2. 检查数据库是否有章节列表
-    if (!dbAnime.eps || !dbAnime.eps.list || dbAnime.eps.list.length === 0) {
+    if (!Array.isArray(episodes) || episodes.length === 0) {
         // 极端情况：Bangumi 条目存在但没有章节信息（如刚宣布未定档）
         return { status: 'NOT_FOUND_IN_DB', msg: '数据库中没有章节列表' };
     }
+
+    const sortedEpisodes = [...episodes].sort((a, b) => {
+        const sortDiff = Number(a.sort) - Number(b.sort);
+        if (sortDiff !== 0) return sortDiff;
+        return Number(a.id) - Number(b.id);
+    });
 
     // 3. 在 eps.list 中查找
     // Bangumi API: type 0 = 本篇, 1 = SP, 2 = OP, 3 = ED
     // 我们优先匹配 type === 0 的本篇
     // 显式类型转换匹配：防止 sort 为字符串类型
-    const matchedEp = dbAnime.eps.list.find(e => Number(e.sort) === epNum && (e.type === 0 || e.type === undefined));
+    const matchedEp = sortedEpisodes.find(e => Number(e.sort) === epNum && (e.type === 0 || e.type === undefined));
 
     // ==========================================
     // 核心逻辑：越界检查 (Out of Range Check)
@@ -46,13 +58,13 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
     if (!matchedEp) {
         // 场景：数据库只有 1-12 集，BT 是 13 集
         // 结果：返回 NOT_FOUND，提示调用者这是潜在的新季或错误
-        const mainEpisodeSorts = dbAnime.eps.list
+        const mainEpisodeSorts = sortedEpisodes
             .filter(e => e.type === 0 || e.type === undefined)
             .map(e => Number(e.sort))
             .filter(sort => !isNaN(sort));
 
         const minEpisode = mainEpisodeSorts.length > 0 ? Math.min(...mainEpisodeSorts) : 1;
-        const maxEpisode = mainEpisodeSorts.length > 0 ? Math.max(...mainEpisodeSorts) : Math.max(1, Number(dbAnime.eps.total) || 1);
+        const maxEpisode = mainEpisodeSorts.length > 0 ? Math.max(...mainEpisodeSorts) : 1;
         const episodeRange = minEpisode === maxEpisode ? `${minEpisode}` : `${minEpisode}-${maxEpisode}`;
 
         return {
@@ -90,7 +102,7 @@ export function matchBangumiEpisode(dbAnime: anime, btEpisodeStr: string | undef
         const startStr = (dbAnime as any).dbAnime as string | undefined;
         const startDate = parseDate(startStr || undefined);
 
-        const lastEp = dbAnime.eps.list[dbAnime.eps.list.length - 1];
+        const lastEp = sortedEpisodes[sortedEpisodes.length - 1];
         const lastDate = parseDate(lastEp && lastEp.airdate ? lastEp.airdate : undefined);
 
         const matchedDate = parseDate(matchedEp.airdate) || null;

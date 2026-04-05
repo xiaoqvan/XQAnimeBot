@@ -24,7 +24,7 @@ import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent
 import { sendMegToAnime, sendMegToNavAnime } from "../anime/sendAnime.ts";
 import type {
     albumMessageType,
-} from "../types/anime.d.ts";
+} from "../types/message.d.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { updateAnimeBtdata } from "../database/update.ts";
 import { combineFansub } from "../utils/index.ts";

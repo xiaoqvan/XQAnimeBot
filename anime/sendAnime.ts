@@ -24,11 +24,10 @@ import { getMessageLink, getMessageLinkInfo } from "@TDLib/function/get.ts";
 import { downloadFile, extractVideoMetadata } from "../function/index.ts";
 import { env } from "../database/initDb.ts";
 
-import type {
-  animeItem,
-  anime as animeType,
-  messageType,
-} from "../types/anime.ts";
+import type { anime as animeType } from "../types/anime.ts";
+import type { messageType } from "../types/message.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
+
 import type { Client } from "tdl";
 import type { MessageContent } from "tdlib-types";
 
@@ -52,25 +51,6 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
   if (!Anime) return;
 
-  // 旧的转换为新的过渡
-  if (Anime.navMessageLink) {
-    const navmeg = await getMessageLinkInfo(client, Anime.navMessageLink);
-
-    if (!navmeg || !navmeg.message) {
-      throw new Error(`旧导航频道消息链接无效，链接：${Anime.navMessageLink}`);
-    }
-
-    // 导航频道有旧消息，进行新消息适配
-    const newMeg: messageType = {
-      chat_id: navmeg.chat_id,
-      message_id: navmeg.message.id,
-      topic_id: navmeg.topic_id,
-      link: Anime.navMessageLink,
-    };
-    await updateAnimeNavMessage(Anime.id, newMeg);
-    Anime = await getAnimeById(id);
-    if (!Anime) return;
-  }
   // 导航频道中有该番剧，编辑现有消息
   if (Anime.navMessage?.link) {
     // 更新评分

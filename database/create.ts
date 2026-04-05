@@ -1,11 +1,25 @@
 import logger from "@log/index.ts";
-import type { animeItem, anime as AnimeType, BtEntry } from "../types/anime.ts";
+import type { anime as AnimeType } from "../types/anime.d.ts";
+import type { EpisodeMetaDoc } from "../types/episodeMeta.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
 import type { BangumiUser } from "../types/bangumi.d.ts";
 
 import { cleanTitle } from "../anime/rss/index.ts";
 import { getDatabase } from "@db/index.ts";
 
 const db = await getDatabase();
+
+type AnimeWithRelations = AnimeType & {
+  eps?: {
+    total?: number;
+    list?: EpisodeMetaDoc[];
+  };
+  btdata?: Record<string, unknown>;
+};
+
+type CacheAnimeDoc = AnimeWithRelations & {
+  btdata?: never;
+};
 
 /**
  * 添加一个缓存条目
@@ -164,12 +178,40 @@ export async function addTorrent(
     );
   }
 }
+
+/**
+ * 批量覆盖保存某个番剧的章节元数据。
+ * @param subjectId - 番剧 ID（Bangumi subject_id）
+ * @param episodes - 章节元数据列表
+ */
+export async function replaceEpisodeMetas(
+  subjectId: number,
+  episodes: EpisodeMetaDoc[]
+): Promise<void> {
+  if (!subjectId || !Array.isArray(episodes)) {
+    throw new Error("replaceEpisodeMetas 参数无效");
+  }
+
+  const collection = db.collection<EpisodeMetaDoc>("episodes_meta");
+
+  await collection.deleteMany({ subject_id: subjectId });
+
+  if (episodes.length === 0) return;
+
+  const normalized = episodes.map((episode) => ({
+    ...episode,
+    subject_id: subjectId,
+  }));
+
+  await collection.insertMany(normalized, { ordered: false });
+}
+
 /**
  * 保存或更新动漫信息
  * @param anime - 动漫对象，必须包含 id 字段
  * @param cache - 是否保存到缓存集合，默认为 false（保存到正式集合）
  */
-export async function saveAnime(anime: AnimeType, cache: boolean = false) {
+export async function saveAnime(anime: AnimeWithRelations, cache: boolean = false) {
   if (!anime || typeof anime !== "object") {
     throw new Error("无效的动漫数据");
   }
@@ -178,16 +220,52 @@ export async function saveAnime(anime: AnimeType, cache: boolean = false) {
   }
 
   // 选择集合
-  const col = db.collection<AnimeType>(cache ? "cacheAnime" : "anime");
+  const col = db.collection<AnimeWithRelations>(cache ? "cacheAnime" : "anime");
   // 确保 id 唯一索引
   await col.createIndex({ id: 1 }, { unique: true });
-  // 为 eps.list.id 建立普通索引，便于按章节 id 查询
-  await col.createIndex({ "eps.list.id": 1 }).catch(() => { });
+
+  if (!cache) {
+    const now = new Date();
+    const { eps, btdata: _btdata, ...animeBase } = anime;
+
+    const updatePayload: Partial<AnimeWithRelations> = {
+      ...animeBase,
+      updatedAt: now,
+    };
+
+    const oldDoc = await col.findOne({ id: anime.id });
+
+    if (oldDoc) {
+      await col.updateOne(
+        { id: anime.id },
+        {
+          $set: updatePayload,
+          $unset: {
+            eps: "",
+            btdata: "",
+          },
+        }
+      );
+    } else {
+      await col.insertOne({
+        ...(updatePayload as AnimeWithRelations),
+        createdAt: now,
+      });
+    }
+
+    if (Array.isArray(eps?.list)) {
+      await replaceEpisodeMetas(anime.id, eps.list);
+    }
+
+    return anime.id;
+  }
 
   const oldDoc = await col.findOne({ id: anime.id });
 
+  const { btdata: _cacheBtdata, ...cacheAnimeBase } = anime;
+
   // 需要更新的字段
-  const updateFields: (keyof AnimeType)[] = [
+  const updateFields: (keyof CacheAnimeDoc)[] = [
     "name",
     "name_cn",
     "summary",
@@ -201,41 +279,28 @@ export async function saveAnime(anime: AnimeType, cache: boolean = false) {
 
   if (oldDoc) {
     // 只更新指定字段
-    const update: Partial<AnimeType> = {};
+    const update: Partial<AnimeWithRelations> = {};
 
     for (const key of updateFields) {
       setField(update, anime, key);
     }
 
-    // 合并 btdata（按 title 去重）
-    if (anime.btdata) {
-      update.btdata = { ...oldDoc.btdata };
-
-      for (const [source, newArr] of Object.entries(anime.btdata)) {
-        const oldArr = oldDoc.btdata?.[source] ?? [];
-        const map = new Map<string, BtEntry>();
-
-        // 放旧的
-        for (const item of oldArr) {
-          map.set(item.title, item);
-        }
-        // 放新的（覆盖同 title）
-        for (const item of newArr) {
-          map.set(item.title, { ...map.get(item.title), ...item });
-        }
-
-        update.btdata[source] = Array.from(map.values());
-      }
-    }
-
     update.updatedAt = new Date();
 
-    await col.updateOne({ id: anime.id }, { $set: update });
+    await col.updateOne(
+      { id: anime.id },
+      {
+        $set: update,
+        $unset: {
+          btdata: "",
+        },
+      }
+    );
     return anime.id;
   } else {
     // 新建
-    const doc: AnimeType = {
-      ...anime,
+    const doc: CacheAnimeDoc = {
+      ...cacheAnimeBase,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -249,9 +314,9 @@ export async function saveAnime(anime: AnimeType, cache: boolean = false) {
  * @param source - 源对象
  * @param key - 要设置的字段键
  */
-function setField<K extends keyof AnimeType>(
-  target: Partial<AnimeType>,
-  source: AnimeType,
+function setField<K extends keyof AnimeWithRelations>(
+  target: Partial<AnimeWithRelations>,
+  source: AnimeWithRelations,
   key: K
 ) {
   if (source[key] !== undefined) {

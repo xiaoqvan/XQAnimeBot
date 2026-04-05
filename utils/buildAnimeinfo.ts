@@ -1,6 +1,7 @@
 import { getEpisodeInfo } from "../anime/get.ts";
-import { saveAnime } from "../database/create.ts";
-import type { bangumiAnime, infobox, anime } from "../types/anime.d.ts";
+import { replaceEpisodeMetas, saveAnime } from "../database/create.ts";
+import type { anime } from "../types/anime.d.ts";
+import { bangumiAnime, infobox } from "../types/bangumi.js";
 import { extractFilteredTagNames } from "./index.ts";
 
 /**
@@ -13,6 +14,22 @@ export async function buildAndSaveAnimeFromInfo(
   newanime: boolean
 ) {
   const EpisodeInfo = await getEpisodeInfo(info.id);
+  const episodeMetas = EpisodeInfo.data.map((ep: any) => ({
+    airdate: ep.airdate,
+    name: ep.name,
+    name_cn: ep.name_cn,
+    duration: ep.duration,
+    desc: ep.desc,
+    ep: ep.ep,
+    sort: ep.sort,
+    id: ep.id,
+    subject_id: ep.subject_id,
+    comment: ep.comment,
+    type: ep.type,
+  }));
+
+  await replaceEpisodeMetas(info.id, episodeMetas);
+
   const infobox = extractInfoFromInfobox(info?.infobox || []);
   const anime: anime = {
     id: info.id,
@@ -32,30 +49,14 @@ export async function buildAndSaveAnimeFromInfo(
       "https://dummyimage.com/350x600/cccccc/ffffff&text=%E6%97%A0%E5%B0%81%E9%9D%A2",
     summary: info.summary
       ? info.summary
-          .replace(/\r\n/g, "\\n")
-          .replace(/\n/g, "\\n")
-          .replace(/\r/g, "\\n")
+        .replace(/\r\n/g, "\\n")
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\n")
       : undefined,
 
     tags: info.tags ? (await extractFilteredTagNames(info.tags)) || [] : [],
     episode: infobox.episodeCount || undefined,
-    eps: {
-      total: EpisodeInfo.total || 0,
-      list: EpisodeInfo.data.map((ep: any) => ({
-        airdate: ep.airdate,
-        name: ep.name,
-        name_cn: ep.name_cn,
-        duration: ep.duration,
-        desc: ep.desc,
-        ep: ep.ep,
-        sort: ep.sort,
-        id: ep.id,
-        subject_id: ep.subject_id,
-        comment: ep.comment,
-      })),
-    },
     score: info.rating?.score,
-    navMessageLink: undefined,
     airingDay: infobox.broadcastDay || undefined,
     airingStart: infobox.broadcastStart || undefined,
   };

@@ -10,9 +10,10 @@ import {
 import { isUserAdmin, parseTextEntities } from "@TDLib/function/index.ts";
 import { env } from "../database/initDb.ts";
 
-import { getAnimeById } from "../database/query.ts";
+import { getAnimeById, getBtDataByAnimeId } from "../database/query.ts";
 import { updateAnimeR18 } from "../database/update.ts";
-import type { animeItem, anime as animeType } from "../types/anime.d.ts";
+import type { anime as animeType } from "../types/anime.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
 import { getMessageLinkInfo } from "@TDLib/function/get.ts";
 import { AnimeText } from "../anime/text.ts";
 import { getConfig } from "@db/config.ts";
@@ -136,10 +137,11 @@ async function updateAssociatedVideoMessagesR18(
   message: messageType,
   r18Value: boolean
 ) {
-  if (!anime.btdata || typeof anime.btdata !== "object") return;
+  const btdata = await getBtDataByAnimeId(anime.id);
+  if (!btdata || typeof btdata !== "object") return;
   // 统计总的视频消息数量
   let totalMessages = 0;
-  for (const episodes of Object.values(anime.btdata)) {
+  for (const episodes of Object.values(btdata)) {
     if (!Array.isArray(episodes)) continue;
     for (const ep of episodes) {
       if (ep.TGMegLink) totalMessages++;
@@ -154,7 +156,7 @@ async function updateAssociatedVideoMessagesR18(
     text: `🔄 正在更新视频消息 r18 字段...\n进度: ${processed}/${totalMessages}\n成功: ${success}\n失败: ${fail}`,
     link_preview: true,
   });
-  for (const [fansub, episodes] of Object.entries(anime.btdata)) {
+  for (const [fansub, episodes] of Object.entries(btdata)) {
     if (!Array.isArray(episodes)) continue;
     for (const ep of episodes) {
       if (!ep.TGMegLink) continue;
@@ -185,10 +187,10 @@ async function updateAssociatedVideoMessagesR18(
         continue; // 跳过无法解析的条目
       }
       if (match) {
-        const raw = match[1] || match[2];
+        const raw: string = match[1] || match[2] || "";
         fansubs = raw
           .split(/\s*[&/|｜、]\s*/)
-          .map((s) => s.trim())
+          .map((s: string) => s.trim())
           .filter(Boolean);
       }
 

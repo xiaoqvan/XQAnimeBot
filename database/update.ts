@@ -1,15 +1,93 @@
 import { formatSubGroupName } from "../function/index.ts";
 import type {
-  albumMessageType,
   anime as AnimeType,
-  bangumiAnime,
-  messageType,
-  navMessageType,
-} from "../types/anime.ts";
+} from "../types/anime.d.ts";
+import type { albumMessageType, messageType, navMessageType } from "../types/message.d.ts";
+import type { bangumiAnime, BangumiUser } from "../types/bangumi.d.ts";
+import type { EpisodeMetaDoc } from "../types/episodeMeta.d.ts";
+import type { EpisodeResourceDoc } from "../types/episodeResource.d.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
 import logger from "@log/index.ts";
+import { getDatabase } from "@db/index.ts";
 
 const db = await getDatabase();
+
+/**
+ * 将单条资源写入主 resources 集合（upsert）。
+ * @param payload - 资源数据
+ */
+async function upsertMainResource(payload: EpisodeResourceDoc & {
+  videoids?: string[];
+  unique_ids?: string[];
+  updatedAt?: Date;
+}): Promise<boolean> {
+  const resources = db.collection("resources");
+
+  const filter: Record<string, unknown> = {
+    anime_id: payload.anime_id,
+    episode: payload.episode,
+    groups: payload.groups,
+  };
+
+  if (payload.episodeId !== undefined) {
+    filter.episodeId = payload.episodeId;
+  }
+
+  const now = new Date();
+  const { createdAt, ...setPayload } = payload;
+  const result = await resources.updateOne(
+    filter,
+    {
+      $set: {
+        ...setPayload,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        createdAt: createdAt ?? now,
+      },
+    },
+    { upsert: true }
+  );
+
+  return result.modifiedCount > 0 || result.upsertedCount > 0;
+}
+
+/**
+ * 将单条资源写入缓存 resources 集合（upsert）。
+ * @param payload - 缓存资源数据
+ */
+async function upsertCacheResource(payload: EpisodeResourceDoc & {
+  videoids?: string[];
+  unique_ids?: string[];
+  updatedAt?: Date;
+}): Promise<boolean> {
+  const resources = db.collection("cache_resources");
+  const now = new Date();
+  const { createdAt, ...setPayload } = payload;
+
+  const cacheIdKey = payload.cache_id ?? `${payload.anime_id}-${payload.episode}-${payload.title}`;
+
+  const result = await resources.updateOne(
+    {
+      anime_id: payload.anime_id,
+      cache_id: cacheIdKey,
+      groups: payload.groups,
+      episode: payload.episode,
+    },
+    {
+      $set: {
+        ...setPayload,
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        createdAt: createdAt ?? now,
+      },
+    },
+    { upsert: true }
+  );
+
+  return result.modifiedCount > 0 || result.upsertedCount > 0;
+}
 
 /**
  * 更新种子状态
@@ -123,51 +201,8 @@ export async function updateAnimeScore(
 }
 
 /**
- * 更新动漫的导航频道消息链接
- * @param animeId - 动漫的id字段值
- * @param navMessageLink - 导航频道消息链接
- * @returns 更新成功返回true，否则返回false
- * @throws 当参数无效或数据库操作失败时抛出异常
- * @deprecated 请使用 updateAnimeNavMessage 方法
- */
-export async function updateAnimeNavMessageLink(
-  animeId: number,
-  navMessageLink: string
-) {
-  if (!animeId || !navMessageLink) {
-    throw new Error("动漫ID和导航频道消息链接都是必需的参数");
-  }
-
-  try {
-    // 首先查找动漫文档
-    const anime = await db.collection("anime").findOne({ id: animeId });
-
-    if (!anime) {
-      throw new Error(`未找到ID为 ${animeId} 的动漫`);
-    }
-
-    // 更新导航频道消息链接
-    const result = await db.collection("anime").updateOne(
-      { id: animeId },
-      {
-        $set: {
-          navMessageLink: navMessageLink,
-          updatedAt: new Date(),
-        },
-      }
-    );
-
-    return result.modifiedCount > 0;
-  } catch (error) {
-    throw new Error(
-      `更新导航频道消息链接失败: ${error instanceof Error ? error.message : error
-      }`
-    );
-  }
-}
-/**
- * 在cacheAnime数据库中为btdata对应字幕组的其中一集添加TGMegLink
- * 如果字幕组不存在则自动创建，如果集数不存在则自动添加
+ * 保存动漫资源数据到主资源库或缓存资源库。
+ * 当 `cache=false` 写入 `resources`，当 `cache=true` 写入 `cache_resources`。
  * @param animeId - 动漫的id字段值
  * @param episodeId - 动漫集数id
  * @param subGroup - 字幕组名称
@@ -178,8 +213,8 @@ export async function updateAnimeNavMessageLink(
  * @param names - 该集数的别名数组（可选）
  * @param videoid - 视频ID（可选）
  * @param unique_id - 唯一ID（可选）
- * @param cacheItemId - 如果是缓存数据则传入对应的 cacheAnime 文档的 _id（可选） 
- * @param cache - 是否操作 cacheAnime 集合，默认为 false 操作 anime 集合
+ * @param cacheItemId - 如果是缓存数据则传入对应的 cacheItem.id
+ * @param cache - 是否操作缓存资源集合，默认为 false 操作主资源集合
  * @returns 更新成功返回true，否则返回false
  * @throws 当参数无效或数据库操作失败时抛出异常
  */
@@ -217,113 +252,83 @@ export async function updateAnimeBtdata(
   const formattedSubGroup = formatSubGroupName(subGroup, source);
 
   try {
-    // 根据 cache 参数选择集合（cacheAnime 或 anime）
-    const collectionName = cache ? "cacheAnime" : "anime";
+    if (!cache) {
+      const anime = await db.collection<AnimeType>("anime").findOne({ id: animeId });
+      if (!anime) {
+        throw new Error(`未找到ID为 ${animeId} 的动漫`);
+      }
 
-    // 首先查找动漫文档
-    const anime = await db
-      .collection<AnimeType>(collectionName)
-      .findOne({ id: animeId });
+      const saved = await upsertMainResource({
+        anime_id: animeId,
+        episode,
+        episodeId,
+        groups: [formattedSubGroup],
+        title,
+        names,
+        message: Message,
+        messages: Messages,
+        videoid,
+        unique_id,
+        cache_id: cacheItemId,
+        source,
+        createdAt: new Date(),
+        videoids,
+        unique_ids,
+      });
+
+      if (saved) {
+        await db.collection("anime").updateOne(
+          { id: animeId },
+          {
+            $set: {
+              updatedAt: new Date(),
+            },
+          }
+        );
+      }
+
+      return saved;
+    }
+
+    const anime = await db.collection<AnimeType>("cacheAnime").findOne({ id: animeId });
 
     if (!anime) {
       throw new Error(`未找到ID为 ${animeId} 的动漫`);
     }
 
-    // 初始化btdata（如果不存在）
-    if (!anime.btdata) {
-      anime.btdata = {};
+    const saved = await upsertCacheResource({
+      anime_id: animeId,
+      episode,
+      episodeId,
+      groups: [formattedSubGroup],
+      title,
+      names,
+      message: Message,
+      messages: Messages,
+      videoid,
+      unique_id,
+      cache_id: cacheItemId,
+      source,
+      createdAt: new Date(),
+      videoids,
+      unique_ids,
+    });
+
+    if (saved) {
+      await db.collection("cacheAnime").updateOne(
+        { id: animeId },
+        {
+          $set: {
+            updatedAt: new Date(),
+          },
+          $unset: {
+            btdata: "",
+          },
+        }
+      );
     }
 
-    // 如果字幕组不存在，则创建字幕组
-    if (!anime.btdata[formattedSubGroup]) {
-      let newEpisode = {
-        episode: episode,
-        Message: Message,
-        title: title,
-        cache_id: cacheItemId ? cacheItemId : undefined,
-        videoid: videoid ? videoid : undefined,
-        names: names ? names : undefined,
-        unique_id: unique_id ? unique_id : undefined,
-        episodeId: !cache ? episodeId : undefined,
-        videoids: videoids ? videoids : undefined,
-        unique_ids: unique_ids ? unique_ids : undefined,
-        Messages: Messages ? Messages : undefined,
-      };
-
-      const updateQuery = {
-        [`btdata.${formattedSubGroup}`]: [newEpisode],
-      };
-
-      const result = await db
-        .collection<AnimeType>(collectionName)
-        .updateOne({ id: animeId }, { $set: updateQuery });
-
-      return result.modifiedCount > 0;
-    }
-
-    // 查找对应的集数
-    const episodeIndex = anime.btdata[formattedSubGroup].findIndex(
-      (ep) => ep.episode === episode
-    );
-
-    if (episodeIndex === -1) {
-      // 如果集数不存在，则添加新集数
-      const newEpisode = {
-        episode: episode,
-        Message: Message,
-        title: title,
-        videoid: videoid ? videoid : undefined,
-        names: names ? names : undefined,
-        unique_id: unique_id ? unique_id : undefined,
-        episodeId: !cache ? episodeId : undefined,
-        videoids: videoids ? videoids : undefined,
-        unique_ids: unique_ids ? unique_ids : undefined,
-        Messages: Messages ? Messages : undefined,
-      };
-
-      const updateQuery = {
-        [`btdata.${formattedSubGroup}`]: newEpisode,
-      };
-
-      const result = await db
-        .collection<AnimeType>(collectionName)
-        .updateOne({ id: animeId }, { $push: updateQuery });
-
-      return result.modifiedCount > 0;
-    } else {
-      // 更新对应集数的TGMegLink
-      const updateQuery = {
-        [`btdata.${formattedSubGroup}.${episodeIndex}.Message`]: Message,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.title`]: title,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.videoid`]: videoid
-          ? videoid
-          : undefined,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.names`]: names
-          ? names
-          : undefined,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.unique_id`]: unique_id
-          ? unique_id
-          : undefined,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.episodeId`]: !cache
-          ? episodeId
-          : undefined,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.videoids`]: videoids
-          ? videoids
-          : undefined,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.unique_ids`]: unique_ids
-          ? unique_ids
-          : undefined,
-        [`btdata.${formattedSubGroup}.${episodeIndex}.Messages`]: Messages
-          ? Messages
-          : undefined,
-      };
-
-      const result = await db
-        .collection<AnimeType>(collectionName)
-        .updateOne({ id: animeId }, { $set: updateQuery });
-
-      return result.modifiedCount > 0;
-    }
+    return saved;
   } catch (error) {
     throw new Error(
       `更新TGMegLink失败: ${error instanceof Error ? error.message : error}`
@@ -422,9 +427,9 @@ export async function updateAnimeR18(animeId: number, r18: boolean) {
 }
 
 /**
- * 更新动漫的导航频道消息链接
+ * 更新动漫的导航频道主消息。
  * @param animeId - 动漫的id字段值
- * @param navMessageLink - 导航频道消息链接
+ * @param Message - 导航频道消息对象
  * @returns 更新成功返回true，否则返回false
  * @throws 当参数无效或数据库操作失败时抛出异常
  */
@@ -444,16 +449,13 @@ export async function updateAnimeNavMessage(
       throw new Error(`未找到ID为 ${animeId} 的动漫`);
     }
 
-    // 更新导航频道消息并移除旧的 navMessageLink 字段
+    // 更新导航频道消息
     const result = await db.collection("anime").updateOne(
       { id: animeId },
       {
         $set: {
           navMessage: Message,
           updatedAt: new Date(),
-        },
-        $unset: {
-          navMessageLink: "",
         },
       }
     );
@@ -609,14 +611,13 @@ export async function updateAnimeEpisodes(
   }
 
   try {
-    const collection = db.collection<AnimeType>("anime");
-    const anime = await collection.findOne({ id: animeId });
+    const animeCollection = db.collection<AnimeType>("anime");
+    const anime = await animeCollection.findOne({ id: animeId });
     if (!anime) {
       throw new Error(`未找到ID为 ${animeId} 的动漫`);
     }
 
-    // 构建新的 list，尽量保持与 buildAndSaveAnimeFromInfo 中相同的字段
-    const list = EpisodeInfo.data.map((ep: any) => ({
+    const list: EpisodeMetaDoc[] = EpisodeInfo.data.map((ep: any) => ({
       airdate: ep.airdate,
       name: ep.name,
       name_cn: ep.name_cn,
@@ -625,19 +626,31 @@ export async function updateAnimeEpisodes(
       ep: ep.ep,
       sort: ep.sort,
       id: ep.id,
+      type: ep.type,
       subject_id: ep.subject_id,
       comment: ep.comment,
     }));
 
-    const result = await collection.updateOne(
+    await db.collection<EpisodeMetaDoc>("episodes_meta").deleteMany({
+      subject_id: animeId,
+    });
+
+    if (list.length > 0) {
+      await db.collection<EpisodeMetaDoc>("episodes_meta").insertMany(list, {
+        ordered: false,
+      });
+    }
+
+    const result = await animeCollection.updateOne(
       { id: animeId },
       {
         $set: {
           // 同步更新 episode 字符串字段（导航消息「本季话数」的数据来源）
           episode: String(EpisodeInfo.total || 0),
-          "eps.total": EpisodeInfo.total || 0,
-          "eps.list": list,
           updatedAt: new Date(),
+        },
+        $unset: {
+          eps: "",
         },
       }
     );
@@ -656,9 +669,6 @@ export async function updateAnimeEpisodes(
  * @param data - 要更新的数据
  * @returns 是否更新成功
  */
-import type { BangumiUser } from "../types/bangumi.d.ts";
-import { getDatabase } from "@db/index.ts";
-
 export async function updateBangumiUser(
   id: number,
   data: Partial<BangumiUser>

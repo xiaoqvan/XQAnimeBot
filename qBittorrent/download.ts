@@ -1,4 +1,4 @@
-import type { animeItem } from "../types/anime.js";
+import type { animeItem } from "../types/rss.d.ts";
 
 import { downloadTorrentFromUrl } from "./torrent.ts";
 import { getQBClient } from "../qBittorrent/index.ts";

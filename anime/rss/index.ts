@@ -3,7 +3,7 @@ import { fetchDmhyRss } from "./dmhy.ts";
 import { fetchAcgnxRss } from "./acgnx.ts";
 import logger from "@log/index.ts";
 import { getAnimeBlacklist } from "../../database/query.ts";
-import type { RssAnimeItem } from "../../types/anime.ts";
+import type { RssAnimeItem } from "../../types/rss.d.ts";
 
 /**
  * 合并多个RSS源并进行去重处理

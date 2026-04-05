@@ -1,4 +1,8 @@
-import { getAnimeById, getCacheItemById } from "../database/query.ts";
+import {
+  getAnimeById,
+  getCacheItemById,
+  getCacheResourceByCacheId,
+} from "../database/query.ts";
 import logger from "@log/index.ts";
 import { answerCallbackQuery, chatoruserMdown } from "@TDLib/function/index.ts";
 import {
@@ -10,11 +14,9 @@ import {
 
 import type { message, messages, messageSenderUser } from "tdlib-types";
 import type {
-  albumMessageType,
   anime as animeType,
-  messageType,
-  BtEntry,
 } from "../types/anime.d.ts";
+import type { albumMessageType, messageType } from "../types/message.d.ts";
 import type { Client } from "tdl";
 import { saveAnime } from "../database/create.ts";
 import { sendMegToAnime, sendMegToNavAnime } from "../anime/sendAnime.ts";
@@ -25,7 +27,6 @@ import {
   updateAnimeBtdata,
   updateTorrentStatus,
 } from "../database/update.ts";
-import { findEpisodeByCacheId, omit } from "../function/index.ts";
 import { deleteCacheAnime } from "../database/delete.ts";
 import { getSubjectById } from "../anime/get.ts";
 
@@ -39,43 +40,6 @@ function normalizeTdMessages(result: message | messages): message[] {
     return (result as messages).messages.filter((m): m is message => m !== null);
   }
   return [result as message];
-}
-
-function toThreadId(topic: message["topic_id"]): number {
-  if (topic && topic._ === "messageTopicForum") {
-    return topic.forum_topic_id;
-  }
-  return 0;
-}
-
-function buildAlbumStoreData(messageList: message[]): {
-  allMessages: albumMessageType[];
-  videoids: string[];
-  uniqueIds: string[];
-} {
-  const allMessages: albumMessageType[] = messageList.map((msg) => ({
-    chat_id: msg.chat_id,
-    message_id: msg.id,
-    thread_id: toThreadId(msg.topic_id),
-    topic_id: msg.topic_id,
-    videoid:
-      msg.content._ === "messageVideo"
-        ? msg.content.video.video.remote.id
-        : undefined,
-    unique_id:
-      msg.content._ === "messageVideo"
-        ? msg.content.video.video.remote.unique_id
-        : undefined,
-  }));
-
-  const videoids = allMessages
-    .map((msg) => msg.videoid)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-  const uniqueIds = allMessages
-    .map((msg) => msg.unique_id)
-    .filter((id): id is string => typeof id === "string" && id.length > 0);
-
-  return { allMessages, videoids, uniqueIds };
 }
 
 /**
@@ -249,7 +213,6 @@ export async function falseAnime(
     });
     return;
   }
-  newAnime.btdata = anime.btdata;
 
   const result = await updateAnimeLinks(
     client,
@@ -410,39 +373,6 @@ export async function nullAnime(
   if (!primaryCacheAnimeMessage) {
     throw new Error("发送动漫消息失败: 无有效消息");
   }
-  const { allMessages, videoids, uniqueIds } =
-    buildAlbumStoreData(cacheAnimeMessages);
-
-  const animeLink = await getMessageLink(
-    client,
-    primaryCacheAnimeMessage.chat_id,
-    primaryCacheAnimeMessage.id
-  );
-
-  newAnime.btdata = {
-    [combineFansub(item.fansub)]: [
-      {
-        episode: item.episode || "未知",
-        Message: {
-          chat_id: primaryCacheAnimeMessage.chat_id,
-          message_id: primaryCacheAnimeMessage.id,
-          thread_id: primaryCacheAnimeMessage.topic_id
-            ? primaryCacheAnimeMessage.topic_id._ === "messageTopicForum"
-              ? primaryCacheAnimeMessage.topic_id.forum_topic_id
-              : 0
-            : 0,
-          link: animeLink.link,
-        } as messageType,
-        title: item.title,
-        videoid: videoids[0],
-        unique_id: uniqueIds[0],
-        Messages: allMessages,
-        videoids,
-        unique_ids: uniqueIds,
-      },
-    ],
-  };
-
   const result = await updateAnimeLinks(
     client,
     chat_id,
@@ -576,7 +506,6 @@ export async function nullEp(
     });
     return;
   }
-  newAnime.btdata = anime.btdata;
 
   const result = await updateAnimeLinks(
     client,
@@ -608,7 +537,10 @@ export async function nullEp(
  */
 async function fetchVideoInfosFromCache(
   client: Client,
-  episodeEntry: BtEntry
+  episodeEntry: {
+    Message?: messageType;
+    Messages?: albumMessageType[];
+  }
 ): Promise<Array<{ videoId: string; coverId?: string; width?: number; height?: number; duration?: number }>> {
   const msgRefs: Array<{ chat_id: number; message_id: number }> = [];
 
@@ -672,22 +604,13 @@ async function updateAnimeLinks(
     logger.error(`缓存信息不存在，ID: ${cache_id}`);
     throw new Error("缓存信息不存在");
   }
-  const newAnime = omit(anime, [
-    "navMessageLink",
-    "createdAt",
-    "updatedAt",
-    "btdata",
-  ]);
+  const { createdAt: _createdAt, updatedAt: _updatedAt, ...newAnime } = anime;
   // 刷新动漫信息
   const animeId = await saveAnime(newAnime);
 
   await sendMegToNavAnime(client, animeId);
-  if (!anime.btdata) {
-    throw new Error("btdata不存在");
-  }
-
-  const episodeData = findEpisodeByCacheId(
-    anime.btdata,
+  const episodeData = await getCacheResourceByCacheId(
+    anime.id,
     cache_id,
     cacheItem.title
   );
@@ -698,11 +621,7 @@ async function updateAnimeLinks(
     (!episodeData.episode.unique_id && (!episodeData.episode.unique_ids || episodeData.episode.unique_ids.length === 0)) ||
     !episodeData.episode.title
   ) {
-    logger.error(`未找到对应的集数信息, ID: ${cache_id}\nanime.btdata: ${JSON.stringify(
-      anime.btdata,
-      null,
-      2
-    )}\n
+    logger.error(`未找到对应的集数信息, ID: ${cache_id}\n
       episodeData: ${JSON.stringify(episodeData, null, 2)}`);
     throw new Error(`未找到对应的集数信息`);
   }

@@ -1,15 +1,20 @@
 import { parseTextEntities } from "@TDLib/function/index.ts";
-import type {
-  anime as animeType,
-  animeItem,
-  BtData as BtDataType,
-  BtEntry,
-} from "../types/anime.ts";
+import { getBtDataByAnimeId } from "../database/query.ts";
+import type { anime as animeType } from "../types/anime.d.ts";
+import type { animeItem } from "../types/rss.d.ts";
 
 import type { Client } from "tdl";
 import { formatTags, safeTag } from "../utils/index.ts";
 
 const botStartUrl = "https://t.me/XiaoQvanAnimeBot?start="
+
+type BtEntry = {
+  episode: string;
+  Message?: { link?: string };
+  TGMegLink?: string;
+};
+
+type BtDataType = Record<string, BtEntry[]>;
 
 /**
  * 生成导航消息文本（首条带图，1024 文本长度限制；资源分条纯文本，每条 4096 文本长度限制）
@@ -22,7 +27,8 @@ export async function navmegtext(
   anime: animeType
 ): Promise<string[]> {
   const messages: string[] = [];
-  const sections = formatBtData(anime.btdata || {}); // 资源段
+  const btdata = await getBtDataByAnimeId(anime.id);
+  const sections = formatBtData(btdata); // 资源段
 
   // 构造首条消息（可选择是否包含资源区、summary 最大长度、资源分页导航）
   const buildMain = (
@@ -376,8 +382,8 @@ export function AnimeText(anime: animeType, item: animeItem, episodeId: number):
             anime.name_cn || anime.name
           )}`
       )
-      .join(" ")}${anime.navMessage?.link || anime.navMessageLink
-        ? ` \n[番剧导航](${anime.navMessage?.link || anime.navMessageLink}) | [收藏番剧](${botStartUrl}collection-${anime.id}) | [标记看过](${botStartUrl}eplook-${episodeId}) | [吐槽箱](https://bgm.tv/ep/${episodeId})`
+      .join(" ")}${anime.navMessage?.link
+        ? ` \n[番剧导航](${anime.navMessage.link}) | [收藏番剧](${botStartUrl}collection-${anime.id}) | [标记看过](${botStartUrl}eplook-${episodeId}) | [吐槽箱](https://bgm.tv/ep/${episodeId})`
         : ""
     }`;
 }

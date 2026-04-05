@@ -1,6 +1,6 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
-import type { RssAnimeItem } from "../../types/anime.ts";
+import type { RssAnimeItem } from "../../types/rss.d.ts";
 import { isTitleAllowed } from "./common.ts";
 
 export const authorMapping: Record<string, string> = {
@@ -103,7 +103,6 @@ export async function fetchDmhyRss() {
         continue;
       }
 
-      // 统一的标题内容过滤（迁移到 common.ts）
       if (!isTitleAllowed(title)) continue;
 
       // 检查作者是否在白名单中

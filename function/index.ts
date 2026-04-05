@@ -2,7 +2,6 @@ import { execSync, spawnSync } from "child_process";
 import path from "path";
 import fs from "fs";
 import axios from "axios";
-import type { BtData } from "../types/anime.ts";
 /**
  * 将 Unix 时间戳（以秒为单位）转换为格式化的日期字符串。
  *
@@ -204,58 +203,6 @@ export function formatSubGroupName(
 
   // 非特殊字幕组直接返回原名称
   return subGroup;
-}
-
-/**
- * 在 btdata 中查找 cache_id 匹配的 episodeData
- * @param btdata - anime.btdata
- * @param cacheId - 要匹配的 cache_id（数字或字符串）
- * @returns 找到则返回 { group, episode }，否则返回 null
- */
-export function findEpisodeByCacheId(
-  btdata: BtData,
-  cacheId: string | number,
-  title: string | undefined
-) {
-  const target = String(cacheId);
-
-  // 1) 优先按 cache_id 精确匹配（支持 number | string 存储）
-  for (const [group, episodes] of Object.entries(btdata)) {
-    if (!Array.isArray(episodes)) continue;
-    for (const ep of episodes) {
-      if (!ep) continue;
-      if (ep.cache_id && String(ep.cache_id) === target) {
-        return { group, episode: ep };
-      }
-    }
-  }
-
-  // 2) 回退：若提供 title，则尝试按标题/其它 id 字段匹配（大小写不敏感）
-  if (title) {
-    const tRaw = String(title);
-    const tLower = tRaw.toLowerCase();
-    for (const [group, episodes] of Object.entries(btdata)) {
-      if (!Array.isArray(episodes)) continue;
-      for (const ep of episodes) {
-        if (!ep) continue;
-        // 候选字段：title, videoid, unique_id, episode
-        const candidates: string[] = [];
-        if (ep.title) candidates.push(String(ep.title));
-        if ((ep as any).videoid) candidates.push(String((ep as any).videoid));
-        if ((ep as any).unique_id)
-          candidates.push(String((ep as any).unique_id));
-        if ((ep as any).episode) candidates.push(String((ep as any).episode));
-
-        for (const c of candidates) {
-          if (c === tRaw || c.toLowerCase() === tLower) {
-            return { group, episode: ep };
-          }
-        }
-      }
-    }
-  }
-
-  return null;
 }
 
 /**

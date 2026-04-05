@@ -2,7 +2,7 @@ import logger from "@log/index.ts";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
 import { handleRssAnimeItem } from "./rssItemHandler.ts";
 import { hasTorrentTitle } from "../database/query.ts";
-import type { RssAnimeItem } from "../types/anime.d.ts";
+import type { RssAnimeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
 
 /**
