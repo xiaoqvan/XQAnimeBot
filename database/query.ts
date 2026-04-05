@@ -220,7 +220,7 @@ export async function getCacheResourceByCacheId(
   const list = await resources.find({ anime_id: animeId }).toArray();
 
   const byCacheId = list.find((item) => String(item.cache_id) === targetStr);
-  const target = byCacheId ?? (
+  let target = byCacheId ?? (
     title
       ? list.find((item) => {
         const candidates = [item.title, item.videoid, item.unique_id, item.episode]
@@ -230,6 +230,28 @@ export async function getCacheResourceByCacheId(
       })
       : undefined
   );
+
+  // 纠正场景下 animeId 可能已切换为新番剧，按 cache_id 全局兜底匹配原缓存资源。
+  if (!target) {
+    const globalCandidates = await resources.find({
+      $or: [
+        { cache_id: cacheId },
+        { cache_id: targetStr },
+        ...(Number.isNaN(Number(targetStr)) ? [] : [{ cache_id: Number(targetStr) }]),
+      ],
+    }).toArray();
+
+    target =
+      globalCandidates.find((item) => String(item.cache_id) === targetStr) ??
+      (title
+        ? globalCandidates.find((item) => {
+          const candidates = [item.title, item.videoid, item.unique_id, item.episode]
+            .filter((x): x is string => typeof x === "string" && x.length > 0)
+            .map((x) => x.toLowerCase());
+          return candidates.includes(String(title).toLowerCase());
+        })
+        : undefined);
+  }
 
   if (!target) return null;
 
@@ -252,6 +274,7 @@ export async function getCacheResourceByCacheId(
       unique_id: target.unique_id,
       cache_id: target.cache_id,
       source: target.source,
+      cache_anime_id: target.anime_id,
       videoids: target.videoids,
       unique_ids: target.unique_ids,
     },

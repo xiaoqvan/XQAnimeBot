@@ -228,8 +228,6 @@ export async function falseAnime(
   if (!result) {
     return;
   }
-
-  await deleteCacheAnime(newAnime.id, Cache_id);
 }
 
 /**
@@ -513,8 +511,6 @@ export async function nullEp(
   if (!result) {
     return;
   }
-
-  await deleteCacheAnime(newAnime.id, Cache_id);
 }
 /**
  * 从缓存频道的原始消息中提取视频文件 ID 和封面 ID
@@ -616,6 +612,10 @@ async function updateAnimeLinks(
     logger.error(`更新后动漫信息不存在，ID: ${animeId}`);
     throw new Error("更新后动漫信息不存在");
   }
+  const cacheAnimeId =
+    typeof episodeData.episode.cache_anime_id === "number"
+      ? episodeData.episode.cache_anime_id
+      : anime.id;
   const animetext = AnimeText(new_Anime, cacheItem, episode_id);
 
   // 从缓存消息中获取真实视频文件 ID 和封面 ID
@@ -727,7 +727,7 @@ async function updateAnimeLinks(
     sentMsgData.length > 1 ? sentMsgData : undefined
   );
   await sendMegToNavAnime(client, animeId);
-  await deleteCacheAnime(anime.id, cache_id);
+  await deleteCacheAnime(cacheAnimeId, cache_id);
   await updateTorrentStatus(cacheItem.title, "完成");
   return true;
 }
