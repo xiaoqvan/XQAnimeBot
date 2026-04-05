@@ -35,7 +35,7 @@ export default async function ConAnimeInformation(
   if (!commandParts || commandParts.length !== 2) {
     await sendMessage(client, message.chat_id, {
       reply_to_message_id: message.id,
-      text: "❌ 用法错误！\n\n**正确用法**:\n`/jz <动漫ID> <缓存ID>` - 连接番剧与缓存\n\n**示例**:\n`/jz 12345 67890`",
+      text: "❌ 用法错误！\n\n**正确用法**:\n`/jz <章节ID> <缓存ID>` - 连接番剧与缓存\n\n**示例**:\n`/jz 12345 67890`",
       link_preview: true,
     });
     return;
