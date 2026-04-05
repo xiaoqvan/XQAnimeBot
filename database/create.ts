@@ -226,7 +226,9 @@ export async function saveAnime(anime: AnimeWithRelations, cache: boolean = fals
 
   if (!cache) {
     const now = new Date();
-    const { eps, btdata: _btdata, ...animeBase } = anime;
+    const { _id: _mongoId, eps, btdata: _btdata, ...animeBase } = anime as AnimeWithRelations & {
+      _id?: unknown;
+    };
 
     const updatePayload: Partial<AnimeWithRelations> = {
       ...animeBase,
@@ -262,7 +264,9 @@ export async function saveAnime(anime: AnimeWithRelations, cache: boolean = fals
 
   const oldDoc = await col.findOne({ id: anime.id });
 
-  const { btdata: _cacheBtdata, ...cacheAnimeBase } = anime;
+  const { _id: _cacheMongoId, btdata: _cacheBtdata, ...cacheAnimeBase } = anime as AnimeWithRelations & {
+    _id?: unknown;
+  };
 
   // 需要更新的字段
   const updateFields: (keyof CacheAnimeDoc)[] = [
