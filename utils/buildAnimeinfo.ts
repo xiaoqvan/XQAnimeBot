@@ -1,7 +1,7 @@
 import { getEpisodeInfo } from "../anime/get.ts";
 import { replaceEpisodeMetas, saveAnime } from "../database/create.ts";
 import type { anime } from "../types/anime.d.ts";
-import { bangumiAnime, infobox } from "../types/bangumi.js";
+import type { bangumiAnime, infobox } from "../types/bangumi.d.ts";
 import { extractFilteredTagNames } from "./index.ts";
 
 /**
