@@ -35,8 +35,15 @@ export function isTitleAllowed(title: string): boolean {
       return false;
   }
 
-  // 悠哈璃羽字幕社：排除 CHT 繁体
-  if (title.includes("【悠哈璃羽字幕社】") && title.includes("[CHT]")) {
+  const chtBypassGroups = ["[黒ネズミたち]", "[ANi]"];
+
+  const isChtTitle = /\[[^\]]*CHT[^\]]*\]/i.test(title);
+
+  const shouldBypassChtRule = chtBypassGroups.some(group =>
+    title.includes(group)
+  );
+
+  if (isChtTitle && !shouldBypassChtRule) {
     return false;
   }
 
