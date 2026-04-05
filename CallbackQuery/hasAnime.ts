@@ -80,6 +80,11 @@ export async function trueAnime(
       } 正在更新\n触发用户：${await chatoruserMdown(client, sender_id, true)}`,
   });
 
+  await answerCallbackQuery(client, queryId, {
+    text: `确认成功`,
+    show_alert: false,
+  });
+
   const result = await updateAnimeLinks(
     client,
     chat_id,
@@ -90,16 +95,8 @@ export async function trueAnime(
   );
 
   if (!result) {
-    await answerCallbackQuery(client, queryId, {
-      text: `失败出现错误`,
-      show_alert: false,
-    });
     throw new Error("更新动漫链接失败");
   }
-  await answerCallbackQuery(client, queryId, {
-    text: `确认成功`,
-    show_alert: false,
-  });
 }
 /**
  * 当前匹配错误进行纠正
@@ -140,6 +137,11 @@ export async function falseAnime(
       sender_id,
       true
     )} ，请回复这一条消息提供正确的 bgm.tv 章节链接或章节id\n\n回复 /cancel 取消`,
+  });
+
+  await answerCallbackQuery(client, queryId, {
+    text: `已收到`,
+    show_alert: false,
   });
 
   let status = null;
@@ -224,17 +226,8 @@ export async function falseAnime(
   );
 
   if (!result) {
-    await answerCallbackQuery(client, queryId, {
-      text: `失败出现错误`,
-      show_alert: false,
-    });
     return;
   }
-
-  await answerCallbackQuery(client, queryId, {
-    text: `成功更新动漫信息`,
-    show_alert: false,
-  });
 
   await deleteCacheAnime(newAnime.id, Cache_id);
 }
@@ -275,6 +268,11 @@ export async function nullAnime(
       sender_id,
       true
     )} ，请回复这一条消息提供正确的 bgm.tv 章节链接或章节id\n\n回复 /cancel 取消`,
+  });
+
+  await answerCallbackQuery(client, queryId, {
+    text: `已收到`,
+    show_alert: false,
   });
 
   let status = undefined;
@@ -383,17 +381,8 @@ export async function nullAnime(
   );
 
   if (!result) {
-    await answerCallbackQuery(client, queryId, {
-      text: `失败出现错误`,
-      show_alert: false,
-    });
     return;
   }
-
-  await answerCallbackQuery(client, queryId, {
-    text: `成功更新动漫信息`,
-    show_alert: false,
-  });
 }
 
 /**
@@ -433,6 +422,11 @@ export async function nullEp(
       sender_id,
       true
     )} ，请回复这一条消息提供正确的缓存动漫 id 或 bgm.tv 的章节链接\n\n回复 /cancel 取消`,
+  });
+
+  await answerCallbackQuery(client, queryId, {
+    text: `已收到`,
+    show_alert: false,
   });
 
   let status = null;
@@ -517,17 +511,8 @@ export async function nullEp(
   );
 
   if (!result) {
-    await answerCallbackQuery(client, queryId, {
-      text: `失败出现错误`,
-      show_alert: false,
-    });
     return;
   }
-
-  await answerCallbackQuery(client, queryId, {
-    text: `成功更新动漫信息`,
-    show_alert: false,
-  });
 
   await deleteCacheAnime(newAnime.id, Cache_id);
 }
