@@ -223,6 +223,19 @@ async function updateAssociatedVideoMessagesR18(
         continue;
       }
       try {
+        const currentVideoRemoteId =
+          messageLinkInfo.message.content.video.video.remote.id || ep.videoid;
+        const currentCoverRemoteId =
+          messageLinkInfo.message.content.cover?.sizes?.[0]?.photo?.remote?.id;
+
+        if (!currentVideoRemoteId) {
+          fail++;
+          failDetails.push(
+            `[${fansub}] 第${ep.episode}集: 缺少可用的视频 remote.id，无法编辑媒体`
+          );
+          continue;
+        }
+
         await editMessageMedia(
           client,
           messageLinkInfo.message.chat_id,
@@ -231,12 +244,13 @@ async function updateAssociatedVideoMessagesR18(
             text: animeText,
             media: {
               video: {
-                id: ep.videoid,
+                id: currentVideoRemoteId,
               },
-              cover: {
-                id: messageLinkInfo.message.content.cover?.sizes[0].photo.remote
-                  .unique_id,
-              },
+              cover: currentCoverRemoteId
+                ? {
+                  id: currentCoverRemoteId,
+                }
+                : undefined,
               width: messageLinkInfo.message.content.video.width,
               height: messageLinkInfo.message.content.video.height,
               duration: messageLinkInfo.message.content.video.duration,
