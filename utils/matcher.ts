@@ -40,17 +40,31 @@ export function matchBangumiEpisode(
         return { status: 'NOT_FOUND_IN_DB', msg: '数据库中没有章节列表' };
     }
 
+    const toNum = (value: unknown): number => {
+        if (typeof value === 'number') return value;
+        if (typeof value === 'string') {
+            const n = Number(value.trim());
+            return Number.isFinite(n) ? n : NaN;
+        }
+        return NaN;
+    };
+
+    const isMainEpisode = (episode: EpisodeMetaDoc): boolean => {
+        const episodeType = toNum((episode as EpisodeMetaDoc & { type?: number | string }).type);
+        return Number.isNaN(episodeType) || episodeType === 0;
+    };
+
     const sortedEpisodes = [...episodes].sort((a, b) => {
-        const sortDiff = Number(a.sort) - Number(b.sort);
+        const sortDiff = toNum(a.sort) - toNum(b.sort);
         if (sortDiff !== 0) return sortDiff;
-        return Number(a.id) - Number(b.id);
+        return toNum(a.id) - toNum(b.id);
     });
 
     // 3. 在 eps.list 中查找
     // Bangumi API: type 0 = 本篇, 1 = SP, 2 = OP, 3 = ED
     // 我们优先匹配 type === 0 的本篇
     // 显式类型转换匹配：防止 sort 为字符串类型
-    const matchedEp = sortedEpisodes.find(e => Number(e.sort) === epNum && (e.type === 0 || e.type === undefined));
+    const matchedEp = sortedEpisodes.find(e => toNum(e.sort) === epNum && isMainEpisode(e));
 
     // ==========================================
     // 核心逻辑：越界检查 (Out of Range Check)
@@ -59,9 +73,9 @@ export function matchBangumiEpisode(
         // 场景：数据库只有 1-12 集，BT 是 13 集
         // 结果：返回 NOT_FOUND，提示调用者这是潜在的新季或错误
         const mainEpisodeSorts = sortedEpisodes
-            .filter(e => e.type === 0 || e.type === undefined)
-            .map(e => Number(e.sort))
-            .filter(sort => !isNaN(sort));
+            .filter(isMainEpisode)
+            .map(e => toNum(e.sort))
+            .filter(sort => !Number.isNaN(sort));
 
         const minEpisode = mainEpisodeSorts.length > 0 ? Math.min(...mainEpisodeSorts) : 1;
         const maxEpisode = mainEpisodeSorts.length > 0 ? Math.max(...mainEpisodeSorts) : 1;
