@@ -123,6 +123,38 @@ export default class AnimePlugin extends Plugin {
       },
     };
 
+    this.inlineHandlers = {
+      animeNavigation: {
+        description: "内联搜索番剧导航消息（图片导航）",
+        scope: "all",
+        matcher: (ctx) => {
+          const query = ctx.query.trim();
+          if (!query) return false;
+          if (/^\d+$/.test(query)) return 90;
+          return query.length >= 2 ? 70 : false;
+        },
+        handler: async (ctx) => {
+          const mod = await import("./inline/animeNavigation.ts");
+          return mod.default(this.client, ctx);
+        },
+      },
+      episodeVideo: {
+        description: "内联按 EPID 或 bgm 链接发送对应视频",
+        scope: "all",
+        matcher: (ctx) => {
+          const query = ctx.query.trim();
+          if (/^\d+$/.test(query)) return 100;
+          return /https?:\/\/(?:bgm\.tv|bangumi\.tv)\/ep\/\d+(?:\/|$)/i.test(query)
+            ? 100
+            : false;
+        },
+        handler: async (ctx) => {
+          const mod = await import("./inline/episodeVideo.ts");
+          return mod.default(this.client, ctx);
+        },
+      },
+    };
+
     this.updateHandlers = {
       updateNewCallbackQuery: {
         handler: async (update) => {

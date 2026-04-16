@@ -109,6 +109,10 @@ export async function downloadAndValidateTorrent(
     throw new Error(failMessage);
 }
 
+/**
+ * 从 qBittorrent 中删除指定种子及其数据
+ * @param torrentId - 种子哈希或 ID
+ */
 export async function removeTorrentAndData(torrentId: string) {
     const QBclient = await getQBClient();
     await QBclient.deleteTorrent(torrentId, true);

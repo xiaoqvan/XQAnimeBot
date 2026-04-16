@@ -162,7 +162,7 @@ export async function promptAdminConfirmAnimeEpisodes(
                         [
                             {
                                 _: "inlineKeyboardButton",
-                                text: "提供正确",
+                                text: "正确",
                                 type: {
                                     _: "inlineKeyboardButtonTypeCallback",
                                     data: Buffer.from(

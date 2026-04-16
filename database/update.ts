@@ -684,3 +684,52 @@ export async function updateBangumiUser(
     throw err;
   }
 }
+
+/**
+ * 将某个 cache_id 对应的缓存资源从旧缓存动漫迁移到新动漫。
+ * 迁移后若旧缓存动漫已无任何资源，会自动删除旧缓存动漫文档。
+ * @param fromAnimeId - 原缓存动漫 id
+ * @param toAnimeId - 目标动漫 id
+ * @param cacheId - 缓存条目 id（cacheItem.id）
+ */
+export async function rebindCacheResourceAnime(
+  fromAnimeId: number,
+  toAnimeId: number,
+  cacheId: string | number
+): Promise<{ moved: number; removedOldCacheAnime: boolean }> {
+  if (!fromAnimeId || !toAnimeId || cacheId === undefined || cacheId === null) {
+    throw new Error("fromAnimeId、toAnimeId、cacheId 都是必需参数");
+  }
+
+  const targetStr = String(cacheId);
+  const cacheResources = db.collection("cache_resources");
+
+  const moveRes = await cacheResources.updateMany(
+    {
+      anime_id: fromAnimeId,
+      $or: [
+        { cache_id: cacheId },
+        { cache_id: targetStr },
+        ...(Number.isNaN(Number(targetStr)) ? [] : [{ cache_id: Number(targetStr) }]),
+      ],
+    },
+    {
+      $set: {
+        anime_id: toAnimeId,
+        updatedAt: new Date(),
+      },
+    }
+  );
+
+  let removedOldCacheAnime = false;
+  const remaining = await cacheResources.countDocuments({ anime_id: fromAnimeId });
+  if (remaining === 0) {
+    const delOld = await db.collection("cacheAnime").deleteOne({ id: fromAnimeId });
+    removedOldCacheAnime = delOld.deletedCount > 0;
+  }
+
+  return {
+    moved: moveRes.modifiedCount ?? 0,
+    removedOldCacheAnime,
+  };
+}

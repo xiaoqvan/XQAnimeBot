@@ -24,6 +24,7 @@ import { AnimeText } from "../anime/text.ts";
 import { getMessageLink, getMessage } from "@TDLib/function/get.ts";
 import {
   addAnimeNameAlias,
+  rebindCacheResourceAnime,
   updateAnimeBtdata,
   updateTorrentStatus,
 } from "../database/update.ts";
@@ -216,6 +217,19 @@ export async function falseAnime(
     return;
   }
 
+  // 若纠正后的动漫与原缓存动漫不一致，先迁移缓存资源归属，再清理空壳旧缓存动漫。
+  if (newAnime.id !== anime.id) {
+    const rebinding = await rebindCacheResourceAnime(
+      anime.id,
+      newAnime.id,
+      Cache_id
+    );
+
+    logger.info(
+      `[falseAnime] cache_id=${Cache_id} 资源归属修正: ${anime.id} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
+    );
+  }
+
   const result = await updateAnimeLinks(
     client,
     chat_id,
@@ -228,6 +242,8 @@ export async function falseAnime(
   if (!result) {
     return;
   }
+
+  await deleteCacheAnime(newAnime.id, Cache_id);
 }
 
 /**
@@ -427,9 +443,9 @@ export async function nullEp(
     show_alert: false,
   });
 
-  let status = null;
-  let newAnime = null;
-  let parsedId = null;
+  let status: string | undefined = undefined;
+  let newAnime: animeType | undefined = undefined;
+  let parsedId: number | undefined = undefined;
 
   for await (const update of client.iterUpdates()) {
     if (
@@ -471,8 +487,15 @@ export async function nullEp(
         });
         continue;
       }
-      newAnime = await getEpisodeById(parsedId).catch(() => null);
-      const Subject = await getSubjectById(newAnime.subject_id).catch(() => null);
+      const bgmanimeinfo = await getEpisodeById(parsedId).catch(() => null);
+      if (!bgmanimeinfo) {
+        await editMessageText(client, chat_id, message_id, {
+          text: `未找到相关的章节信息，请确认 ID: ${parsedId} 是否正确。\n请重新提供一个 ID 或 bgm 链接，或者使用 /cancel 取消`,
+        });
+        continue;
+      }
+
+      const Subject = await getSubjectById(bgmanimeinfo.subject_id).catch(() => null);
 
       if (!Subject) {
         await editMessageText(client, chat_id, message_id, {
@@ -499,6 +522,19 @@ export async function nullEp(
     return;
   }
 
+  // 若纠正后的动漫与原缓存动漫不一致，先迁移缓存资源归属，再清理空壳旧缓存动漫。
+  if (newAnime.id !== anime.id) {
+    const rebinding = await rebindCacheResourceAnime(
+      anime.id,
+      newAnime.id,
+      Cache_id
+    );
+
+    logger.info(
+      `[nullEp] cache_id=${Cache_id} 资源归属修正: ${anime.id} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
+    );
+  }
+
   const result = await updateAnimeLinks(
     client,
     chat_id,
@@ -511,6 +547,8 @@ export async function nullEp(
   if (!result) {
     return;
   }
+
+  await deleteCacheAnime(newAnime.id, Cache_id);
 }
 /**
  * 从缓存频道的原始消息中提取视频文件 ID 和封面 ID
@@ -612,10 +650,6 @@ async function updateAnimeLinks(
     logger.error(`更新后动漫信息不存在，ID: ${animeId}`);
     throw new Error("更新后动漫信息不存在");
   }
-  const cacheAnimeId =
-    typeof episodeData.episode.cache_anime_id === "number"
-      ? episodeData.episode.cache_anime_id
-      : anime.id;
   const animetext = AnimeText(new_Anime, cacheItem, episode_id);
 
   // 从缓存消息中获取真实视频文件 ID 和封面 ID
@@ -727,7 +761,7 @@ async function updateAnimeLinks(
     sentMsgData.length > 1 ? sentMsgData : undefined
   );
   await sendMegToNavAnime(client, animeId);
-  await deleteCacheAnime(cacheAnimeId, cache_id);
+  await deleteCacheAnime(anime.id, cache_id);
   await updateTorrentStatus(cacheItem.title, "完成");
   return true;
 }

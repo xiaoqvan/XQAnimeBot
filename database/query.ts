@@ -338,7 +338,7 @@ function escapeRegExp(str: string): string {
  * @returns 搜索结果数组，包含匹配的动漫信息，限制返回前20条
  * @throws 数据库查询错误时抛出异常
  */
-export async function searchAnime(key: string) {
+export async function searchAnime(key: string): Promise<animeType[]> {
   if (!key) {
     throw new Error("搜索查询是必需的参数");
   }
@@ -359,7 +359,7 @@ export async function searchAnime(key: string) {
 
     // 先搜索 name 和 name_cn
     let animes = await db
-      .collection("anime")
+      .collection<animeType>("anime")
       .find(
         {
           $or: [
@@ -367,14 +367,6 @@ export async function searchAnime(key: string) {
             { name_cn: { $regex: regex } },
           ],
         },
-        {
-          projection: {
-            id: 1,
-            name: 1,
-            name_cn: 1,
-            navMessage: 1, // 新版导航频道消息
-          },
-        }
       )
       .limit(20) // 限制返回前20条
       .toArray();
@@ -382,19 +374,11 @@ export async function searchAnime(key: string) {
     // 如果在 name 和 name_cn 中没找到，再搜索 names 数组
     if (animes.length === 0) {
       animes = await db
-        .collection("anime")
+        .collection<animeType>("anime")
         .find(
           {
             names: { $regex: regex },
           },
-          {
-            projection: {
-              id: 1,
-              name: 1,
-              name_cn: 1,
-              navMessage: 1,
-            },
-          }
         )
         .limit(20) // 限制返回前20条
         .toArray();
