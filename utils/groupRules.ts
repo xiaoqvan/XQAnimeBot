@@ -70,9 +70,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[[^\]]+\]\s*/, "");
     // 去除集数及后缀
     t = t.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0].trim();
+    // 去除尾部技术标签（如 [简日内嵌][WebRip H264 8bit 1080P AAC]）
+    t = t.replace(/\s*(\[[^\]]+\]\s*)+$/g, "").trim();
     const names = t
       .split(/\s*\/\s*|_|，|,|、/)
       .map((s) => s.trim())
+      .map((s) => s.replace(/\s*(\[[^\]]+\]\s*)+$/g, "").trim())
       .filter(Boolean);
     return sortNamesByPriority(names, title);
   },
@@ -309,7 +312,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       if (
         bracket === "SweetSub" ||
         /^\d{1,3}(?:v\d+)?$/.test(bracket) || // 集数
-        /^(WebRip|HEVC|AVC|MP4|MKV)/.test(bracket) || // 编码格式
+        /^(Movie|BDRip|BluRay|BD|WEB-?DL|WebRip|HEVC|AVC|MP4|MKV)/i.test(bracket) || // 类型与编码格式
         /^\d{3,4}P?$/.test(bracket) || // 分辨率
         /^(简日双语|简日内嵌|双语|内嵌|8bit|10bit)/.test(bracket) // 语言和编码
       ) {
