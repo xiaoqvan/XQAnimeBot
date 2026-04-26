@@ -730,7 +730,7 @@ async function updateAnimeLinks(
       text: `番剧: ${cacheItem.title}\n\n更新完成 ✅\n\n动漫id: ${animeId}\n消息为: ${newAnimeLink.link}`,
     });
   } catch (error) {
-    logger.error("更新进度消息失败:", error);
+    logger.error(error, "更新进度消息失败:");
     throw new Error("更新进度消息失败");
   }
 

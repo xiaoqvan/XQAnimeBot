@@ -19,7 +19,7 @@ async function createQBClient() {
     await client.login();
     return client;
   } catch (error) {
-    logger.error(error, "[XQ动漫插件]qBittorrent链接失败: 请检查Web UI是否开启或密码是否正确。");
+    logger.fatal(error, "[XQ动漫插件]qBittorrent链接失败: 请检查Web UI是否开启或密码是否正确。");
     process.exit(1);
   }
 }

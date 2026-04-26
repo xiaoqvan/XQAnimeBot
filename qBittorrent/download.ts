@@ -91,14 +91,14 @@ export async function downloadAndValidateTorrent(
                     }
                     return extendedTorrent;
                 } catch (error) {
-                    logger.error("分段视频失败", error);
+                    logger.error(error, "分段视频失败");
                     throw error;
                 }
             }
 
             return extendedTorrent;
         } catch (err) {
-            logger.error("检查下载路径类型时出错", err);
+            logger.error(err, "检查下载路径类型时出错");
             await QBclient.deleteTorrent(extendedTorrent.hash, true);
             throw err;
         }

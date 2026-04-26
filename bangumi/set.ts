@@ -65,7 +65,7 @@ export async function updateSubjectCollectionInfo(token: string, subject_id: num
         );
         return true
     } catch (error) {
-        logger.error("修改条目收藏信息失败:", error);
+        logger.error(error, "修改条目收藏信息失败:");
         throw error
     }
 }
@@ -86,7 +86,7 @@ export async function getMe(token: string): Promise<user> {
         });
         return response.data;
     } catch (error) {
-        logger.error("获取用户信息失败:", error);
+        logger.error(error, "获取用户信息失败:");
         throw error;
     }
 }
