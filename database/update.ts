@@ -680,7 +680,7 @@ export async function updateBangumiUser(
     );
     return result.modifiedCount > 0;
   } catch (err) {
-    logger.error("updateBangumiUser Error:", err);
+    logger.error(err, "updateBangumiUser Error:");
     throw err;
   }
 }

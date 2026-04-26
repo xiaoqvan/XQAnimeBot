@@ -39,7 +39,7 @@ export async function addCacheItem(item: animeItem) {
     await db.collection("cacheItem").insertOne(doc);
     return id;
   } catch (err) {
-    logger.error("addCacheItem 出错:", err);
+    logger.error(err, "addCacheItem 出错:");
     throw err;
   }
 }
@@ -82,7 +82,7 @@ async function getNextSequence(name: string): Promise<number> {
 
     throw new Error(`无法获取序列 ${name} 的值`);
   } catch (err) {
-    logger.error("getNextSequence 出错:", err);
+    logger.error(err, "getNextSequence 出错:");
     throw err;
   }
 }
@@ -374,7 +374,7 @@ export async function createBangumiUser(
       throw err;
     }
   } catch (err) {
-    logger.error("createBangumiUser 出错:", err);
+    logger.error(err, "createBangumiUser 出错:");
     throw err;
   }
 }

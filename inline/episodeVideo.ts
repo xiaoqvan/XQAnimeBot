@@ -43,7 +43,7 @@ async function extractVideoIdFromMessage(client: Client, ref: { chat_id: number;
 
         return {};
     } catch (error) {
-        logger.warn("[XQAnimeBot][inline][episodeVideo] 读取消息失败", error);
+        logger.warn(error, "[XQAnimeBot][inline][episodeVideo] 读取消息失败");
         return {};
     }
 }

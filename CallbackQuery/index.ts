@@ -26,15 +26,7 @@ export default async function updateNewCallbackQuery(
   const data = update.payload.data;
   const queryId = update.id;
   const raw = Buffer.from(data, "base64").toString("utf-8");
-  logger.debug(
-    "处理回调查询:",
-    raw,
-    "来自用户ID:",
-    sender_user_id,
-    "消息ID:",
-    message_id
-  );
-
+  logger.debug({ raw, sender_user_id, message_id }, "回调查询原始数据");
   // 检查 raw 的格式并根据 ? 前的命令进行 switch 处理
   const [command, params] = raw.split("?");
   try {
@@ -106,12 +98,12 @@ export default async function updateNewCallbackQuery(
         break;
       }
       default: {
-        logger.info("收到未知回调按钮指令:", command, params);
+        logger.info({ command, params }, "收到未知回调按钮指令:");
         break;
       }
     }
   } catch (err) {
-    logger.error("处理回调查询时发生错误:", err);
+    logger.error(err, "处理回调查询时发生错误:");
     ErrorHandler(client, err);
   }
 }

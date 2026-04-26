@@ -116,7 +116,7 @@ export default async function handleSearchAnime(
         ? err
         : new Error(typeof err === "string" ? err : String(err));
 
-    logger.error("搜索动漫时发生错误:", error);
+    logger.error(error, "搜索动漫时发生错误:");
 
     let errorMessage = "❌ 搜索动漫时发生错误。";
 

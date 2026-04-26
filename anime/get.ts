@@ -119,7 +119,7 @@ export async function fetchBangumiTorrent(torrentId: string | number) {
 
     return response.data;
   } catch (error) {
-    logger.error("请求失败:", error);
+    logger.error(error, "请求失败:");
     throw error;
   }
 }
@@ -147,7 +147,7 @@ export async function fetchBangumiTeam(teamId: string | number) {
 
     return response.data;
   } catch (error) {
-    logger.error("请求失败:", error);
+    logger.error(error, "请求失败:");
     throw error;
   }
 }
@@ -177,7 +177,7 @@ export async function fetchBangumiTags(tagsIds: string[]) {
 
     return response.data;
   } catch (error) {
-    logger.error("请求失败:", error);
+    logger.error(error, "请求失败:");
     throw error;
   }
 }
@@ -263,7 +263,7 @@ export async function fetchDmhyTorrent(url: string) {
 
     return { title, pubDate, magnet, author, team };
   } catch (error) {
-    logger.error("请求失败:", error);
+    logger.error(error, "请求失败:");
     throw error;
   }
 }

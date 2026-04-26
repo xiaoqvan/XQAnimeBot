@@ -39,7 +39,7 @@ export async function anime(client: Client): Promise<void> {
                 }
             }
         } catch (error) {
-            logger.error("动漫处理主线程报错", error);
+            logger.error(error, "动漫处理主线程报错");
             ErrorHandler(client, error).catch(() => { });
         }
 

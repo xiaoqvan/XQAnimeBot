@@ -93,7 +93,7 @@ export class AnimeProcessorManager {
                 }
             } catch (error) {
                 // 查询失败时不阻塞主流程，保守策略为继续入队
-                logger.warn(`[AnimeProcessor] 入队前去重查询失败，继续入队: ${item.title}`, error);
+                logger.warn(error, `[AnimeProcessor] 入队前去重查询失败，继续入队: ${item.title}`);
             }
 
             this.queue.push({ client, item });
@@ -238,7 +238,7 @@ export class AnimeProcessorManager {
         // 注意：intentionally 不 await，让 worker 独立运行不阻塞调用方
         handleRssAnimeItem(client, item, this)
             .catch((error: unknown) => {
-                logger.error(`[AnimeProcessor] 处理动漫项出错: ${item.title}`, error);
+                logger.error(error, `[AnimeProcessor] 处理动漫项出错: ${item.title}`);
                 ErrorHandler(
                     client,
                     new Error(`处理动漫项出错: ${item.title}\n${String(error)}`)

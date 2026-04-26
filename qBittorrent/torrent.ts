@@ -32,7 +32,7 @@ export async function downloadTorrentFromUrl(
       return await getMagnetFromTorrent(url);
     });
 
-  if (isMagnet) logger.debug("传入的是磁力链接，跳过解析: ", magnetLink);
+  if (isMagnet) logger.debug(magnetLink, "传入的是磁力链接，跳过解析: ");
   await addTorrent(magnetLink, "等待元数据", title);
   return await downloadAndReturnPath(magnetLink, title);
 }

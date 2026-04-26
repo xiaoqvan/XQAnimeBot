@@ -141,7 +141,7 @@ export async function fetchMergedRss() {
 
     return mergedList;
   } catch (error) {
-    logger.error("合并RSS数据时发生错误:", error);
+    logger.error(error, "合并RSS数据时发生错误:");
     return [];
   }
 }

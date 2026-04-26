@@ -39,7 +39,7 @@ async function initdb() {
       { unique: true, name: "title_unique_idx" }
     );
   } catch (err) {
-    logger.error("为 torrents 创建索引时出错", err);
+    logger.error(err, "为 torrents 创建索引时出错");
     throw err;
   }
 
@@ -67,7 +67,7 @@ async function initdb() {
 
     logger.info("anime 集合索引创建成功");
   } catch (err) {
-    logger.error("为 anime 创建索引时出错", err);
+    logger.error(err, "为 anime 创建索引时出错");
     throw err;
   }
 
@@ -87,7 +87,7 @@ async function initdb() {
 
     logger.info("episodes_meta 集合索引创建成功");
   } catch (err) {
-    logger.error("为 episodes_meta 创建索引时出错", err);
+    logger.error(err, "为 episodes_meta 创建索引时出错");
     throw err;
   }
 
@@ -107,7 +107,7 @@ async function initdb() {
 
     logger.info("resources 集合索引创建成功");
   } catch (err) {
-    logger.error("为 resources 创建索引时出错", err);
+    logger.error(err, "为 resources 创建索引时出错");
     throw err;
   }
 
@@ -127,7 +127,7 @@ async function initdb() {
 
     logger.info("cache_resources 集合索引创建成功");
   } catch (err) {
-    logger.error("为 cache_resources 创建索引时出错", err);
+    logger.error(err, "为 cache_resources 创建索引时出错");
     throw err;
   }
 

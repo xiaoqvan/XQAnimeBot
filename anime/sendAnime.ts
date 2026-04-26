@@ -193,8 +193,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
         if (!videoMeg) {
           logger.error(
-            "sendMegToNavAnime",
-            `补发导航频道消息失败: ${Anime.navMessage.chat_id}, ${Anime.id}`
+            `sendMegToNavAnime 补发导航频道消息失败: ${Anime.navMessage.chat_id}, ${Anime.id}`
           );
           continue;
         }
@@ -247,8 +246,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
         if (!videoMeg) {
           logger.error(
-            "sendMegToNavAnime",
-            `补发导航频道消息失败: ${Anime.navMessage.chat_id}, ${Anime.id}`
+            `sendMegToNavAnime 补发导航频道消息失败: ${Anime.navMessage.chat_id}, ${Anime.id}`
           );
           continue;
         }
@@ -320,7 +318,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
         },
       });
     } catch (localError) {
-      logger.error(`本地图片上传也失败: ${Anime.image}`, localError);
+      logger.error(localError, `本地图片上传也失败: ${Anime.image}`);
       throw localError;
     } finally {
       // 清理本地图片文件
@@ -354,8 +352,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
     if (!videoMeg) {
       logger.error(
-        "sendMegToNavAnime",
-        `补发导航频道消息失败: ${navmeg.chat_id}, ${Anime.id}, index=${i}`
+        new Error(`补发导航频道消息失败: ${navmeg.chat_id}, ${Anime.id}, index=${i}`)
       );
       continue;
     }
@@ -444,7 +441,7 @@ export async function sendMegToAnime(
   try {
     result = await sendOnce();
   } catch (firstError) {
-    logger.warn(`sendMegToAnime 首次发送失败，准备重试: ${item.title}`, firstError);
+    logger.warn(firstError, `sendMegToAnime 首次发送失败，准备重试: ${item.title}`);
     result = await sendOnce();
   }
 
