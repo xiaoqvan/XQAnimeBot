@@ -9,10 +9,16 @@ import logger from "@log/index.ts";
 import { mkvToMp4 } from "../utils/mkvtomp4.ts";
 import { splitVideoByMaxSize } from "../utils/cuttingvideo.ts";
 import type { TorrentInfo } from "../types/qb.js";
+import type { ExclusiveSlotController } from "../anime/AnimeProcessorManager.ts";
 
 export interface ExtendedTorrentInfo extends TorrentInfo {
     segments: string[]
 }
+
+/**
+ * 需要串行执行的重型转换槽位控制器
+ */
+export type HeavyVideoTaskGate = Pick<ExclusiveSlotController, "withExclusiveSlot">;
 
 const TORRENT_MAX_SIZE = 2 * 1024 * 1024 * 1024;
 
@@ -24,6 +30,7 @@ const TORRENT_MAX_SIZE = 2 * 1024 * 1024 * 1024;
  */
 export async function downloadAndValidateTorrent(
     item: animeItem,
+    heavyTaskGate?: HeavyVideoTaskGate,
 ): Promise<ExtendedTorrentInfo> {
     let failMessage = `种子下载失败: ${item.title}, magnet: ${item.magnet}`;
     const QBclient = await getQBClient();
@@ -51,13 +58,22 @@ export async function downloadAndValidateTorrent(
             let currentVideoStats = stats;
             let convertedFromMkv = false;
             const fileExt = extname(currentVideoPath).toLowerCase();
+            const runHeavyVideoTask = async <T>(task: () => Promise<T>) => {
+                if (!heavyTaskGate) {
+                    return await task();
+                }
+
+                return await heavyTaskGate.withExclusiveSlot(task);
+            };
 
             if (currentVideoStats.isFile() && fileExt === ".mkv") {
                 logger.warn(
                     `下载文件为 MKV，先转换为 MP4: ${currentVideoPath} (${item.title})`
                 );
                 const sourceVideoPath = currentVideoPath;
-                const convertedVideoPath = await mkvToMp4(sourceVideoPath);
+                const convertedVideoPath = await runHeavyVideoTask(() =>
+                    mkvToMp4(sourceVideoPath)
+                );
                 await fs.unlink(sourceVideoPath).catch(() => { });
                 currentVideoPath = convertedVideoPath;
                 extendedTorrent.content_path = convertedVideoPath;
@@ -79,11 +95,13 @@ export async function downloadAndValidateTorrent(
                     (1024 * 1024 * 1024)
                 ).toFixed(2)} GiB，超过限制，尝试分段: ${item.title}`);
                 try {
-                    const videoPath = await splitVideoByMaxSize({
-                        input: currentVideoPath,
-                        outDir: "cache/videos",
-                        maxGiB: 1.95,
-                    });
+                    const videoPath = await runHeavyVideoTask(() =>
+                        splitVideoByMaxSize({
+                            input: currentVideoPath,
+                            outDir: "cache/videos",
+                            maxGiB: 1.95,
+                        })
+                    );
                     extendedTorrent.segments = videoPath;
 
                     if (convertedFromMkv) {

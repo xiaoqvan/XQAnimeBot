@@ -15,11 +15,14 @@ export function isTitleAllowed(title: string): boolean {
     "整理搬运",
     "無對白字幕",
     "BIG5",
-    "[720p]",
   ];
 
   for (const s of directExcludes) {
     if (title.includes(s)) return false;
+  }
+
+  if (!title.includes("雪飄工作室") && title.includes("720p")) {
+    return false;
   }
 
   // 精确/正则匹配项

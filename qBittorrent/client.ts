@@ -115,6 +115,17 @@ export class QbittorrentClient {
                     this.loggedIn = false;
                     throw new ApiError('Forbidden: Not logged in or session expired', 403, (error as { response: { data: unknown } }).response?.data);
                 }
+
+                // 处理连接错误：EPIPE、ECONNRESET、ECONNABORTED 等
+                const errorMessage = (error as Error).message || '';
+                const errorCode = (error as { code?: string }).code || '';
+                if (errorMessage.includes('EPIPE') ||
+                    errorCode === 'EPIPE' ||
+                    errorCode === 'ECONNRESET' ||
+                    errorCode === 'ECONNABORTED') {
+                    this.loggedIn = false;
+                }
+
                 throw new ApiError(
                     (error as Error).message || 'Request failed',
                     (error as { response?: { status?: number } }).response?.status,
@@ -181,24 +192,27 @@ export class QbittorrentClient {
             } catch (error) {
                 lastError = error;
                 const errorMessage = (error as Error).message || '';
+                const errorCode = (error as { code?: string }).code || '';
 
                 const isTimeout =
                     errorMessage.includes('timeout') ||
-                    (error as { code?: string }).code === 'ETIMEDOUT';
+                    errorCode === 'ETIMEDOUT';
                 const isNetworkError =
                     errorMessage.includes('socket hang up') ||
                     errorMessage.includes('ECONNRESET') ||
-                    errorMessage.includes('ECONNABORTED');
+                    errorMessage.includes('ECONNABORTED') ||
+                    errorMessage.includes('EPIPE') ||
+                    errorCode === 'EPIPE' ||
+                    errorCode === 'ECONNRESET' ||
+                    errorCode === 'ECONNABORTED';
 
                 if (isTimeout || isNetworkError) {
                     if (attempt < maxRetries) {
-                        if (isTimeout) {
-                            // 超时：断开旧连接，重建连接池并重新认证后再重试
-                            try {
-                                await this.reconnect();
-                            } catch {
-                                // 重连失败，等待后继续重试
-                            }
+                        // 网络错误或超时：断开旧连接，重建连接池并重新认证后再重试
+                        try {
+                            await this.reconnect();
+                        } catch {
+                            // 重连失败，等待后继续重试
                         }
                         await new Promise(resolve => setTimeout(resolve, retryDelayMs));
                         continue;

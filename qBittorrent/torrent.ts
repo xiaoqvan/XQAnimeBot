@@ -5,8 +5,6 @@ import logger from "@log/index.ts";
 import { updateTorrentStatus } from "../database/update.ts";
 import type { TorrentInfo } from "../types/qb.d.ts";
 
-const QBclient = await getQBClient();
-
 const seedingStates = [
   'stoppedUP',
   'stalledUP',
@@ -47,6 +45,7 @@ export async function downloadAndReturnPath(
   magnetLink: string,
   title: string
 ): Promise<TorrentInfo | null> {
+  const QBclient = await getQBClient();
   const { infoHash } = await getMagnetHash(magnetLink);
   const hash = infoHash;
 
@@ -79,6 +78,7 @@ export async function downloadAndReturnPath(
   // 1. 等待种子信息获取（has_metadata）
   while (true) {
     const data = await QBclient.getTorrentByHash(hash);
+    await wait(2000);
     torrent = data;
     if (!torrent) {
       logger.warn(`获取种子信息失败，hash=${hash}`);

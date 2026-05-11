@@ -134,9 +134,20 @@ export async function hasTorrentTitle(title: string): Promise<boolean> {
  * @throws 数据库查询错误时抛出异常
  */
 export async function hasAnimeSend(names: string[]) {
-  const anime = await db.collection<animeType>("anime").findOne({
-    $or: [{ name: { $in: names } }, { names: { $in: names } }],
-  });
+  const anime = await db
+    .collection<animeType>("anime")
+    .find({
+      $or: [{ name: { $in: names } }, { names: { $in: names } }],
+    })
+    .collation({
+      locale: "en",
+      strength: 2,
+    })
+    .sort({
+      updatedAt: -1,
+    })
+    .limit(1)
+    .next();
 
   return anime;
 }

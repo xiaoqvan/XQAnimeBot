@@ -40,6 +40,13 @@ interface QueueItem {
 }
 
 /**
+ * 需要串行执行的重型任务门闸
+ */
+export interface ExclusiveSlotController {
+    withExclusiveSlot<T>(task: () => Promise<T>): Promise<T>;
+}
+
+/**
  * 动漫处理并发管理器
  *
  * 维护固定大小的 worker 槽位池：
@@ -51,6 +58,9 @@ export class AnimeProcessorManager {
     /** 允许同时运行的最大 worker 数量 */
     private readonly maxConcurrency: number;
 
+    /** 允许同时运行的最大重型转换任务数量 */
+    private readonly maxConversionConcurrency = 1;
+
     /** 活跃任务的进度 Map，key 为 BT 种子标题 */
     private readonly progressMap: Map<string, ProgressInfo> = new Map();
 
@@ -59,6 +69,12 @@ export class AnimeProcessorManager {
 
     /** 当前正在运行的 worker 数量（原子计数） */
     private activeCount = 0;
+
+    /** 当前正在运行的重型转换任务数量 */
+    private conversionActiveCount = 0;
+
+    /** 重型转换任务等待队列 */
+    private readonly conversionWaiters: Array<() => void> = [];
 
     /** 记录已经被“强制释放槽位”的任务标题，避免 finally 重复扣减 activeCount */
     private readonly forceReleasedTitles: Set<string> = new Set();
@@ -187,6 +203,19 @@ export class AnimeProcessorManager {
     }
 
     /**
+     * 为转码/分段这类重型任务申请独立槽位，保证同一时间只运行一个
+     * @param task - 需要串行执行的任务
+     */
+    async withExclusiveSlot<T>(task: () => Promise<T>): Promise<T> {
+        await this.acquireExclusiveSlot();
+        try {
+            return await task();
+        } finally {
+            this.releaseExclusiveSlot();
+        }
+    }
+
+    /**
      * 更新指定任务的进度阶段及可选的附加信息
      * 若任务不在活跃 Map 中（已完成或未开始），则调用无效
      * @param title - BT 种子标题（任务唯一标识）
@@ -253,6 +282,36 @@ export class AnimeProcessorManager {
                 // Worker 退出后立即尝试补充新任务，保持槽位始终满载
                 this.trySpawnWorkers();
             });
+    }
+
+    /**
+     * 申请一个重型转换槽位
+     */
+    private acquireExclusiveSlot(): Promise<void> {
+        if (this.conversionActiveCount < this.maxConversionConcurrency) {
+            this.conversionActiveCount++;
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+            this.conversionWaiters.push(() => {
+                this.conversionActiveCount++;
+                resolve();
+            });
+        });
+    }
+
+    /**
+     * 释放一个重型转换槽位
+     */
+    private releaseExclusiveSlot(): void {
+        const next = this.conversionWaiters.shift();
+        if (next) {
+            next();
+            return;
+        }
+
+        this.conversionActiveCount = Math.max(0, this.conversionActiveCount - 1);
     }
 }
 

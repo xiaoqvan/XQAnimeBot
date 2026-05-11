@@ -281,16 +281,14 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // Billion Meta Lab：字幕组后到第一个集数或分辨率前的内容
   亿次研同好会: (title: string) => {
-    // 匹配 [Billion Meta Lab] 番剧名 [集数][分辨率][其它]
-    const match = title.match(
-      /^\[Billion Meta Lab\]\s*(.+?)\s*\[\d{1,3}\](?=\[|$)/
-    );
-    if (match) {
-      return sortNamesByPriority([match[1].trim()], title);
-    }
-    let t = title.replace(/^\[Billion Meta Lab\]\s*/, "");
-    t = t.split(/\[\d{3,4}P\]|\[简日内嵌\]/)[0].trim();
-    const names = t.length > 0 ? [t] : [];
+    // 去掉最前面的字幕组标签
+    let t = title.replace(/^\[[^\]]+\]\s*/, "");
+
+    // 去掉后面的集数/分辨率等标签
+    t = t.split(/\[\d{1,3}\]|\[\d{3,4}P\]|\[简日内嵌\]/)[0].trim();
+
+    const names = t ? [t] : [];
+
     return sortNamesByPriority(names, title);
   },
   // SweetSub：提取字幕组后面的[]内容作为番剧名称，支持检索用标记

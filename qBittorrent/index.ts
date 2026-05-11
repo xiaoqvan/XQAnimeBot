@@ -17,6 +17,8 @@ async function createQBClient() {
 
   try {
     await client.login();
+    const version = await client.getAppVersion();
+    logger.info("[XQ动漫插件]qBittorrent连接成功，版本: " + version);
     return client;
   } catch (error) {
     logger.fatal(error, "[XQ动漫插件]qBittorrent链接失败: 请检查Web UI是否开启或密码是否正确。");
@@ -33,8 +35,7 @@ export async function getQBClient() {
     QBclient = await createQBClient();
   } else {
     try {
-      const version = await QBclient.getAppVersion();
-      logger.info("[XQ动漫插件]qBittorrent连接成功，版本: " + version);
+      await QBclient.getAppVersion();
     } catch (error) {
       logger.warn(error, "[XQ动漫插件]qBittorrent连接失效，尝试重新登录。");
       QBclient = await createQBClient();
