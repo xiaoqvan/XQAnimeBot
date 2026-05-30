@@ -268,10 +268,11 @@ export async function saveAnime(anime: AnimeWithRelations, cache: boolean = fals
     _id?: unknown;
   };
 
-  // 需要更新的字段
+  // 需要更新的字段（包含 names，确保 RSS 解析的名称也能同步到缓存）
   const updateFields: (keyof CacheAnimeDoc)[] = [
     "name",
     "name_cn",
+    "names",
     "summary",
     "tags",
     "episode",

@@ -8,10 +8,12 @@ import { extractFilteredTagNames } from "./index.ts";
  * 5.1 新番剧更新动漫信息中构建并保存动漫数据
  * @param info - 动漫信息
  * @param newanime - 是否为新番剧如果你需要直接保存到anime集合中而不是缓存传递 false
+ * @param extraNames - 可选，RSS 解析出的其他名称，合并到数据库以提升后续去重匹配率
  */
 export async function buildAndSaveAnimeFromInfo(
   info: bangumiAnime,
-  newanime: boolean
+  newanime: boolean,
+  extraNames?: string[]
 ) {
   const EpisodeInfo = await getEpisodeInfo(info.id);
   const episodeMetas = EpisodeInfo.data.map((ep: any) => ({
@@ -31,17 +33,21 @@ export async function buildAndSaveAnimeFromInfo(
   await replaceEpisodeMetas(info.id, episodeMetas);
 
   const infobox = extractInfoFromInfobox(info?.infobox || []);
+  // 将 RSS 解析的额外名称合并进来，去重去空
+  const namesFromAll = [
+    info.name_cn,
+    info.name,
+    ...infobox.names,
+    ...(extraNames || []),
+  ]
+    .filter((x): x is string => typeof x === "string" && x.trim().length > 0)
+    .map((x) => x.trim());
+
   const anime: anime = {
     id: info.id,
     name_cn: info.name_cn || infobox.name,
     name: info.name,
-    names: [
-      ...new Set(
-        [info.name_cn, info.name, ...infobox.names].filter((x): x is string =>
-          Boolean(x)
-        )
-      ),
-    ],
+    names: [...new Set(namesFromAll)],
     image:
       info.images?.large ||
       info.images?.medium ||

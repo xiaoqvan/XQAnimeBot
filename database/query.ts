@@ -128,13 +128,28 @@ export async function hasTorrentTitle(title: string): Promise<boolean> {
 }
 
 /**
- * 检查是否已发送过指定名称的动漫
+ * 标准化字符串：去除首尾空格、将全角字符转半角、合并连续空格、转小写
+ */
+function normalizeForMatch(str: string): string {
+  return str
+    .trim()
+    .replace(/[\uFF01-\uFF5E]/g, (ch) =>
+      String.fromCharCode(ch.charCodeAt(0) - 0xfee0)
+    )
+    .replace(/\u3000/g, " ")
+    .replace(/\s+/g, " ")
+    .toLowerCase();
+}
+
+/**
+ * 检查是否已发送过指定名称的动漫（模糊匹配）
  * @param names - 动漫名称数组
  * @returns 如果找到动漫返回动漫信息
  * @throws 数据库查询错误时抛出异常
  */
 export async function hasAnimeSend(names: string[]) {
-  const anime = await db
+  // 先做精确匹配（collation 大小写不敏感）
+  const exactMatch = await db
     .collection<animeType>("anime")
     .find({
       $or: [{ name: { $in: names } }, { names: { $in: names } }],
@@ -149,7 +164,62 @@ export async function hasAnimeSend(names: string[]) {
     .limit(1)
     .next();
 
-  return anime;
+  if (exactMatch) return exactMatch;
+
+  // 精确匹配失败时，做模糊匹配：标准化输入名称和数据库里的名称
+  const normalizedInputNames = names.map(normalizeForMatch).filter(Boolean);
+  if (normalizedInputNames.length === 0) return null;
+
+  // 查出所有 anime，在应用层做模糊匹配
+  const allAnime = await db
+    .collection<animeType>("anime")
+    .find(
+      {},
+      {
+        projection: {
+          _id: 1,
+          id: 1,
+          name: 1,
+          name_cn: 1,
+          names: 1,
+          image: 1,
+          summary: 1,
+          tags: 1,
+          episode: 1,
+          score: 1,
+          airingDay: 1,
+          airingStart: 1,
+          updatedAt: 1,
+          createdAt: 1,
+          navMessage: 1,
+          navVideoMessage: 1,
+          eps: 1,
+          btdata: 1,
+        },
+        sort: { updatedAt: -1 },
+      }
+    )
+    .toArray();
+
+  for (const anime of allAnime) {
+    const dbNames = [anime.name, anime.name_cn, ...(anime.names || [])]
+      .filter((n): n is string => typeof n === "string" && n.length > 0)
+      .map(normalizeForMatch);
+
+    for (const inputName of normalizedInputNames) {
+      // 完全一致（标准化后）
+      if (dbNames.includes(inputName)) return anime;
+
+      // 包含关系：输入名称包含某个数据库名称，或数据库名称包含输入名称
+      for (const dbName of dbNames) {
+        if (dbName.includes(inputName) || inputName.includes(dbName)) {
+          return anime;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 /**

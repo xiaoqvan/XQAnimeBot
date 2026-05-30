@@ -105,7 +105,12 @@ export async function handleNewAnime(
         return;
     }
 
-    const anime = await buildAndSaveAnimeFromInfo(searchAnime.data[0], true);
+    // 将 RSS 解析出的 names 合并传入，让数据库记录尽可能多地包含搜索用名称
+    const anime = await buildAndSaveAnimeFromInfo(
+      searchAnime.data[0],
+      true,
+      item.names
+    );
 
     // 解析磁力 hash 以供进度追踪（失败不阻断主流程）
     const magnetHash = tryParseMagnetHash(item.magnet);
@@ -245,7 +250,19 @@ export async function handleExistingAnime(
             .map((m) => m.unique_id)
             .filter((id): id is string => !!id);
 
-        const canimeid = await saveAnime(anime, true);
+        // 将 RSS 解析的名称合并进缓存，避免下次去重失败
+        const animeForCache = {
+            ...anime,
+            names: [
+                ...new Set(
+                    [
+                        ...(anime.names || []),
+                        ...(item.names || []),
+                    ].filter((n): n is string => typeof n === "string" && n.trim().length > 0)
+                ),
+            ] as string[],
+        };
+        const canimeid = await saveAnime(animeForCache, true);
         const animeLink = await getMessageLink(
             client,
             primaryCacheMeg.chat_id,
