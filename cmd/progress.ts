@@ -7,6 +7,7 @@ import { animeProcessor } from "../anime/AnimeProcessorManager.ts";
 import { getQBClient } from "../qBittorrent/index.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
+import { getDatabase } from "@db/index.ts";
 import { getSmartDelayInfo } from "../utils/index.ts";
 
 /** qBittorrent 种子状态对照表（英文状态码 → 人类可读中文） */
@@ -117,7 +118,7 @@ export default async function progress(
                 const QBclient = await getQBClient();
                 const torrents = await QBclient.getTorrents();
                 for (const t of torrents) {
-                    qbStateMap[t.hash.toLowerCase()] = t.state as string;
+                    qbStateMap[t.hash.toLowerCase()] = t.state;
                 }
             } catch {
                 // qBittorrent 暂时不可用，跳过状态展示
@@ -148,6 +149,43 @@ export default async function progress(
 
             text += `\n`;
         }
+    }
+
+    // ── 最近完成任务列表（前 10 条） ──
+    text += `**📜 最近完成任务（前 10 条）**\n\n`;
+    try {
+        const db = await getDatabase();
+        const history = await db
+            .collection<{ title: string; status: string; updatedAt: Date }>("torrents")
+            .find({ status: { $in: ["完成", "失败", "等待纠正"] } })
+            .sort({ updatedAt: -1 })
+            .limit(10)
+            .toArray();
+
+        if (history.length === 0) {
+            text += `_暂无历史记录_\n`;
+        } else {
+            for (const [index, item] of history.entries()) {
+                // 三种状态：✅ 已审核通过 / ⏳ 待管理员确认 / ❌ 处理失败
+                const statusIcon = item.status === "完成" ? "✅"
+                    : item.status === "等待纠正" ? "⏳"
+                        : "❌";
+                const statusLabel = item.status === "完成" ? "已审核通过"
+                    : item.status === "等待纠正" ? "待管理员确认"
+                        : "处理失败";
+                const timeStr = item.updatedAt
+                    ? item.updatedAt.toLocaleString("zh-CN", { hour12: false })
+                    : "";
+                const shortTitle =
+                    item.title.length > 50
+                        ? `${item.title.slice(0, 50)}…`
+                        : item.title;
+                text += `${index + 1}. ${statusIcon} \`${shortTitle}\`\n`;
+                text += `     📅 ${timeStr} | 🏷️ ${statusLabel}\n\n`;
+            }
+        }
+    } catch {
+        text += `_查询历史记录失败_\n`;
     }
 
     await sendMessage(client, message.chat_id, {
