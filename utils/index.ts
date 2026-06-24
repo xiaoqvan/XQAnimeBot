@@ -168,3 +168,12 @@ export function safeTag(text: string) {
     )
     .replace(/[-❀]/g, "");
 }
+
+// 重新导出精简搜索工具
+export {
+  formatSearchSimple,
+} from "./animeSearchSimple.ts";
+export type {
+  SearchSimpleResult,
+  SearchSimpleOptions,
+} from "./animeSearchSimple.ts";

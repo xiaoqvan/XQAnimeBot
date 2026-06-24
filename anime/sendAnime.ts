@@ -47,7 +47,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * @returns 导航消息链接
  */
 export async function sendMegToNavAnime(client: Client, id: number) {
-  let Anime = await getAnimeById(id);
+  const Anime = await getAnimeById(id);
 
   if (!Anime) return;
 
@@ -76,6 +76,11 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       };
     }
     const megtexts = await navmegtext(client, Anime); // megtexts[0] 为主导航，1.. 为资源
+
+    if (!megtexts || !megtexts[0]) {
+      logger.error(`Failed to generate navigation text for anime: ${Anime.name}`);
+      throw new Error(`Failed to generate navigation text for anime: ${Anime.name}`);
+    }
 
     // 主导航消息（应为 messagePhoto）：仅在文本变化时才编辑
     try {
@@ -126,7 +131,7 @@ export async function sendMegToNavAnime(client: Client, id: number) {
         // 文本消息（通常为 messageText），仅在变化时才编辑
         try {
           const info = await getMessageLinkInfo(client, videoMeg.link);
-          const newText = await parseTextEntities(client, megtexts[idx]);
+          const newText = await parseTextEntities(client, megtexts[idx]!);
           const content: MessageContent | undefined = info?.message?.content;
           if (content?._ === "messageText") {
             const oldText = content?.text ?? "";
@@ -476,7 +481,7 @@ export async function sendMegToCache(
       ? { _: "messageTopicForum" as const, forum_topic_id: cacheTopicId }
       : undefined;
   if (segments) {
-    let videoInfos = [];
+    const videoInfos = [];
     for (const path of segments) {
       const videoInfo = await extractVideoMetadata(path);
       videoInfos.push(videoInfo);

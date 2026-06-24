@@ -130,13 +130,13 @@ export async function extractVideoMetadata(videoPath: string): Promise<{
   // 优先用format.duration，stream没有则兜底
   const durationMatch = ffprobeFormatOutput.match(/duration=([0-9.]+)/);
   if (durationMatch) {
-    duration = Math.floor(parseFloat(durationMatch[1]));
+    duration = Math.floor(parseFloat(durationMatch[1]!));
   }
   if (!duration) {
     // 兜底尝试从视频流获取
     const streamDurationMatch = ffprobeStreamOutput.match(/duration=([0-9.]+)/);
     if (streamDurationMatch)
-      duration = Math.floor(parseFloat(streamDurationMatch[1]));
+      duration = Math.floor(parseFloat(streamDurationMatch[1]!));
   }
   if (!width || !height || !duration) {
     throw new Error("未能正确解析视频元数据");

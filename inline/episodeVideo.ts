@@ -101,7 +101,7 @@ export default async function episodeVideoInline(
     const results: InlineResult[] = [];
 
     for (let i = 0; i < resources.length; i++) {
-        const resource = resources[i];
+        const resource = resources[i]!;
         let videoId: string | undefined = resource.videoid;
         let coverId: string | undefined = undefined;
         let width: number | undefined = undefined;

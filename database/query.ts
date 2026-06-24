@@ -38,7 +38,7 @@ export async function getBtDataByAnimeId(
   for (const resource of resources) {
     const groupName =
       Array.isArray(resource.groups) && resource.groups.length > 0
-        ? resource.groups[0]
+        ? resource.groups[0]!
         : "unknown";
 
     if (!grouped[groupName]) grouped[groupName] = [];
@@ -338,7 +338,7 @@ export async function getCacheResourceByCacheId(
 
   const group =
     Array.isArray(target.groups) && target.groups.length > 0
-      ? target.groups[0]
+      ? target.groups[0]!
       : "unknown";
 
   return {

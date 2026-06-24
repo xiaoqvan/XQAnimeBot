@@ -72,9 +72,10 @@ export const groupRules: Record<
     let episode = "";
     const episodeMatch = t.match(/(?:\s*-\s*(\d{1,3}))|(?:\s*\[(\d{1,3})\])/);
     if (episodeMatch) {
-      episode = episodeMatch[1] || episodeMatch[2];
+      episode = episodeMatch[1] || episodeMatch[2] || "";
     }
-    t = t.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0].trim();
+    const splitResult = t.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/);
+    t = (splitResult[0] ?? "").trim();
     const names = t
       .split(/\s*\/\s*|_|，|,|、/)
       .map((s) => s.trim())
@@ -84,7 +85,7 @@ export const groupRules: Record<
   // 轻之国度字幕组：通常为多个中/英名在第2个中括号中，后面有集数中括号或单独 - NN
   轻之国度字幕组: (title: string) => {
     // 去掉首个中括号（发布组标签）
-    let t = title.replace(/^\[[^\]]+\]\s*/, "");
+    const t = title.replace(/^\[[^\]]+\]\s*/, "");
     let episode = "";
 
     // 优先匹配像 [07] 或 [01-24] 这样的中括号集数；也支持 " - 07 " 格式
@@ -97,9 +98,10 @@ export const groupRules: Record<
     const nameBracketMatch = t.match(/^\[([^\]]+)\]/);
     let nameStr = "";
     if (nameBracketMatch) {
-      nameStr = nameBracketMatch[1];
+      nameStr = nameBracketMatch[1] ?? "";
     } else {
-      nameStr = t.split(/\s*\[/)[0].trim();
+      const splitResult = t.split(/\s*\[/);
+      nameStr = (splitResult[0] ?? "").trim();
     }
 
     // 名称可能包含多个形式，用 / 、，、,、、分隔；有时中间带空格分割中英名
@@ -113,26 +115,27 @@ export const groupRules: Record<
   // 喵萌奶茶屋：支持标题中使用全角【】或中括号[]作为发布标签，番剧名称在第一个中括号内，集数通常为后续的中括号 (如 [04] 或 [01-24])
   喵萌奶茶屋: (title: string) => {
     // 去掉开头的发布组标签，支持【喵萌奶茶屋】和[喵萌奶茶屋]
-    let t = title.replace(/^[【\[][^】\]]+[】\]]\s*/, "");
+    const t = title.replace(/^[【\[][^】\]]+[】\]]\s*/, "");
     let episode = "";
 
     // 提取所有中括号 [] 的内容
-    const brackets = [...t.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
+    const brackets = [...t.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1] ?? "");
 
     // 找到第一个看起来像集数的中括号（纯数字或范围）
-    const ep = brackets.find((b) => /^\d{1,3}(?:-\d{1,3})?$/.test(b));
+    const ep = brackets.find((b: string) => /^\d{1,3}(?:-\d{1,3})?$/.test(b));
     if (ep) episode = ep;
 
     // 找到第一个可能是番剧名称的中括号（排除技术标记、分辨率、编码、语言等）
     const nameCandidate = brackets.find(
-      (b) =>
+      (b: string) =>
         !/^(?:\d{1,3}(?:-\d{1,3})?|END|GB|MP4|MKV|1080P|720P|WEBRip|WEB|HEVC|H264|H265|BDRip|先行版|简日双语|繁日双语|简日双语|简繁|繁日|简体|繁体)$/i.test(
           b
         ) && b.length > 2
     );
 
     // 退回策略：优先 nameCandidate，否则取第一个中括号内容，仍无则取第一个 [ 前的文本
-    let nameStr = nameCandidate || brackets[0] || t.split(/\s*\[/)[0].trim();
+    const splitResult = t.split(/\s*\[/);
+    const nameStr = nameCandidate || brackets[0] || (splitResult[0] ?? "").trim();
 
     const names = nameStr
       .split(/\s*\/\s*|_|，|,|、/) // 按常见分隔符分割中英名

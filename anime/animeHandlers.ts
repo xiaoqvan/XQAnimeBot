@@ -1,6 +1,6 @@
 import logger from "@log/index.ts";
 import parseTorrent from "parse-torrent";
-import { animeinfo } from "./get.ts";
+import { animeinfo } from "../bangumi/get.ts";
 import { updateAnimeBtdata } from "../database/update.ts";
 import { addCacheItem, addTorrent, saveAnime } from "../database/create.ts";
 import { getEpisodeMetasBySubjectId } from "../database/query.ts";
@@ -10,10 +10,12 @@ import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
 import { combineFansub } from "../utils/index.ts";
 import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
 import { matchBangumiEpisode } from "../utils/matcher.ts";
+import { matchAnimeSubject } from "../bangumi/bangumiAgent.ts";
+import type { MatchResult } from "../bangumi/bangumiAgent.ts";
 import {
     promptAdminProvideAnimeInfo,
-    promptAdminConfirmAnime,
     promptAdminConfirmAnimeEpisodes,
+    promptAdminConfirmAnimeWithCandidates,
 } from "./adminPrompts.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
 import type { anime as animeType } from "../types/anime.d.ts";
@@ -76,12 +78,15 @@ function normalizeMsgResult(
 
 /**
  * 处理全新番剧（数据库中不存在）的完整流程：
- * 1. 搜索 bangumi.tv 获取番剧元数据
- * 2. 创建缓存条目，记录种子信息防止重复处理
- * 3. 下载 BT 视频文件
- * 4. 将视频发送到管理员缓冲频道（待审核）
- * 5. 更新数据库中的资源记录
- * 6. 通知管理员审核番剧信息及集数匹配
+ *
+ * 【先匹配发送，后审核】策略:
+ * 1. 使用 matchAnimeSubject（LLM Agent）匹配番剧条目
+ * 2. 若匹配置信度高：直接下载、发送到正式动漫频道，然后通知管理员审核
+ * 3. 若匹配置信度低或无匹配：回退到原有流程（搜索→下载→发缓冲频道→审核）
+ *
+ * 【可溯源纠正】:
+ * - 审核消息中携带匹配详情（候选列表、置信度、原因），管理员可通过回调纠正
+ * - 纠正时使用 rebindCacheResourceAnime 迁移资源归属，并更新双条目导航消息
  *
  * @param client - TDLib 客户端实例
  * @param item - 已完整解析的动漫 BT 条目
@@ -92,12 +97,200 @@ export async function handleNewAnime(
     item: animeItem,
     manager: AnimeProcessorManager
 ): Promise<void> {
-    manager.updateProgress(item.title, "搜索番剧信息");
-    const searchAnime = await animeinfo(item.names[0]);
-
     // 先创建缓存条目和种子记录，防止并发时重复处理同一条目
     const Cache_id = await addCacheItem(item);
     await addTorrent(item.magnet, "等待下载", item.title);
+
+    // ── 第一阶段：使用 LLM Agent 匹配番剧（matchAnimeSubject）──
+    manager.updateProgress(item.title, "LLM匹配番剧");
+    const matchResult: MatchResult = await matchAnimeSubject(
+        { title: item.title, names: item.names, episode: item.episode },
+        5, // llmThreshold: 候选超过5个时触发 LLM 决策
+    );
+
+    // ── 匹配置信度高 (≥0.9)：先发送后审核 ──
+    if (
+        matchResult.confidence >= 0.9 &&
+        matchResult.subjectId !== undefined
+    ) {
+        await handleNewAnimeWithConfidentMatch(
+            client,
+            item,
+            matchResult,
+            Cache_id,
+            manager,
+        );
+        return;
+    }
+
+    // ── 匹配置信度不足：回退到原有流程 ──
+    await handleNewAnimeFallback(client, item, matchResult, Cache_id, manager);
+}
+
+/**
+ * 高置信度匹配路径：直接发送到正式频道，然后通知管理员审核。
+ *
+ * 关键在于"先发送后审核"——视频已经在动漫频道可见，管理员随后确认/纠正。
+ * 纠正时可以溯源到正确的条目并更新导航消息。
+ *
+ * @param client - TDLib 客户端实例
+ * @param item - 已完整解析的动漫 BT 条目
+ * @param matchResult - matchAnimeSubject 返回的匹配结果（confidence ≥ 0.9）
+ * @param Cache_id - 缓存条目 ID
+ * @param manager - 并发处理管理器
+ */
+async function handleNewAnimeWithConfidentMatch(
+    client: Client,
+    item: animeItem,
+    matchResult: MatchResult,
+    Cache_id: number,
+    manager: AnimeProcessorManager,
+): Promise<void> {
+    const subjectId = matchResult.subjectId!;
+
+    // 查询 Bangumi 获取完整番剧信息并保存
+    const { getSubjectById } = await import("../bangumi/get.ts");
+    const subject = await getSubjectById(subjectId);
+    const anime = await buildAndSaveAnimeFromInfo(subject, false, item.names);
+
+    // 匹配集数
+    const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
+    const episodeMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+
+    // 解析磁力 hash 以供进度追踪
+    const magnetHash = tryParseMagnetHash(item.magnet);
+    manager.updateProgress(item.title, "下载BT种子（高置信度匹配）", {
+        animeName: anime.name_cn || anime.name,
+        ...(magnetHash ? { torrentHash: magnetHash } : {}),
+    });
+
+    const torrent = await downloadAndValidateTorrent(item, manager);
+    if (!torrent) return;
+
+    if (episodeMatch.status !== "MATCHED") {
+        // 集数匹配失败：仍发送到缓冲频道让管理员确认集数
+        manager.updateProgress(item.title, "发送视频到缓冲频道（集数待确认）");
+        const animeMeg = await sendMegToCache(
+            client, anime, item, torrent.content_path, torrent.segments,
+        );
+        removeTorrentAndData(torrent.hash).catch(() => { });
+
+        if (!animeMeg) throw new Error("发送动漫消息失败");
+
+        const megList = normalizeMsgResult(animeMeg);
+        const primaryMeg = megList[0];
+        if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
+
+        const allMsgData = extractAlbumMsgData(megList);
+        const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
+        const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
+
+        const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
+        await updateAnimeBtdata(
+            anime.id, undefined, combineFansub(item.fansub),
+            item.episode || "未知",
+            {
+                chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
+                thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
+                    ? primaryMeg.topic_id.forum_topic_id : 0,
+                link: animeLink.link,
+            },
+            item.title, item.source, item.names,
+            allVideoids[0], allUniqueIds[0], Cache_id, true,
+            allVideoids.length > 1 ? allVideoids : undefined,
+            allUniqueIds.length > 1 ? allUniqueIds : undefined,
+            allMsgData.length > 1 ? allMsgData : undefined,
+        );
+
+        manager.updateProgress(item.title, "通知管理员确认集数");
+        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, episodeMatch);
+        return;
+    }
+
+    // ── 集数匹配成功：直接发送到正式动漫频道 ──
+    manager.updateProgress(item.title, "发送视频到动漫频道（高置信度）");
+    const animeMeg = await sendMegToAnime(
+        client, anime, item, torrent.content_path,
+        episodeMatch.episodeId, torrent.segments,
+    );
+    removeTorrentAndData(torrent.hash).catch(() => { });
+
+    if (!animeMeg) throw new Error(`发送动漫消息失败: ${item.title}`);
+
+    manager.updateProgress(item.title, "更新数据库");
+    const megList = normalizeMsgResult(animeMeg);
+    const primaryMeg = megList[0];
+    if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
+
+    const allMsgData = extractAlbumMsgData(megList);
+    const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
+    const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
+
+    const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
+    await updateAnimeBtdata(
+        anime.id, episodeMatch.episodeId, combineFansub(item.fansub),
+        item.episode || "未知",
+        {
+            chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
+            thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
+                ? primaryMeg.topic_id.forum_topic_id : 0,
+            link: animeLink.link,
+        },
+        item.title, item.source, item.names,
+        allVideoids[0], allUniqueIds[0], Cache_id, false,
+        allVideoids.length > 1 ? allVideoids : undefined,
+        allUniqueIds.length > 1 ? allUniqueIds : undefined,
+        allMsgData.length > 1 ? allMsgData : undefined,
+    );
+
+    // 更新导航消息
+    manager.updateProgress(item.title, "更新导航消息");
+    await sendMegToNavAnime(client, anime.id);
+
+    // ── 后审核：通知管理员确认（携带匹配详情以便溯源纠正）──
+    manager.updateProgress(item.title, "通知管理员审核（后审核）");
+    await promptAdminConfirmAnimeWithCandidates(
+        client, anime, episodeMatch.episodeId, Cache_id, item,
+        matchResult,
+    );
+}
+
+/**
+ * 低置信度 / 无匹配回退路径：沿用原有流程（搜索 → 缓冲频道 → 审核）。
+ *
+ * @param client - TDLib 客户端实例
+ * @param item - 已完整解析的动漫 BT 条目
+ * @param matchResult - matchAnimeSubject 返回的匹配结果（confidence < 0.9 或无匹配）
+ * @param Cache_id - 缓存条目 ID
+ * @param manager - 并发处理管理器
+ */
+async function handleNewAnimeFallback(
+    client: Client,
+    item: animeItem,
+    matchResult: MatchResult,
+    Cache_id: number,
+    manager: AnimeProcessorManager,
+): Promise<void> {
+    manager.updateProgress(item.title, "搜索番剧信息（回退路径）");
+
+    // 如果 matchAnimeSubject 给出了 subjectId 但置信度不足，优先尝试直接用该 ID
+    let searchAnime;
+    if (matchResult.subjectId !== undefined && matchResult.confidence > 0) {
+        const { getSubjectById } = await import("../bangumi/get.ts");
+        try {
+            const subject = await getSubjectById(matchResult.subjectId);
+            searchAnime = { data: [subject] };
+            logger.info(
+                `[handleNewAnime] 回退路径使用 matchAnimeSubject subjectId=${matchResult.subjectId}, confidence=${matchResult.confidence}`,
+            );
+        } catch {
+            // 用 subjectId 获取失败，走普通搜索
+        }
+    }
+
+    if (!searchAnime) {
+        searchAnime = await animeinfo(item.names[0]!);
+    }
 
     if (!searchAnime.data || searchAnime.data.length === 0) {
         manager.updateProgress(item.title, "通知管理员提供番剧信息");
@@ -105,16 +298,12 @@ export async function handleNewAnime(
         return;
     }
 
-    // 将 RSS 解析出的 names 合并传入，让数据库记录尽可能多地包含搜索用名称
     const anime = await buildAndSaveAnimeFromInfo(
-      searchAnime.data[0],
-      true,
-      item.names
+        searchAnime.data[0]!, true, item.names,
     );
 
-    // 解析磁力 hash 以供进度追踪（失败不阻断主流程）
     const magnetHash = tryParseMagnetHash(item.magnet);
-    manager.updateProgress(item.title, "下载BT种子", {
+    manager.updateProgress(item.title, "下载BT种子（回退路径）", {
         animeName: anime.name_cn || anime.name,
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
@@ -124,71 +313,51 @@ export async function handleNewAnime(
 
     manager.updateProgress(item.title, "发送视频到缓冲频道");
     const animeMeg = await sendMegToCache(
-        client,
-        anime,
-        item,
-        torrent.content_path,
-        torrent.segments
+        client, anime, item, torrent.content_path, torrent.segments,
     );
     removeTorrentAndData(torrent.hash).catch(() => { });
 
-    if (!animeMeg) {
-        logger.error("发送动漫消息失败");
-        throw new Error("发送动漫消息失败");
-    }
+    if (!animeMeg) throw new Error("发送动漫消息失败");
 
     manager.updateProgress(item.title, "更新数据库");
-
     const megList = normalizeMsgResult(animeMeg);
     const primaryMeg = megList[0];
     if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
 
     const allMsgData = extractAlbumMsgData(megList);
-    const allVideoids = allMsgData
-        .map((m) => m.videoid)
-        .filter((id): id is string => !!id);
-    const allUniqueIds = allMsgData
-        .map((m) => m.unique_id)
-        .filter((id): id is string => !!id);
+    const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
+    const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
 
     const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
-
     await updateAnimeBtdata(
-        anime.id,
-        undefined,
-        combineFansub(item.fansub),
+        anime.id, undefined, combineFansub(item.fansub),
         item.episode || "未知",
         {
-            chat_id: primaryMeg.chat_id,
-            message_id: primaryMeg.id,
-            thread_id:
-                primaryMeg.topic_id?._ === "messageTopicForum"
-                    ? primaryMeg.topic_id.forum_topic_id
-                    : 0,
+            chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
+            thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
+                ? primaryMeg.topic_id.forum_topic_id : 0,
             link: animeLink.link,
         },
-        item.title,
-        item.source,
-        item.names,
-        allVideoids[0],
-        allUniqueIds[0],
-        Cache_id,
-        true,
+        item.title, item.source, item.names,
+        allVideoids[0], allUniqueIds[0], Cache_id, true,
         allVideoids.length > 1 ? allVideoids : undefined,
         allUniqueIds.length > 1 ? allUniqueIds : undefined,
-        allMsgData.length > 1 ? allMsgData : undefined
+        allMsgData.length > 1 ? allMsgData : undefined,
     );
 
     const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
-    const matchResult = matchBangumiEpisode(anime, episodeMetas, item.episode);
-    if (matchResult.status !== "MATCHED") {
+    const epMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+    if (epMatch.status !== "MATCHED") {
         manager.updateProgress(item.title, "通知管理员确认集数");
-        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
+        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, epMatch);
         return;
     }
 
     manager.updateProgress(item.title, "通知管理员确认番剧信息");
-    await promptAdminConfirmAnime(client, anime, matchResult.episodeId, Cache_id, item);
+    await promptAdminConfirmAnimeWithCandidates(
+        client, anime, epMatch.episodeId, Cache_id, item,
+        matchResult,
+    );
 }
 
 /**

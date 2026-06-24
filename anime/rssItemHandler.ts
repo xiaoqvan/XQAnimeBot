@@ -29,7 +29,7 @@ export async function handleRssAnimeItem(
     const match = item.title.match(/^(?:\[([^\]]+)]|【([^】]+)】)/);
     if (!match) return;
 
-    const raw = match[1] || match[2];
+    const raw = match[1] || match[2] || '';
     const fansub = raw
         .split(/\s*[&/|｜、]\s*/)
         .map((s) => s.trim())
@@ -113,7 +113,7 @@ async function parseBangumiItem(
     infoq.names = Array.from(new Set([...infoq.names, ...localeNames])).filter(Boolean);
 
     // 白名单机制：names 为空则跳过
-    if (!infoq.names || infoq.names.length === 0) return undefined;
+    if (!infoq.names || infoq.names.length === 0 || !team[0]?.name) return undefined;
 
     return {
         title: item.title,

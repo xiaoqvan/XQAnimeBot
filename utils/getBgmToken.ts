@@ -30,7 +30,7 @@ export async function getBgmToken(tgUserId: number): Promise<{ success: boolean;
             }
 
             try {
-                const data = await refreshAccessToken(String(user.refreshToken), user.id as number);
+                const data = await refreshAccessToken(String(user.refreshToken), user.id);
                 return { success: true, access_token: data.access_token };
             } catch (err: any) {
                 return { success: false, message: `当前授权token已过期且刷新失败：${err?.message || String(err)}\n\n可以尝试使用退出 /exitbangumi 后\n重新使用 /bindbangumi 绑定 ` };

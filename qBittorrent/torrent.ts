@@ -68,7 +68,7 @@ export async function downloadAndReturnPath(
     }
   } catch (err) {
     logger.warn(
-      `检查现有种子时出错，将尝试添加磁力链接: ${err instanceof Error ? err.message : err
+      `检查现有种子时出错，将尝试添加磁力链接: ${err instanceof Error ? err.message : String(err)
       }`
     );
     await QBclient.addTorrentByMagnet(magnetLink);
@@ -126,13 +126,13 @@ export async function downloadAndReturnPath(
       continue;
     }
     logger.debug(
-      `\x1b[36m[QBclient][${torrent.hash}][${title}][${torrent.state}][${torrent.state === "uploading" ? "完成" : "未完成"}]\x1b[0m 下载中... 进度: ${(
+      `\x1b[36m[QBclient][${torrent.hash}][${title}][${torrent.state}][${String(torrent.state) === "uploading" ? "完成" : "未完成"}]\x1b[0m 下载中... 进度: ${(
         (torrent.progress || 0) * 100
       ).toFixed(2)}%`
     );
   }
   logger.debug(
-    `\x1b[36m[QBclient][${torrent?.hash}][${title}][${torrent?.state}][${torrent?.state === "uploading" ? "完成" : "未完成"}]\x1b[0m 下载完成... 进度: ${(
+    `\x1b[36m[QBclient][${torrent?.hash}][${title}][${torrent?.state}][${String(torrent?.state) === "uploading" ? "完成" : "未完成"}]\x1b[0m 下载完成... 进度: ${(
       (torrent?.progress || 0) * 100
     ).toFixed(2)}%`
   );

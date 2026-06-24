@@ -304,7 +304,7 @@ function parseEpisode(
   | { type: "sp"; num: number }
   | { type: "other"; raw: string } {
   const match = ep.match(/^(\d+(?:\.\d+)?)(v\d+)?$/i);
-  if (match)
+  if (match && match[1])
     return {
       type: "num",
       num: parseFloat(match[1]),
@@ -312,10 +312,10 @@ function parseEpisode(
     };
 
   const spMatch = ep.match(/^SP(\d+)$/i);
-  if (spMatch) return { type: "sp", num: parseInt(spMatch[1], 10) };
+  if (spMatch && spMatch[1]) return { type: "sp", num: parseInt(spMatch[1], 10) };
 
   const specialMatch = ep.match(/^特别篇(\d+)$/);
-  if (specialMatch) return { type: "sp", num: parseInt(specialMatch[1], 10) };
+  if (specialMatch && specialMatch[1]) return { type: "sp", num: parseInt(specialMatch[1], 10) };
 
   return { type: "other", raw: ep };
 }

@@ -69,14 +69,14 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   三明治摆烂组: (title: string) => {
     let t = title.replace(/^\[[^\]]+\]\s*/, "");
     // 去除集数及后缀
-    t = t.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0].trim();
+    t = t.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0]!.trim();
     // 去除尾部技术标签（如 [简日内嵌][WebRip H264 8bit 1080P AAC]）
     t = t.replace(/\s*(\[[^\]]+\]\s*)+$/g, "").trim();
     const names = t
       .split(/\s*\/\s*|_|，|,|、/)
       .map((s) => s.trim())
       .map((s) => s.replace(/\s*(\[[^\]]+\]\s*)+$/g, "").trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
     return sortNamesByPriority(names, title);
   },
   // 雪飘工作室
@@ -84,13 +84,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const searchMatch =
       title.match(/（\s*检索(?:用)?[:：]\s*([^）]+)\s*）/) ||
       title.match(/\(\s*检索(?:用)?[:：]\s*([^)]+)\s*\)/);
-    const searchName = searchMatch ? searchMatch[1].trim() : null;
+    const searchName = searchMatch ? searchMatch[1]!.trim() : null;
 
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
     let names: string[] = [];
 
     if (brackets.length >= 2) {
-      let nameField = brackets[1].trim();
+      let nameField = brackets[1]!.trim();
 
       // 移除常见的技术标记
       nameField = nameField.replace(
@@ -117,13 +117,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const searchMatch =
       title.match(/（\s*检索(?:用)?[:：]\s*([^）]+)\s*）/) ||
       title.match(/\(\s*检索(?:用)?[:：]\s*([^)]+)\s*\)/);
-    const searchName = searchMatch ? searchMatch[1].trim() : null;
+    const searchName = searchMatch ? searchMatch[1]!.trim() : null;
 
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
     let names: string[] = [];
 
     if (brackets.length >= 2) {
-      let nameField = brackets[1].trim();
+      let nameField = brackets[1]!.trim();
 
       // 移除常见的技术标记
       nameField = nameField.replace(
@@ -152,7 +152,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
     // 跳过字幕组名，取第二个[]作为番剧名称
     if (brackets.length >= 2) {
-      let animeName = brackets[1];
+      const animeName = brackets[1]!;
       // 过滤集数和技术标记
       if (/^\d{1,3}$|END|GB|MP4|1080P|720P/i.test(animeName)) {
         return [];
@@ -161,7 +161,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       const names = animeName
         .split(/\s*\/\s*/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
       return sortNamesByPriority(names, title);
     }
     return [];
@@ -170,10 +170,10 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   喵萌奶茶屋: (title: string) => {
     const match = title.match(/\[([^\]]+)\]/);
     if (match) {
-      const names = match[1]
+      const names = match[1]!
         .split(/\s*\/\s*|_|，|,|、/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
       return sortNamesByPriority(names, title);
     }
     return [];
@@ -182,8 +182,9 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   爱恋字幕社: (title: string) => {
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
     // 跳过所有字幕组名（含“字幕组/汉化组/社/组/汉化”等关键字）
-    const rest = brackets.filter(
-      (b) =>
+    const rest: string[] = brackets.filter(
+      (b): b is string =>
+        b !== undefined &&
         !/(字幕组|汉化组|字幕社|汉化社|字幕|汉化)/.test(b) &&
         !/新番|1080P|720P|MP4|GB&JP|BIG5|CHS|CHT|简繁|双语|无字幕|整理搬运/i.test(
           b
@@ -191,8 +192,8 @@ export const groupRules: Record<string, (title: string) => string[]> = {
         !/^\d{1,3}$/.test(b) // 跳过纯数字（集数）
     );
     // 过滤掉剧场版、SP、OVA、OAD、01v2等技术标记
-    const valid = rest.filter(
-      (b) =>
+    const valid: string[] = rest.filter(
+      (b): b is string =>
         b.length > 2 &&
         !/^(剧场版|SP|OVA|OAD)$/i.test(b) &&
         !/^\d{1,3}(v\d+)?$/i.test(b)
@@ -202,12 +203,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // 例：黒ネズミたち，番剧名在字幕组后第一个/分割后，集数在 - 数字格式
   "Kirara Fantasia": (title: string) => {
-    let t = title.replace(/^\[[^\]]+\]\s*/, "");
+    const t = title.replace(/^\[[^\]]+\]\s*/, "");
     const parts = t.split(/\s*\/\s*/);
-    const names = [];
+    const names: string[] = [];
 
     for (const part of parts) {
-      let name = part.split(/\s*-\s*\d+/)[0].trim();
+      let name = part.split(/\s*-\s*\d+/)[0]!.trim();
 
       // 移除括号内容但保留主要名称
       name = name.replace(/\s*\([^)]*\)\s*$/, "").trim();
@@ -224,12 +225,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // ANi组：优先取 / 后中文名，无 / 时取字幕组后到 - 或集数前内容
   ANi: (title: string) => {
-    let t = title.replace(/^\[[^\]]+\]\s*/, "");
+    const t = title.replace(/^\[[^\]]+\]\s*/, "");
 
     const parts = t.split(/\s*\/\s*/);
-    const names = [];
+    const names: string[] = [];
     for (const part of parts) {
-      let name = part.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0].trim();
+      let name = part.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0]!.trim();
 
       // 移除各种标记和括号内容，但保留年龄限制版等重要信息
       name = name.replace(/\[.*?\]|\(.*?\)/g, "").trim();
@@ -243,11 +244,11 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // 动漫国字幕组：去掉字幕组标识和月新番标识，取第一个[]内的内容
   動漫國字幕組: (title: string) => {
-    let t = title.replace(/^【[^】]+】\s*/, "").replace(/★\d{1,2}月新番/g, "");
+    const t = title.replace(/^【[^】]+】\s*/, "").replace(/★\d{1,2}月新番/g, "");
 
     const match = t.match(/\[([^\]]+)\]/);
     if (match) {
-      const name = match[1].trim();
+      const name = match[1]!.trim();
 
       if (!/^\d{1,3}$|1080P|MP4|简体|繁体|GB|BIG5|CHS|CHT/i.test(name)) {
         return sortNamesByPriority([name], title);
@@ -257,10 +258,10 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // 澄空学园：类似动漫国字幕组的处理
   澄空学园: (title: string) => {
-    let t = title.replace(/^【[^】]+】\s*/, "").replace(/★\d{1,2}月新番/g, "");
+    const t = title.replace(/^【[^】]+】\s*/, "").replace(/★\d{1,2}月新番/g, "");
     const match = t.match(/\[([^\]]+)\]/);
     if (match) {
-      const name = match[1].trim();
+      const name = match[1]!.trim();
       if (!/^\d{1,3}$|1080P|MP4|简体|繁体|GB|BIG5|CHS|CHT/i.test(name)) {
         return sortNamesByPriority([name], title);
       }
@@ -269,10 +270,10 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   },
   // 华盟字幕社：类似处理
   华盟字幕社: (title: string) => {
-    let t = title.replace(/^【[^】]+】\s*/, "").replace(/★\d{1,2}月新番/g, "");
+    const t = title.replace(/^【[^】]+】\s*/, "").replace(/★\d{1,2}月新番/g, "");
     const match = t.match(/\[([^\]]+)\]/);
     if (match) {
-      const name = match[1].trim();
+      const name = match[1]!.trim();
       if (!/^\d{1,3}$|1080P|MP4|简体|繁体|GB|BIG5|CHS|CHT/i.test(name)) {
         return sortNamesByPriority([name], title);
       }
@@ -285,7 +286,8 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[[^\]]+\]\s*/, "");
 
     // 去掉后面的集数/分辨率等标签
-    t = t.split(/\[\d{1,3}\]|\[\d{3,4}P\]|\[简日内嵌\]/)[0].trim();
+    const tSplit = t.split(/\[\d{1,3}\]|\[\d{3,4}P\]|\[简日内嵌\]/);
+    t = tSplit[0]!.trim();
 
     const names = t ? [t] : [];
 
@@ -294,9 +296,9 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   // SweetSub：提取字幕组后面的[]内容作为番剧名称，支持检索用标记
   SweetSub: (title: string) => {
     const searchMatch = title.match(/（检索用：([^）]+)）/);
-    let searchName = searchMatch ? searchMatch[1].trim() : null;
+    const searchName = searchMatch ? searchMatch[1]!.trim() : null;
 
-    const names = [];
+    const names: string[] = [];
 
     if (searchName) {
       names.push(searchName);
@@ -306,6 +308,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
 
     for (const bracket of brackets) {
+      if (bracket === undefined) continue;
       // 跳过字幕组名和技术相关标记
       if (
         bracket === "SweetSub" ||
@@ -329,11 +332,11 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   // ❀拨雪寻春❀：字幕组后番剧名有多个名称用 / 分割
   拨雪寻春: (title: string) => {
     const searchMatch = title.match(/（检索用：([^）]+)）/);
-    let searchName = searchMatch ? searchMatch[1].trim() : null;
+    const searchName = searchMatch ? searchMatch[1]!.trim() : null;
 
     let t = title.replace(/^\[❀拨雪寻春❀\]\s*/, "");
 
-    t = t.split(/\s*-\s*\d{1,3}/)[0].trim();
+    t = t.split(/\s*-\s*\d{1,3}/)[0]!.trim();
 
     t = t
       .replace(/\[WebRip\]|\[HEVC[^\]]*\]|\[\d{3,4}P?\]|\[简日内嵌\]/g, "")
@@ -342,7 +345,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     // 只移除检索用标记，保留季度信息等重要括号内容
     t = t.replace(/（检索用：[^）]*）/g, "").trim();
 
-    const names = [];
+    const names: string[] = [];
 
     if (searchName) {
       names.push(searchName);
@@ -352,7 +355,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const otherNames = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
     names.push(...otherNames);
 
     return sortNamesByPriority(names.length > 0 ? names : [], title);
@@ -363,8 +366,9 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const segments = [...title.matchAll(/【([^】]+)】/g)].map((m) => m[1]);
 
     // 过滤掉字幕组名、月新番、技术标记等
-    const validSegments = segments.filter(
-      (segment) =>
+    const validSegments: string[] = segments.filter(
+      (segment): segment is string =>
+        segment !== undefined &&
         segment !== "幻樱字幕组" &&
         !/^\d{1,2}月新番$/.test(segment) &&
         !/^(GB|BIG5|MP4|MKV|1920X1080|1280X720|720P|1080P)(_.*)?$/.test(
@@ -373,7 +377,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
         !/^\d{1,3}$/.test(segment) // 排除纯数字（这些是集数）
     );
 
-    const names = [];
+    const names: string[] = [];
 
     // 查找包含番剧名称的段落（通常是最长的非技术段落）
     for (const segment of validSegments) {
@@ -393,8 +397,8 @@ export const groupRules: Record<string, (title: string) => string[]> = {
                 );
                 const englishMatch = trimmed.match(/([a-zA-Z][a-zA-Z\s]*)/);
 
-                if (chineseMatch) names.push(chineseMatch[1].trim());
-                if (englishMatch) names.push(englishMatch[1].trim());
+                if (chineseMatch) names.push(chineseMatch[1]!.trim());
+                if (englishMatch) names.push(englishMatch[1]!.trim());
               } else {
                 names.push(trimmed);
               }
@@ -425,13 +429,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       }
     }
 
-    return sortNamesByPriority(names.filter(Boolean), title);
+    return sortNamesByPriority(names.filter((s): s is string => s !== ""), title);
   },
   星空字幕组: (title: string) => {
     // 只取第二个[]内容作为番剧名
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
     if (brackets.length >= 2) {
-      let animeName = brackets[1];
+      const animeName = brackets[1]!;
       // 过滤集数和技术标记
       if (
         /^\d{1,3}$|END|GB|MP4|1080P|720P|WEBrip|简日双语|双语/i.test(animeName)
@@ -442,7 +446,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       const names = animeName
         .split(/\s*\/\s*/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
       return sortNamesByPriority(names, title);
     }
     return [];
@@ -453,14 +457,14 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     // 提取番剧名称，在第一个[]内
     const match = title.match(/\[([^\]]+)\]/);
     if (match) {
-      const name = match[1].trim();
+      const name = match[1]!.trim();
       // 过滤掉集数、分辨率等技术标记（仅当整个段落为技术标记时视为无效）
       if (!/^(?:\d{1,3}|END|1080P|720P|MP4|CHS|CHT|简体|繁体)$/i.test(name)) {
         // 按 / 或 _ 分割多个名称
         const names = name
           .split(/\s*\/\s*|_/)
           .map((s) => s.trim())
-          .filter(Boolean);
+          .filter((s): s is string => s !== "");
         return sortNamesByPriority(names, title);
       }
     }
@@ -481,7 +485,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     t = t.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
 
     // 提取到第一个 [集数] 或尾部技术标记前的内容作为番剧名称
-    t = t.split(/\s*\[\d{1,3}(?:-\d{1,3})?\]|\s*\[\d{3,4}p?\]|\s*\[简日内嵌\]|\s*\[\d{4}年\d{1,2}月番\]/i)[0].trim();
+    t = t.split(/\s*\[\d{1,3}(?:-\d{1,3})?\]|\s*\[\d{3,4}p?\]|\s*\[简日内嵌\]|\s*\[\d{4}年\d{1,2}月番\]/i)[0]!.trim();
 
     // 移除尾部可能残留的技术标记（防御性处理）
     t = t.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
@@ -490,16 +494,16 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let names = t
       .split(/\s*\/\s*|\s*／\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     // 回退策略：如果未解析到名称，则尽量从标题中取第一个[]之后、下一个[]之前的文本
     if (names.length === 0) {
-      let fallback = title.replace(/^\[[^\]]+\]\s*/, "").split(/\s*\[/)[0].trim();
-      fallback = fallback.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
-      names = fallback
+      const fallback = title.replace(/^\[[^\]]+\]\s*/, "").split(/\s*\[/)[0]!.trim();
+      const cleanFallback = fallback.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
+      names = cleanFallback
         .split(/\s*\/\s*|\s*／\s*/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
     }
 
     return sortNamesByPriority(names, title);
@@ -519,7 +523,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     t = t.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
 
     // 提取到第一个 [集数] 或尾部技术标记前的内容作为番剧名称
-    t = t.split(/\s*\[\d{1,3}(?:-\d{1,3})?\]|\s*\[\d{3,4}p?\]|\s*\[简日内嵌\]|\s*\[\d{4}年\d{1,2}月番\]/i)[0].trim();
+    t = t.split(/\s*\[\d{1,3}(?:-\d{1,3})?\]|\s*\[\d{3,4}p?\]|\s*\[简日内嵌\]|\s*\[\d{4}年\d{1,2}月番\]/i)[0]!.trim();
 
     // 移除尾部可能残留的技术标记（防御性处理）
     t = t.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
@@ -528,16 +532,16 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let names = t
       .split(/\s*\/\s*|\s*／\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     // 回退策略：如果未解析到名称，则尽量从标题中取第一个[]之后、下一个[]之前的文本
     if (names.length === 0) {
-      let fallback = title.replace(/^\[[^\]]+\]\s*/, "").split(/\s*\[/)[0].trim();
-      fallback = fallback.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
-      names = fallback
+      const fallback = title.replace(/^\[[^\]]+\]\s*/, "").split(/\s*\[/)[0]!.trim();
+      const cleanFallback = fallback.replace(/\s*(bgm\.tv|bilibili|b站)\s*$/i, "");
+      names = cleanFallback
         .split(/\s*\/\s*|\s*／\s*/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
     }
 
     return sortNamesByPriority(names, title);
@@ -546,19 +550,19 @@ export const groupRules: Record<string, (title: string) => string[]> = {
   奇怪机翻组: (title: string) => {
     // 检查是否有检索用标记
     const searchMatch = title.match(/\(检索[：:]([^)]+)\)/);
-    let searchName = searchMatch ? searchMatch[1].trim() : null;
+    const searchName = searchMatch ? searchMatch[1]!.trim() : null;
 
     // 移除字幕组标识
     let t = title.replace(/^\[奇怪机翻组\]\s*/, "");
 
     // 提取到 - 集数前的内容作为番剧名称
-    t = t.split(/\s*-\s*\d{1,3}/)[0].trim();
+    t = t.split(/\s*-\s*\d{1,3}/)[0]!.trim();
 
     // 按 / 分割多个名称
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     // 如果有检索用名称，添加到数组前面
     if (searchName) {
@@ -575,13 +579,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
 
     // 跳过字幕组名，取第二个[]作为番剧名称
     if (brackets.length >= 2) {
-      const animeName = brackets[1]; // 第二个[]中的内容
+      const animeName = brackets[1]!; // 第二个[]中的内容
 
       // 按 _ 分割中日文名称
       const names = animeName
         .split(/\s*_\s*/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
 
       return sortNamesByPriority(names, title);
     }
@@ -595,13 +599,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[云光字幕组\]\s*/, "");
 
     // 提取到第一个 [ 之前的内容作为番剧名称
-    t = t.split(/\s*\[/)[0].trim();
+    t = t.split(/\s*\[/)[0]!.trim();
 
     // 先按空格分割，然后识别中英文部分
     const parts = t.split(/\s+/);
-    const names = [];
-    let currentChineseName = [];
-    let currentEnglishName = [];
+    const names: string[] = [];
+    const currentChineseName: string[] = [];
+    const currentEnglishName: string[] = [];
 
     for (const part of parts) {
       // 检查是否包含中文字符
@@ -609,14 +613,14 @@ export const groupRules: Record<string, (title: string) => string[]> = {
         // 如果有积累的英文名称，先添加
         if (currentEnglishName.length > 0) {
           names.push(currentEnglishName.join(" "));
-          currentEnglishName = [];
+          currentEnglishName.length = 0;
         }
         currentChineseName.push(part);
       } else if (/^[a-zA-Z]+$/.test(part)) {
         // 如果有积累的中文名称，先添加
         if (currentChineseName.length > 0) {
           names.push(currentChineseName.join(""));
-          currentChineseName = [];
+          currentChineseName.length = 0;
         }
         currentEnglishName.push(part);
       }
@@ -630,20 +634,20 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       names.push(currentEnglishName.join(" "));
     }
 
-    return sortNamesByPriority(names.filter(Boolean), title);
+    return sortNamesByPriority(names.filter((s): s is string => s !== ""), title);
   },
 
   // MingY：支持检索用标记，用 / 分割名称
   MingYSub: (title: string) => {
     // 检查是否有检索用标记（括号形式）
     const searchMatch = title.match(/（([^）]+)）/);
-    let searchName = searchMatch ? searchMatch[1].trim() : null;
+    const searchName = searchMatch ? searchMatch[1]!.trim() : null;
 
     // 移除字幕组标识 - 修改正则表达式匹配包含其他字幕组的情况
     let t = title.replace(/^\[MingY[^[\]]*\]\s*/, "");
 
     // 提取到第一个 [ 之前的内容作为番剧名称
-    t = t.split(/\s*\[/)[0].trim();
+    t = t.split(/\s*\[/)[0]!.trim();
 
     // 移除检索用标记
     t = t.replace(/（[^）]*）/, "").trim();
@@ -652,7 +656,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     // 如果有检索用名称，添加到数组前面
     if (searchName) {
@@ -668,9 +672,9 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[Prejudice-Studio\]\s*/, "");
 
     // 提取到 - 集数前的内容作为番剧名称
-    t = t.split(/\s*-\s*\d{1,3}/)[0].trim();
+    t = t.split(/\s*-\s*\d{1,3}/)[0]!.trim();
 
-    const names = [];
+    const names: string[] = [];
 
     // 尝试分离中英文名称
     // 匹配模式1：中文名 英文名 (如: 坂本日常 SAKAMOTO DAYS)
@@ -679,8 +683,8 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     );
 
     if (match) {
-      const chineseName = match[1].trim();
-      const englishName = match[2].trim();
+      const chineseName = match[1]!.trim();
+      const englishName = match[2]!.trim();
 
       if (chineseName) names.push(chineseName);
       if (englishName) names.push(englishName);
@@ -691,8 +695,8 @@ export const groupRules: Record<string, (title: string) => string[]> = {
       );
 
       if (match) {
-        const chineseName = match[1].trim();
-        const englishName = match[2].trim();
+        const chineseName = match[1]!.trim();
+        const englishName = match[2]!.trim();
 
         if (chineseName) names.push(chineseName);
         if (englishName) names.push(englishName);
@@ -716,13 +720,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[北宇治字幕组\]\s*/, "");
 
     // 提取到第一个 [集数] 之前的内容作为番剧名称
-    t = t.split(/\s*\[\d{1,3}\]/)[0].trim();
+    t = t.split(/\s*\[\d{1,3}\]/)[0]!.trim();
 
     // 按 / 分割多个名称
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     return sortNamesByPriority(names, title);
   },
@@ -733,13 +737,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[桜都字幕组\]\s*/, "");
 
     // 提取到第一个 [集数] 之前的内容作为番剧名称
-    t = t.split(/\s*\[\d{1,3}\]/)[0].trim();
+    t = t.split(/\s*\[\d{1,3}\]/)[0]!.trim();
 
     // 按 / 分割多个名称
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     return sortNamesByPriority(names, title);
   },
@@ -750,8 +754,9 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
 
     // 过滤掉字幕组名、联合字幕组名、月新番、技术标记、集数等
-    const validSegments = brackets.filter(
-      (segment) =>
+    const validSegments: string[] = brackets.filter(
+      (segment): segment is string =>
+        segment !== undefined &&
         segment !== "云歌字幕组" &&
         !/[&｜|]/.test(segment) && // 过滤联合字幕组名称
         !/^\d{1,2}月新番$/.test(segment) && // 过滤月新番标记
@@ -763,7 +768,7 @@ export const groupRules: Record<string, (title: string) => string[]> = {
 
     // 查找番剧名称（通常是最长的有效段落）
     const animeNameSegment = validSegments.find(
-      (segment) => segment.length > 2
+      (segment) => segment !== undefined && segment.length > 2
     );
 
     const names = animeNameSegment ? [animeNameSegment.trim()] : [];
@@ -775,14 +780,14 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     // 移除字幕组标识（包括联合字幕组的情况）
     let t = title.replace(/^\[[^[\]]*樱桃花字幕组[^[\]]*\]\s*/, "");
 
-    t = t.split(/\s*-\s*\d{1,3}/)[0].trim();
+    t = t.split(/\s*-\s*\d{1,3}/)[0]!.trim();
 
     t = t.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     return sortNamesByPriority(names, title);
   },
@@ -791,12 +796,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     // 移除字幕组标识（包括联合字幕组的情况）
     let t = title.replace(/^\[[^[\]]*S1百综字幕组[^[\]]*\]\s*/, "");
 
-    t = t.split(/\s*\[\d{1,3}\]/)[0].trim();
+    t = t.split(/\s*\[\d{1,3}\]/)[0]!.trim();
 
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     return sortNamesByPriority(names, title);
   },
@@ -806,13 +811,13 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     let t = title.replace(/^\[绿茶字幕组\]\s*/, "");
 
     // 提取到第一个 [ 之前的内容作为番剧名称
-    t = t.split("[")[0].trim();
+    t = t.split("[")[0]!.trim();
 
     // 按 / 分割多个名称
     const names = t
       .split(/\s*\/\s*/)
       .map((s) => s.trim())
-      .filter(Boolean);
+      .filter((s): s is string => s !== "");
 
     return sortNamesByPriority(names, title);
   },
@@ -822,12 +827,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     const brackets = [...title.matchAll(/\[([^\]]+)\]/g)].map((m) => m[1]);
     // 跳过字幕组名，取第二个[]作为番剧名称
     if (brackets.length >= 2) {
-      let animeName = brackets[1];
+      const animeName = brackets[1]!;
       // 按 / 分割中英文名
       const names = animeName
         .split(/\s*\/\s*/)
         .map((s) => s.trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
       return sortNamesByPriority(names, title);
     }
     return [];
@@ -856,12 +861,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
 
     // 取第二个【】作为番剧名称
     if (brackets.length >= 2) {
-      const animeName = brackets[1];
+      const animeName = brackets[1]!;
 
       const names = animeName
         .split("_")
         .map((s) => s.replace(/[【】]/g, "").trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
 
       return sortNamesByPriority(names, title);
     }
@@ -891,12 +896,12 @@ export const groupRules: Record<string, (title: string) => string[]> = {
 
     // 取第二个【】作为番剧名称
     if (brackets.length >= 2) {
-      const animeName = brackets[1];
+      const animeName = brackets[1]!;
 
       const names = animeName
         .split("_")
         .map((s) => s.replace(/[【】]/g, "").trim())
-        .filter(Boolean);
+        .filter((s): s is string => s !== "");
 
       return sortNamesByPriority(names, title);
     }

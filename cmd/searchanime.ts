@@ -34,7 +34,7 @@ export default async function handleSearchAnime(
   let searchQuery;
   if (commandParts.length === 1) {
     // 单个参数，可能是ID或关键词
-    searchQuery = commandParts[0];
+    searchQuery = commandParts[0]!;
   } else {
     // 多个参数，组合成完整的关键词
     searchQuery = commandParts.join(" ");

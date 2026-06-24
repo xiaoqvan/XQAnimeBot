@@ -38,19 +38,21 @@ export function parseInfo(title: string, teamName: string | null) {
       const endStr = multiEpMatch[2] || multiEpMatch[4];
 
       // 提取数字部分和版本号部分
-      const startMatch = startStr.match(/^(\d{1,3})(v\d+)?$/);
-      const endMatch = endStr.match(/^(\d{1,3})(v\d+)?$/);
+      const startMatch = startStr?.match(/^(\d{1,3})(v\d+)?$/);
+      const endMatch = endStr?.match(/^(\d{1,3})(v\d+)?$/);
 
       if (startMatch && endMatch) {
-        const start = parseInt(startMatch[1]);
-        const end = parseInt(endMatch[1]);
+        const startNum = startMatch[1] ?? "0";
+        const endNum = endMatch[1] ?? "0";
+        const start = parseInt(startNum);
+        const end = parseInt(endNum);
         const startVersion = startMatch[2] || "";
         const endVersion = endMatch[2] || "";
 
         episode = [];
         for (let i = start; i <= end; i++) {
           // 保持原有的格式（如果原来是01，保持01的格式）
-          const padLength = startMatch[1].length;
+          const padLength = startNum.length;
           const paddedNum = i.toString().padStart(padLength, "0");
 
           // 如果是起始集数且有版本号，或者是结束集数且有版本号，保留版本号
@@ -107,8 +109,10 @@ export function parseInfo(title: string, teamName: string | null) {
         // 最后尝试匹配独立的数字（带版本号），但排除在番剧名称中的数字
         const brackets = [...title.matchAll(/\[([^\]]+)\]/g)];
         for (let i = brackets.length - 1; i >= 0; i--) {
-          const content = brackets[i][1];
-          if (/^\d{1,3}(?:v\d+)?$/.test(content)) {
+          const bracket = brackets[i];
+          if (!bracket) continue;
+          const content = bracket[1] ?? "";
+          if (content && /^\d{1,3}(?:v\d+)?$/.test(content)) {
             epMatch = [null, content];
             break;
           }
@@ -118,8 +122,10 @@ export function parseInfo(title: string, teamName: string | null) {
         // 尝试匹配中文方括号内的独立数字
         const chineseBrackets = [...title.matchAll(/【([^】]+)】/g)];
         for (let i = chineseBrackets.length - 1; i >= 0; i--) {
-          const content = chineseBrackets[i][1];
-          if (/^\d{1,3}(?:v\d+)?$/.test(content)) {
+          const bracket = chineseBrackets[i];
+          if (!bracket) continue;
+          const content = bracket[1] ?? "";
+          if (content && /^\d{1,3}(?:v\d+)?$/.test(content)) {
             epMatch = [null, content];
             break;
           }
@@ -129,8 +135,10 @@ export function parseInfo(title: string, teamName: string | null) {
         // 最后尝试匹配独立的纯数字，但排除在番剧名称中的数字
         const brackets = [...title.matchAll(/\[([^\]]+)\]/g)];
         for (let i = brackets.length - 1; i >= 0; i--) {
-          const content = brackets[i][1];
-          if (/^\d{1,3}$/.test(content)) {
+          const bracket = brackets[i];
+          if (!bracket) continue;
+          const content = bracket[1] ?? "";
+          if (content && /^\d{1,3}$/.test(content)) {
             epMatch = [null, content];
             break;
           }
@@ -177,7 +185,7 @@ export function parseInfo(title: string, teamName: string | null) {
             /\[(OVA|OAD|SP|Extra|番外|特典)[\s\-:]?(\d{1,3})\]/i
           );
           if (bracketSpecial) {
-            episode = bracketSpecial[1] + bracketSpecial[2];
+            episode = (bracketSpecial[1] ?? "") + (bracketSpecial[2] ?? "");
           } else {
             // 小数集数，如 48.5
             const decimalEp = title.match(/[\s\-\[]?(\d{1,3}\.\d)[\s\)\]]/);
@@ -217,7 +225,7 @@ export function parseInfo(title: string, teamName: string | null) {
     if (!source) {
       const allBrackets = [...title.matchAll(/\[([^\]]+)\]/g)];
       for (const bracket of allBrackets) {
-        const content = bracket[1].trim();
+        const content = (bracket[1] ?? "").trim();
         // 检查是否是常见的来源平台
         if (
           /^(Baha|CR|Bilibili|Netflix|Amazon|Hulu|Funimation|iQIYI|Youku|ABEMA|B-Global)$/i.test(

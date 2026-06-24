@@ -157,7 +157,7 @@ export class AnimeProcessorManager {
                 message: `无效序号: ${index}，当前活跃任务数为 ${items.length}`,
             };
         }
-        const target = items[index - 1];
+        const target = items[index - 1]!;
         return this.cancelActiveByTitle(target.title);
     }
 

@@ -90,9 +90,9 @@ export default async function addAnime(
         if (parts.length < 2) {
             return;
         }
-        const rest = parts[1];
+        const rest = parts[1]!;
         // 如果后面可能有路径或查询参数，就用 split 再分一次
-        const id = rest.split(/[/?#]/)[0];
+        const id = rest.split(/[/?#]/)[0]!;
 
         const torrentInfo = await fetchBangumiTorrent(id);
         // 获取作者信息
@@ -102,7 +102,7 @@ export default async function addAnime(
             /^(?:\[([^\]]+)]|【([^】]+)】)/
         ) as string[];
         if (match) {
-            const raw = match[1] || match[2];
+            const raw = match[1] || match[2] || '';
             fansub = raw
                 .split(/\s*[&/|｜、]\s*/)
                 .map((s) => s.trim())
@@ -117,7 +117,7 @@ export default async function addAnime(
         if (torrentInfo.team_id) {
             team = await fetchBangumiTeam(torrentInfo.team_id);
         } else {
-            team = [{ name: fansub[0] }];
+            team = [{ name: fansub[0]! }];
         }
         const tags =
             torrentInfo.tag_ids && torrentInfo.tag_ids.length > 0
@@ -143,7 +143,7 @@ export default async function addAnime(
                 en: "",
             };
 
-        const infoq = parseInfo(torrentInfo.title, team[0]?.name);
+        const infoq = parseInfo(torrentInfo.title, team[0]?.name!);
         if (!infoq) {
             return;
         }
@@ -171,7 +171,7 @@ export default async function addAnime(
             title: torrentInfo.title,
             pubDate: formatPubDate(torrentInfo.pubDate),
             magnet: torrentInfo.magnet,
-            team: team[0]?.name,
+            team: team[0]?.name!,
             link: url,
             fansub,
             ...infoq,
@@ -188,7 +188,7 @@ export default async function addAnime(
             return; // 跳过无法解析的条目
         }
         if (match) {
-            const raw = match[1] || match[2];
+            const raw = match[1] || match[2] || '';
             fansub = raw
                 .split(/\s*[&/|｜、]\s*/)
                 .map((s) => s.trim())

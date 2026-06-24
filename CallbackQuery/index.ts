@@ -82,7 +82,7 @@ export default async function updateNewCallbackQuery(
           sender_user_id,
           message_id,
           queryId,
-          params
+          params!
         );
         break;
       }
@@ -93,7 +93,7 @@ export default async function updateNewCallbackQuery(
           sender_user_id,
           message_id,
           queryId,
-          params
+          params!
         );
         break;
       }

@@ -163,7 +163,7 @@ export async function falseAnime(
       if (!rawText) continue; // 非文本消息忽略
 
       const text = rawText.trim();
-      const cmd = text.split(/\s+/)[0].toLowerCase();
+      const cmd = text.split(/\s+/)[0]!.toLowerCase();
 
       if (cmd === "/cancel") {
         await editMessageText(client, chat_id, message_id, {
@@ -217,16 +217,19 @@ export async function falseAnime(
     return;
   }
 
+  // 记录旧动漫 ID，用于后续双条目导航消息更新
+  const oldAnimeId = anime.id;
+
   // 若纠正后的动漫与原缓存动漫不一致，先迁移缓存资源归属，再清理空壳旧缓存动漫。
-  if (newAnime.id !== anime.id) {
+  if (newAnime.id !== oldAnimeId) {
     const rebinding = await rebindCacheResourceAnime(
-      anime.id,
+      oldAnimeId,
       newAnime.id,
       Cache_id
     );
 
     logger.info(
-      `[falseAnime] cache_id=${Cache_id} 资源归属修正: ${anime.id} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
+      `[falseAnime] cache_id=${Cache_id} 资源归属修正: ${oldAnimeId} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
     );
   }
 
@@ -241,6 +244,20 @@ export async function falseAnime(
 
   if (!result) {
     return;
+  }
+
+  // ── 双条目导航消息更新 ──
+  // 新条目已通过 updateAnimeLinks → sendMegToNavAnime 更新
+  // 旧条目也需要更新导航消息，反映资源已被迁移走的事实
+  if (newAnime.id !== oldAnimeId) {
+    try {
+      await sendMegToNavAnime(client, oldAnimeId);
+      logger.info(
+        `[falseAnime] 已更新旧条目导航消息: ${oldAnimeId}（资源已迁移至 ${newAnime.id}）`,
+      );
+    } catch (err) {
+      logger.error(err, `[falseAnime] 更新旧条目导航消息失败: ${oldAnimeId}`);
+    }
   }
 
   await deleteCacheAnime(newAnime.id, Cache_id);
@@ -305,7 +322,7 @@ export async function nullAnime(
       if (!rawText) continue; // 非文本消息忽略
 
       const text = rawText.trim();
-      const cmd = text.split(/\s+/)[0].toLowerCase();
+      const cmd = text.split(/\s+/)[0]!.toLowerCase();
 
       if (cmd === "/cancel") {
         await editMessageText(client, chat_id, message_id, {
@@ -460,7 +477,7 @@ export async function nullEp(
       if (!rawText) continue; // 非文本消息忽略
 
       const text = rawText.trim();
-      const cmd = text.split(/\s+/)[0].toLowerCase();
+      const cmd = text.split(/\s+/)[0]!.toLowerCase();
 
       if (cmd === "/cancel") {
         await editMessageText(client, chat_id, message_id, {
@@ -522,16 +539,19 @@ export async function nullEp(
     return;
   }
 
+  // 记录旧动漫 ID，用于后续双条目导航消息更新
+  const oldAnimeId = anime.id;
+
   // 若纠正后的动漫与原缓存动漫不一致，先迁移缓存资源归属，再清理空壳旧缓存动漫。
-  if (newAnime.id !== anime.id) {
+  if (newAnime.id !== oldAnimeId) {
     const rebinding = await rebindCacheResourceAnime(
-      anime.id,
+      oldAnimeId,
       newAnime.id,
       Cache_id
     );
 
     logger.info(
-      `[nullEp] cache_id=${Cache_id} 资源归属修正: ${anime.id} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
+      `[nullEp] cache_id=${Cache_id} 资源归属修正: ${oldAnimeId} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
     );
   }
 
@@ -546,6 +566,18 @@ export async function nullEp(
 
   if (!result) {
     return;
+  }
+
+  // ── 双条目导航消息更新 ──
+  if (newAnime.id !== oldAnimeId) {
+    try {
+      await sendMegToNavAnime(client, oldAnimeId);
+      logger.info(
+        `[nullEp] 已更新旧条目导航消息: ${oldAnimeId}（资源已迁移至 ${newAnime.id}）`,
+      );
+    } catch (err) {
+      logger.error(err, `[nullEp] 更新旧条目导航消息失败: ${oldAnimeId}`);
+    }
   }
 
   await deleteCacheAnime(newAnime.id, Cache_id);
@@ -586,7 +618,7 @@ async function fetchVideoInfosFromCache(
     let coverId: string | undefined;
     const cover = msg.content.cover
     if (cover?.sizes && cover.sizes.length > 0) {
-      coverId = cover.sizes[cover.sizes.length - 1].photo.remote.id;
+      coverId = cover.sizes[cover.sizes.length - 1]!.photo.remote.id;
     }
 
     results.push({
@@ -681,10 +713,10 @@ async function updateAnimeLinks(
       throw new Error("发送动漫消息失败");
     }
     allSentMessages = albumResult.messages.filter((m): m is message => m !== null);
-    primaryAnimeMeg = allSentMessages[0];
+    primaryAnimeMeg = allSentMessages[0]!;
   } else {
     // 单视频：sendMessage 携带封面
-    const info = videoInfos[0];
+    const info = videoInfos[0]!;
     const singleMeg = await sendMessage(client, Number(env.data.ANIME_CHANNEL), {
       media: {
         video: { id: info.videoId },

@@ -89,7 +89,7 @@ export class QbittorrentClient {
                 }
                 return config;
             },
-            (error: unknown) => Promise.reject(error)
+            (error: unknown) => Promise.reject(error instanceof Error ? error : new ApiError(String(error)))
         );
 
         // 响应拦截器
@@ -105,7 +105,7 @@ export class QbittorrentClient {
                             (c) => !c.startsWith(cookieName + '=')
                         );
                         // 添加新 cookie
-                        this.cookieJar.push(cookie.split(';')[0]);
+                        this.cookieJar.push(cookie.split(';')[0]!);
                     });
                 }
                 return response;
@@ -178,7 +178,7 @@ export class QbittorrentClient {
         config: AxiosRequestConfig,
         signal?: AbortSignal
     ): Promise<T> {
-        let lastError: Error | ApiError | unknown;
+        let lastError: unknown;
         const maxRetries = 3;
         const retryDelayMs = 30000; // 30秒
 
@@ -369,7 +369,7 @@ export class QbittorrentClient {
         );
 
         return data.map((item) => {
-            const parsedTags = this.parseTags((item as any).tags);
+            const parsedTags = this.parseTags(item.tags);
             return {
                 ...item,
                 tags: parsedTags,
@@ -385,7 +385,7 @@ export class QbittorrentClient {
         signal?: AbortSignal
     ): Promise<TorrentInfo | null> {
         const list = await this.getTorrents({ hashes: hash }, signal);
-        return list.length > 0 ? list[0] : null;
+        return list.length > 0 ? list[0]! : null;
     }
 
     /**

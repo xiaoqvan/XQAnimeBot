@@ -108,7 +108,7 @@ export default async function animeNavigationInline(
     );
 
     for (let i = 0; i < loaded.length; i++) {
-        const it = loaded[i];
+        const it = loaded[i]!;
         if (it.status !== "fulfilled") {
             logger.warn(it.reason, "[XQAnimeBot][inline][animeNavigation] 读取导航消息失败");
             continue;

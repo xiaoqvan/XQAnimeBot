@@ -1,4 +1,4 @@
-import { getEpisodeInfo } from "../anime/get.ts";
+import { getEpisodeInfo } from "../bangumi/get.ts";
 import { replaceEpisodeMetas, saveAnime } from "../database/create.ts";
 import type { anime } from "../types/anime.d.ts";
 import type { bangumiAnime, infobox } from "../types/bangumi.d.ts";
@@ -114,7 +114,7 @@ export function extractInfoFromInfobox(
           for (const alias of value) {
             // alias 可能是对象 { v: string } 或直接字符串
             if (alias && typeof alias === "object" && "v" in alias) {
-              const v = (alias as any).v;
+              const v = alias.v;
               if (typeof v === "string" && v.trim()) {
                 result.names.push(v);
               }
