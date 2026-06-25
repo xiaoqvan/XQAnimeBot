@@ -1,5 +1,6 @@
 import logger from "@log/index.ts";
 import { getDatabase } from "@db/index.ts";
+import type { PendingReviewDoc } from "../types/pendingReview.d.ts";
 
 const db = await getDatabase();
 
@@ -50,5 +51,26 @@ export async function deleteCacheAnime(
   } catch (error: any) {
     logger.error(`删除 cacheAnime 失败: ${error?.message ?? error}`);
     throw new Error(`删除 cacheAnime 失败: ${error?.message ?? error}`);
+  }
+}
+
+/**
+ * 删除待审核记录（审核完成后清理）
+ * @param id - 待审核记录的自增 ID
+ * @returns 删除成功返回 true，否则返回 false
+ */
+export async function deletePendingReview(id: number): Promise<boolean> {
+  if (!id) {
+    throw new Error("待审核ID是必需的参数");
+  }
+
+  try {
+    const result = await db
+      .collection<PendingReviewDoc>("pendingReviews")
+      .deleteOne({ id });
+    return result.deletedCount > 0;
+  } catch (error: any) {
+    logger.error(`删除待审核记录失败: ${error?.message ?? error}`);
+    throw new Error(`删除待审核记录失败: ${error?.message ?? error}`);
   }
 }

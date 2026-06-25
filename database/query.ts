@@ -7,7 +7,9 @@ import type { animeItem } from "../types/rss.d.ts";
 import type { BangumiUser } from "../types/bangumi.d.ts";
 import type { EpisodeMetaDoc } from "../types/episodeMeta.d.ts";
 import type { EpisodeResourceDoc } from "../types/episodeResource.d.ts";
+import type { PendingReviewDoc } from "../types/pendingReview.d.ts";
 import { getDatabase } from "@db/index.ts";
+import { getErrorMessage } from "@utils/error.ts";
 
 const db = await getDatabase();
 
@@ -274,7 +276,7 @@ export async function getAnimeById(
     };
   } catch (error) {
     throw new Error(
-      `查询动漫信息失败: ${error instanceof Error ? error.message : error}`
+      `查询动漫信息失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -379,7 +381,7 @@ export async function getAnimeByEpisodeId(
 
     return getAnimeById(episodeMeta.subject_id, false);
   } catch (error) {
-    throw new Error(`查询章节所属动漫失败: ${error instanceof Error ? error.message : error}`);
+    throw new Error(`查询章节所属动漫失败: ${getErrorMessage(error)}`);
   }
 }
 
@@ -399,7 +401,29 @@ export async function getCacheItemById(id: number) {
     return cacheItem?.item;
   } catch (error) {
     throw new Error(
-      `查询缓存信息失败: ${error instanceof Error ? error.message : error}`
+      `查询缓存信息失败: ${getErrorMessage(error)}`
+    );
+  }
+}
+
+/**
+ * 根据待审核 ID 查询待审核记录
+ * @param id - 待审核记录的自增 ID
+ * @returns 待审核记录，未找到返回 null
+ */
+export async function getPendingReviewById(
+  id: number
+): Promise<PendingReviewDoc | null> {
+  if (!id) {
+    throw new Error("待审核ID是必需的参数");
+  }
+  try {
+    return await db
+      .collection<PendingReviewDoc>("pendingReviews")
+      .findOne({ id });
+  } catch (error) {
+    throw new Error(
+      `查询待审核记录失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -468,7 +492,7 @@ export async function searchAnime(key: string): Promise<animeType[]> {
     return animes;
   } catch (error) {
     throw new Error(
-      `搜索动漫失败: ${error instanceof Error ? error.message : error}`
+      `搜索动漫失败: ${getErrorMessage(error)}`
     );
   }
 }

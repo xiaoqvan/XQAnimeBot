@@ -1,5 +1,6 @@
 import {
   getAnimeById,
+  getPendingReviewById,
   getCacheItemById,
   getCacheResourceByCacheId,
 } from "../database/query.ts";
@@ -9,7 +10,6 @@ import {
   deleteMessage,
   editMessageText,
   sendMessage,
-  sendMessageAlbum,
 } from "@TDLib/function/message.ts";
 
 import type { message, messages, messageSenderUser } from "tdlib-types";
@@ -22,19 +22,20 @@ import { saveAnime } from "../database/create.ts";
 import { sendMegToAnime, sendMegToNavAnime } from "../anime/sendAnime.ts";
 import { AnimeText } from "../anime/text.ts";
 import { getMessageLink, getMessage } from "@TDLib/function/get.ts";
+import { sendMessageAlbum } from "@TDLib/function/message.ts";
 import {
-  addAnimeNameAlias,
   rebindCacheResourceAnime,
   updateAnimeBtdata,
+  addAnimeNameAlias,
   updateTorrentStatus,
 } from "../database/update.ts";
-import { deleteCacheAnime } from "../database/delete.ts";
+import { deleteCacheAnime, deletePendingReview } from "../database/delete.ts";
 import { getSubjectById } from "../anime/get.ts";
 
 import { env } from "../database/initDb.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
-import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
 import { getEpisodeById } from "../bangumi/get.ts";
+import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
 
 function normalizeTdMessages(result: message | messages): message[] {
   if ((result as messages).messages && Array.isArray((result as messages).messages)) {
@@ -44,7 +45,10 @@ function normalizeTdMessages(result: message | messages): message[] {
 }
 
 /**
- * 当前匹配正确
+ * 管理员点击"正确"按钮后的处理
+ *
+ * 新流程（先发后审）：视频已发送到动漫频道，只需从待审核数据库中移除记录。
+ * 回调查看是否有 pendingReviewId（r 参数），如有则只删除记录即可。
  */
 export async function trueAnime(
   client: Client,
@@ -56,16 +60,50 @@ export async function trueAnime(
 ) {
   const query = raw.includes("?") ? raw.split("?")[1] : raw;
   const params = new URLSearchParams(query);
-  const id = Number(params.get("id"));
-  const Cache_id = Number(params.get("c"));
+  const pendingReviewId = params.has("r") ? Number(params.get("r")) : undefined;
 
   const sender_id: messageSenderUser = {
     _: "messageSenderUser",
     user_id: sender_user_id,
   };
 
-  const episode = await getEpisodeById(id);
+  if (pendingReviewId) {
+    // ── 新流程：只从待审核库移除 ──
+    const review = await getPendingReviewById(pendingReviewId);
+    if (!review) {
+      await answerCallbackQuery(client, queryId, {
+        text: "待审核记录不存在或已被处理",
+        show_alert: false,
+      });
+      return;
+    }
 
+    await deletePendingReview(pendingReviewId);
+
+    await editMessageText(client, chat_id, message_id, {
+      text:
+        `✅ 已确认\n` +
+        `**番剧：** ${review.anime.name_cn || review.anime.name}\n` +
+        `**ID：** ${review.anime.id}\n` +
+        `**触发用户：** ${await chatoruserMdown(client, sender_id, true)}`,
+    });
+
+    await answerCallbackQuery(client, queryId, {
+      text: "确认成功，已从待审核队列移除",
+      show_alert: false,
+    });
+
+    logger.info(
+      `[trueAnime] 已确认待审核记录 ${pendingReviewId}: ${review.anime.name_cn || review.anime.name} (#${review.anime.id})`
+    );
+    return;
+  }
+
+  // ── 旧流程兼容：通过 cacheItem 方式 ──
+  const id = Number(params.get("id"));
+  const Cache_id = Number(params.get("c"));
+
+  const episode = await getEpisodeById(id);
   const anime = await getAnimeById(episode.subject_id, true);
 
   if (!anime) {
@@ -100,7 +138,10 @@ export async function trueAnime(
   }
 }
 /**
- * 当前匹配错误进行纠正
+ * 管理员点击"错误"按钮后的纠正流程
+ *
+ * 新流程：从 pendingReviews 集合读取上下文，然后引导管理员提供正确信息。
+ * 纠正完成后清理待审核记录。
  */
 export async function falseAnime(
   client: Client,
@@ -112,32 +153,57 @@ export async function falseAnime(
 ) {
   const query = raw.includes("?") ? raw.split("?")[1] : raw;
   const params = new URLSearchParams(query);
-  const id = Number(params.get("id"));
-  const Cache_id = Number(params.get("c"));
+  const pendingReviewId = params.has("r") ? Number(params.get("r")) : undefined;
 
   const sender_id: messageSenderUser = {
     _: "messageSenderUser",
     user_id: sender_user_id,
   };
 
-  const episode = await getEpisodeById(id);
+  // ── 如果携带 pendingReviewId，先删除待审核记录（本次先报错，下次不再显示）──
+  if (pendingReviewId) {
+    await deletePendingReview(pendingReviewId).catch(() => { });
+    logger.info(`[falseAnime] 已删除待审核记录 ${pendingReviewId}`);
+  }
 
-  const anime = await getAnimeById(episode.subject_id, true);
+  // 旧流程参数（兼容）
+  const id = params.has("id") ? Number(params.get("id")) : undefined;
+  const Cache_id = params.has("c") ? Number(params.get("c")) : undefined;
 
-  if (!anime) {
-    await answerCallbackQuery(client, queryId, {
-      text: `失败出现错误`,
-      show_alert: false,
-    });
-    return;
+  // 获取现有信息作为上下文
+  let currentAnimeName = "";
+  let currentAnimeId: number | undefined;
+
+  if (pendingReviewId) {
+    // 新流程：尝试读取已删除的 review 缓存信息（删除后还在，但保险起见用 try/catch）
+    try {
+      const { getPendingReviewById } = await import("../database/query.ts");
+      const review = await getPendingReviewById(pendingReviewId);
+      if (review) {
+        currentAnimeName = review.anime.name_cn || review.anime.name;
+        currentAnimeId = review.anime.id;
+      }
+    } catch {
+      // ignore
+    }
+  } else if (id) {
+    try {
+      const episode = await getEpisodeById(id);
+      const anime = await getAnimeById(episode.subject_id, true);
+      if (anime) {
+        currentAnimeName = anime.name_cn || anime.name;
+        currentAnimeId = anime.id;
+      }
+    } catch {
+      // ignore
+    }
   }
 
   await editMessageText(client, chat_id, message_id, {
-    text: `${await chatoruserMdown(
-      client,
-      sender_id,
-      true
-    )} ，请回复这一条消息提供正确的 bgm.tv 章节链接或章节id\n\n回复 /cancel 取消`,
+    text:
+      `${await chatoruserMdown(client, sender_id, true)} ，` +
+      (currentAnimeName ? `当前匹配为 **${currentAnimeName}**\n` : "") +
+      `请回复这一条消息提供正确的 bgm.tv 章节链接或章节id\n\n回复 /cancel 取消`,
   });
 
   await answerCallbackQuery(client, queryId, {
@@ -145,11 +211,10 @@ export async function falseAnime(
     show_alert: false,
   });
 
-  let status = null;
-  let newAnime = null;
-  let newepid = null;
+  let status: string | null = null;
+  let newAnime: animeType | null = null;
+  let newepid: any = null;
 
-  // 临时用法后续建议包装该参数
   for await (const update of client.iterUpdates()) {
     if (
       update._ === "updateNewMessage" &&
@@ -160,7 +225,7 @@ export async function falseAnime(
     ) {
       deleteMessage(client, chat_id, update.message.id, true);
       const rawText = update.message.content?.text?.text;
-      if (!rawText) continue; // 非文本消息忽略
+      if (!rawText) continue;
 
       const text = rawText.trim();
       const cmd = text.split(/\s+/)[0]!.toLowerCase();
@@ -173,8 +238,7 @@ export async function falseAnime(
         break;
       }
 
-      // 支持纯数字 ID 或 bgm 链接
-      let parsedId = null;
+      let parsedId: number | null = null;
       if (/^\d+$/.test(text)) {
         parsedId = Number(text);
       } else {
@@ -191,6 +255,12 @@ export async function falseAnime(
         continue;
       }
       newepid = await getEpisodeById(parsedId).catch(() => null);
+      if (!newepid) {
+        await editMessageText(client, chat_id, message_id, {
+          text: `未找到章节信息，请确认 ID: ${parsedId} 是否正确。请重新提供或使用 /cancel 取消`,
+        });
+        continue;
+      }
       const Subject = await getSubjectById(newepid.subject_id).catch(() => null);
       if (!Subject) {
         await editMessageText(client, chat_id, message_id, {
@@ -202,6 +272,7 @@ export async function falseAnime(
       break;
     }
   }
+
   if (status === "canceled") {
     await answerCallbackQuery(client, queryId, {
       text: `已取消`,
@@ -209,58 +280,67 @@ export async function falseAnime(
     });
     return;
   }
-  if (!newAnime) {
+  if (!newAnime || !newepid) {
     await answerCallbackQuery(client, queryId, {
-      text: `失败出现错误newAnime不存在`,
+      text: `失败出现错误`,
       show_alert: false,
     });
     return;
   }
 
-  // 记录旧动漫 ID，用于后续双条目导航消息更新
-  const oldAnimeId = anime.id;
+  // 如果有 Cache_id（旧流程），执行资源迁移
+  if (Cache_id) {
+    const oldAnimeId = currentAnimeId;
+    if (oldAnimeId && newAnime.id !== oldAnimeId) {
+      const rebinding = await rebindCacheResourceAnime(
+        oldAnimeId,
+        newAnime.id,
+        Cache_id
+      );
+      logger.info(
+        `[falseAnime] cache_id=${Cache_id} 资源归属修正: ${oldAnimeId} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
+      );
+    }
 
-  // 若纠正后的动漫与原缓存动漫不一致，先迁移缓存资源归属，再清理空壳旧缓存动漫。
-  if (newAnime.id !== oldAnimeId) {
-    const rebinding = await rebindCacheResourceAnime(
-      oldAnimeId,
-      newAnime.id,
+    const result = await updateAnimeLinks(
+      client,
+      chat_id,
+      message_id,
+      newAnime,
+      newepid.id,
       Cache_id
     );
+    if (!result) return;
 
-    logger.info(
-      `[falseAnime] cache_id=${Cache_id} 资源归属修正: ${oldAnimeId} -> ${newAnime.id}, moved=${rebinding.moved}, removedOld=${rebinding.removedOldCacheAnime}`
-    );
-  }
-
-  const result = await updateAnimeLinks(
-    client,
-    chat_id,
-    message_id,
-    newAnime,
-    newepid.id,
-    Cache_id
-  );
-
-  if (!result) {
-    return;
-  }
-
-  // ── 双条目导航消息更新 ──
-  // 新条目已通过 updateAnimeLinks → sendMegToNavAnime 更新
-  // 旧条目也需要更新导航消息，反映资源已被迁移走的事实
-  if (newAnime.id !== oldAnimeId) {
-    try {
-      await sendMegToNavAnime(client, oldAnimeId);
-      logger.info(
-        `[falseAnime] 已更新旧条目导航消息: ${oldAnimeId}（资源已迁移至 ${newAnime.id}）`,
-      );
-    } catch (err) {
-      logger.error(err, `[falseAnime] 更新旧条目导航消息失败: ${oldAnimeId}`);
+    // 双条目导航消息更新
+    if (oldAnimeId && newAnime.id !== oldAnimeId) {
+      try {
+        await sendMegToNavAnime(client, oldAnimeId);
+        logger.info(
+          `[falseAnime] 已更新旧条目导航消息: ${oldAnimeId}（资源已迁移至 ${newAnime.id}）`,
+        );
+      } catch (err) {
+        logger.error(err, `[falseAnime] 更新旧条目导航消息失败: ${oldAnimeId}`);
+      }
     }
-  }
 
-  await deleteCacheAnime(newAnime.id, Cache_id);
+    await deleteCacheAnime(newAnime.id, Cache_id);
+  } else {
+    // 新流程（无 Cache_id）：直接更新数据库中的番剧信息
+    await editMessageText(client, chat_id, message_id, {
+      text:
+        `✅ 已纠正\n` +
+        `**新番剧：** ${newAnime.name_cn || newAnime.name}\n` +
+        `**ID：** ${newAnime.id}\n` +
+        `**章节：** https://bgm.tv/ep/${newepid.id}\n` +
+        `**触发用户：** ${await chatoruserMdown(client, sender_id, true)}`,
+    });
+
+    await answerCallbackQuery(client, queryId, {
+      text: "已纠正，请手动检查",
+      show_alert: false,
+    });
+  }
 }
 
 /**
@@ -283,6 +363,7 @@ export async function nullAnime(
     user_id: sender_user_id,
   };
 
+  const { getCacheItemById } = await import("../database/query.ts");
   const item = await getCacheItemById(Cache_id);
 
   if (!item) {
@@ -712,7 +793,7 @@ async function updateAnimeLinks(
       logger.error(`发送动漫消息失败: ${JSON.stringify(cacheItem, null, 2)}`);
       throw new Error("发送动漫消息失败");
     }
-    allSentMessages = albumResult.messages.filter((m): m is message => m !== null);
+    allSentMessages = albumResult.messages.filter((m: message | null): m is message => m !== null);
     primaryAnimeMeg = allSentMessages[0]!;
   } else {
     // 单视频：sendMessage 携带封面

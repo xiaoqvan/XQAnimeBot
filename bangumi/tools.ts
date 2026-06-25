@@ -56,6 +56,20 @@ interface EpisodeItem {
     type: number;
 }
 
+/** 单集详情（缩减版） */
+export type EpisodeDetail = {
+    id: number;
+    name: string;
+    name_cn: string;
+    /** 章节编号（如第 1 集、第 2 集） */
+    ep: number;
+    /** 实际集数编号 */
+    sort: number;
+    airdate: string;
+    subject_id: number;
+    type: number;
+};
+
 /** getEpisodeInfo 的完整响应结构 */
 interface EpisodeInfoResponse {
     data: EpisodeItem[];
@@ -169,6 +183,48 @@ export async function searchAnimeCandidates(
     );
 
     return candidates;
+}
+
+/**
+ * #sym:getEpisodeDetail
+ *
+ * 获取指定条目的单集详情。
+ * 当 LLM Agent 需要匹配合适的集数 ID 时调用此工具。
+ *
+ * API: 基于 getEpisodeInfo 返回数据，筛选出匹配的章节。
+ *
+ * @param subjectId 条目 ID
+ * @param episodeSort 集数编号（sort 字段），如 1, 2, 3...
+ * @returns 匹配的单集详情，未找到返回 null
+ */
+export async function getEpisodeDetail(
+    subjectId: number,
+    episodeSort: number,
+): Promise<EpisodeDetail | null> {
+    if (!subjectId || !episodeSort) {
+        return null;
+    }
+
+    try {
+        const res = await getEpisodeInfo(subjectId) as EpisodeInfoResponse;
+        const episodes = res.data ?? [];
+
+        const matched = episodes.find((ep) => ep.sort === episodeSort);
+        if (!matched) return null;
+
+        return {
+            id: matched.id,
+            name: matched.name,
+            name_cn: matched.name_cn,
+            ep: matched.ep,
+            sort: matched.sort,
+            airdate: matched.airdate,
+            subject_id: matched.subject_id,
+            type: matched.type,
+        };
+    } catch {
+        return null;
+    }
 }
 
 /**

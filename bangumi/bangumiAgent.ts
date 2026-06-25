@@ -12,8 +12,8 @@
 
 import { OpenAI } from "openai";
 import { z } from "zod";
-import { searchAnimeCandidates, getRelatedSubjects } from "./tools.ts";
-import type { AnimeCandidate, RelatedSubject } from "./tools.ts";
+import { searchAnimeCandidates, getRelatedSubjects, getEpisodeDetail } from "./tools.ts";
+import type { AnimeCandidate, RelatedSubject, EpisodeDetail } from "./tools.ts";
 
 // ─── 公开类型 ────────────────────────────────────────────────────────────────
 
@@ -27,6 +27,10 @@ export type animeItem = {
 /** 输出：匹配结果 */
 export type MatchResult = {
     subjectId?: number;
+    /** 匹配到的章节 ID（精确到集），可选 */
+    episodeId?: number;
+    /** 匹配到的集数编号（sort 字段），可选 */
+    episodeSort?: number;
     confidence: number;
     reason: string;
 };
@@ -72,9 +76,17 @@ const GetRelatedSubjectsSchema = z.object({
     subjectId: z.number().int().positive("条目 ID 必须为正整数"),
 });
 
+/** getEpisodeDetail 工具参数 */
+const GetEpisodeDetailSchema = z.object({
+    subjectId: z.number().int().positive("条目 ID 必须为正整数"),
+    episodeSort: z.number().int().positive("集数编号必须为正整数"),
+});
+
 /** 最终输出 Schema */
 const FinalOutputSchema = z.object({
     subjectId: z.number().int().optional(),
+    episodeId: z.number().int().optional(),
+    episodeSort: z.number().int().optional(),
     confidence: z.number().min(0).max(1),
     reason: z.string(),
 });
@@ -84,7 +96,8 @@ const FinalOutputSchema = z.object({
 const SYSTEM_PROMPT = `你是 Bangumi 动画匹配 Agent。
 
 目标：
-根据动漫名称、别名、集数、候选条目和关联条目找到最准确的 Bangumi Subject ID。
+根据动漫名称、别名、集数、候选条目和关联条目找到最准确的 Bangumi Subject ID，
+并尽可能精确到具体的章节 ID（集数）。
 
 优先级：
 1. episode_range - 集数范围匹配（如第5集落在1-12范围内）
@@ -93,21 +106,37 @@ const SYSTEM_PROMPT = `你是 Bangumi 动画匹配 Agent。
 4. 放送日期 (date)
 5. 前传/续集关系 (relation)
 
-允许：
-- 调用 searchAnimeCandidates 搜索候选
-- 调用 getRelatedSubjects 获取关联条目
-- 多轮工具调用进行推理
+可用工具：
+- searchAnimeCandidates: 搜索番剧候选项
+- getRelatedSubjects: 获取关联条目（前传/续集/番外）
+- getEpisodeDetail: 获取指定条目中某集的具体信息（包括集数 ID）
+
+匹配流程建议：
+1. 先调用 searchAnimeCandidates 搜索候选
+2. 如果候选能确定 subjectId，且输入包含集数信息，
+   调用 getEpisodeDetail 查找匹配的集数 ID
+3. 如果仍不确定，调用 getRelatedSubjects 查看关联条目
 
 限制：
-- 禁止在 searchAnimeCandidates 和 getRelatedSubjects 之间无限交替调用。
+- 禁止在 searchAnimeCandidates、getRelatedSubjects 和 getEpisodeDetail 之间无限交替调用。
 - 如果已经对某个条目调过 getRelatedSubjects，不要再次对相同条目重复调用。
 - 优先根据已有信息得出结论，而不是无限制地探索。
+- 只有当 episodeSort 完全匹配时才填入 episodeId。
 
 confidence 必须是 0~1 之间的小数（如 0.97），不是 0~100。
 - confidence = 1 表示完全确定
 - confidence = 0 表示完全无法匹配
 
 最终必须返回 JSON，格式如下：
+{
+  "subjectId": 123,
+  "episodeId": 456,
+  "episodeSort": 5,
+  "confidence": 0.97,
+  "reason": "..."
+}
+
+如果能确定条目但无法确定具体集数，只返回 subjectId：
 {
   "subjectId": 123,
   "confidence": 0.97,
@@ -181,6 +210,15 @@ async function executeToolCall(
                 return JSON.stringify(results);
             }
 
+            case "getEpisodeDetail": {
+                const parsed = GetEpisodeDetailSchema.parse(args);
+                const result: EpisodeDetail | null = await getEpisodeDetail(
+                    parsed.subjectId,
+                    parsed.episodeSort,
+                );
+                return JSON.stringify(result);
+            }
+
             default:
                 return JSON.stringify({ error: `未知工具: ${name}` });
         }
@@ -223,11 +261,13 @@ function extractJsonFromText(raw: string): string {
 }
 
 /**
- * 尝试从文本中直接通过正则提取三个关键字段，
+ * 尝试从文本中直接通过正则提取关键字段，
  * 用于 LLM 输出的 JSON 格式不标准时的兜底解析。
  */
 function extractFieldsViaRegex(raw: string): MatchResult | undefined {
     const subjectIdMatch = raw.match(/"subjectId"\s*:\s*(\d+)/);
+    const episodeIdMatch = raw.match(/"episodeId"\s*:\s*(\d+)/);
+    const episodeSortMatch = raw.match(/"episodeSort"\s*:\s*(\d+)/);
     const confidenceMatch = raw.match(/"confidence"\s*:\s*([\d.]+)/);
     const reasonMatch = raw.match(/"reason"\s*:\s*"([\s\S]*?)"(?:\s*[,\}])/);
 
@@ -236,6 +276,8 @@ function extractFieldsViaRegex(raw: string): MatchResult | undefined {
         if (!isNaN(confidence) && confidence >= 0 && confidence <= 1) {
             return {
                 subjectId: subjectIdMatch ? parseInt(subjectIdMatch[1]!, 10) : undefined,
+                episodeId: episodeIdMatch ? parseInt(episodeIdMatch[1]!, 10) : undefined,
+                episodeSort: episodeSortMatch ? parseInt(episodeSortMatch[1]!, 10) : undefined,
                 confidence,
                 reason: reasonMatch?.[1]?.trim() ?? "（正则兜底提取）",
             };
@@ -330,8 +372,25 @@ export async function matchAnimeSubject(
 
     if (candidates.length <= llmThreshold) {
         if (candidates.length === 1) {
+            const subjectId = candidates[0]!.id;
+            // 尝试在规则阶段解析集数
+            if (anime.episode) {
+                const episodeSort = extractEpisodeNumber(anime.episode);
+                if (episodeSort !== undefined) {
+                    const epDetail = await getEpisodeDetail(subjectId, episodeSort);
+                    if (epDetail) {
+                        return {
+                            subjectId,
+                            episodeId: epDetail.id,
+                            episodeSort,
+                            confidence: 0.97,
+                            reason: `唯一候选 + 集数 ${episodeSort} 匹配（章节 ID: ${epDetail.id}）`,
+                        };
+                    }
+                }
+            }
             return {
-                subjectId: candidates[0]!.id,
+                subjectId,
                 confidence: 0.95,
                 reason: "唯一候选",
             };
@@ -347,8 +406,20 @@ export async function matchAnimeSubject(
                 );
 
                 if (rangeMatched.length === 1) {
+                    const subjectId = rangeMatched[0]!.id;
+                    // 尝试在规则阶段解析集数
+                    const epDetail = await getEpisodeDetail(subjectId, episodeNumber);
+                    if (epDetail) {
+                        return {
+                            subjectId,
+                            episodeId: epDetail.id,
+                            episodeSort: episodeNumber,
+                            confidence: 0.98,
+                            reason: `集数范围命中 + 集数 ${episodeNumber} 匹配（章节 ID: ${epDetail.id}）`,
+                        };
+                    }
                     return {
-                        subjectId: rangeMatched[0]!.id,
+                        subjectId,
                         confidence: 0.98,
                         reason: "集数范围命中",
                     };
@@ -375,8 +446,20 @@ export async function matchAnimeSubject(
             );
 
             if (rangeMatched.length === 1) {
+                const subjectId = rangeMatched[0]!.id;
+                // 尝试在规则阶段解析集数
+                const epDetail = await getEpisodeDetail(subjectId, episodeNumber);
+                if (epDetail) {
+                    return {
+                        subjectId,
+                        episodeId: epDetail.id,
+                        episodeSort: episodeNumber,
+                        confidence: 0.98,
+                        reason: `集数范围命中 + 集数 ${episodeNumber} 匹配（章节 ID: ${epDetail.id}）`,
+                    };
+                }
                 return {
-                    subjectId: rangeMatched[0]!.id,
+                    subjectId,
                     confidence: 0.98,
                     reason: "集数范围命中",
                 };
@@ -528,6 +611,28 @@ async function llmDecision(
                             },
                         },
                     },
+                    {
+                        type: "function",
+                        function: {
+                            name: "getEpisodeDetail",
+                            description:
+                                "获取指定 Bangumi 条目中某集的具体详情，包括章节 ID（id）、集数编号（sort）和放送日期。当确定了 subjectId 并且输入包含集数信息时，调用此工具获取精确的章节 ID。",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    subjectId: {
+                                        type: "number",
+                                        description: "Bangumi 条目 ID",
+                                    },
+                                    episodeSort: {
+                                        type: "number",
+                                        description: "集数编号，如第 5 集则传入 5",
+                                    },
+                                },
+                                required: ["subjectId", "episodeSort"],
+                            },
+                        },
+                    },
                 ],
                 tool_choice: "auto" as const,
                 temperature: 0.1,
@@ -627,7 +732,8 @@ function buildLLMPrompt(anime: animeItem, candidates: AnimeCandidate[]): string 
         lines.push("");
     }
 
-    lines.push("如果需要更多信息，请调用 searchAnimeCandidates 或 getRelatedSubjects 工具。");
+    lines.push("如果需要更多信息，请调用 searchAnimeCandidates、getRelatedSubjects 或 getEpisodeDetail 工具。");
+    lines.push("当你能确定 subjectId 并且输入包含集数信息时，调用 getEpisodeDetail 获取精确的章节 ID（episodeId）。");
     lines.push("确定结果后，请直接返回 JSON，不要包含 markdown 代码块标记。");
 
     return lines.join("\n");

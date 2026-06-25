@@ -3,9 +3,11 @@ import type { anime as AnimeType } from "../types/anime.d.ts";
 import type { EpisodeMetaDoc } from "../types/episodeMeta.d.ts";
 import type { animeItem } from "../types/rss.d.ts";
 import type { BangumiUser } from "../types/bangumi.d.ts";
+import type { PendingReviewDoc } from "../types/pendingReview.d.ts";
 
 import { cleanTitle } from "../anime/rss/index.ts";
 import { getDatabase } from "@db/index.ts";
+import { getErrorMessage } from "@utils/error.ts";
 
 const db = await getDatabase();
 
@@ -173,8 +175,7 @@ export async function addTorrent(
     return doc._id;
   } catch (error) {
     throw new Error(
-      `保存或更新种子信息失败: ${error instanceof Error ? error.message : error
-      }`
+      `保存或更新种子信息失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -359,7 +360,7 @@ export async function createBangumiUser(
     const id = await getNextSequence("bangumi_user_id");
 
     const now = new Date();
-    const doc: BangumiUser = {
+    const doc = {
       id,
       ...data,
       createdAt: now,
@@ -376,6 +377,36 @@ export async function createBangumiUser(
     }
   } catch (err) {
     logger.error(err, "createBangumiUser 出错:");
+    throw err;
+  }
+}
+
+/**
+ * 创建一条待审核记录
+ *
+ * AI 匹配完成并发送视频后，将审核所需的所有数据保存到此记录中。
+ * 回调按钮只携带此记录的 id，审核时从中读取全部上下文。
+ *
+ * @param data - 待审核数据
+ * @returns 自增的待审核 ID
+ */
+export async function createPendingReview(
+  data: Omit<PendingReviewDoc, "id" | "createdAt" | "status">
+): Promise<number> {
+  try {
+    const id = await getNextSequence("pendingReviewId");
+
+    const doc: PendingReviewDoc = {
+      id,
+      status: "pending",
+      createdAt: new Date(),
+      ...data,
+    };
+
+    await db.collection<PendingReviewDoc>("pendingReviews").insertOne(doc);
+    return id;
+  } catch (err) {
+    logger.error(err, "createPendingReview 出错:");
     throw err;
   }
 }

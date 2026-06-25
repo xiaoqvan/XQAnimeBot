@@ -121,6 +121,15 @@ export default class AnimePlugin extends Plugin {
           return mod.default(this.client, message.message, commandParts);
         },
       },
+      animeblacklist: {
+        description: "管理动画RSS黑名单关键词",
+        scope: "private",
+        permission: "admin",
+        handler: async (message, commandParts) => {
+          const mod = await import("./cmd/animeblacklist.ts");
+          return mod.default(this.client, message.message, commandParts);
+        },
+      },
     };
 
     this.inlineHandlers = {

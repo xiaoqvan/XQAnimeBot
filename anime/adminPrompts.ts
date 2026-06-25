@@ -216,10 +216,8 @@ export async function promptAdminConfirmAnimeEpisodes(
  * 的匹配详情（置信度、原因），帮助管理员溯源并纠正到正确的条目。
  *
  * 【可溯源纠正】:
- * - "正确"按钮 → Y_anime 回调，确认当前匹配
+ * - "正确"按钮 → Y_anime 回调，确认当前匹配（从待审核库移除）
  * - "错误"按钮 → F_anime 回调，管理员可通过回复消息提供正确的 bgm 章节/条目链接
- * - 纠正时在 hasAnime.ts 中通过 rebindCacheResourceAnime 迁移资源归属，
- *   并更新新旧两个条目的导航消息
  *
  * @param client - TDLib 客户端实例
  * @param anime - 匹配到的番剧文档
@@ -227,6 +225,7 @@ export async function promptAdminConfirmAnimeEpisodes(
  * @param cacheId - 缓存条目 ID
  * @param item - 待处理的动漫 BT 条目
  * @param matchDetail - matchAnimeSubject 的匹配详情
+ * @param pendingReviewId - 可选，待审核记录 ID。提供后回调数据只携带此 ID，不再携带 episodeId+cacheId
  */
 export async function promptAdminConfirmAnimeWithCandidates(
     client: Client,
@@ -235,6 +234,7 @@ export async function promptAdminConfirmAnimeWithCandidates(
     cacheId: number,
     item: animeItem,
     matchDetail?: MatchResult,
+    pendingReviewId?: number,
 ): Promise<void> {
     // 根据 episodeId 从 episodes_meta 找到对应剧集的显示集数（sort 字段）
     let epSort: number = episodeId;
@@ -253,6 +253,15 @@ export async function promptAdminConfirmAnimeWithCandidates(
             `\n**匹配置信度：** ${(matchDetail.confidence * 100).toFixed(0)}%\n` +
             `**匹配原因：** ${matchDetail.reason}\n`;
     }
+
+    // 构建回调数据：优先使用待审核 ID（数据更短），否则回退到旧格式
+    const callbackData = pendingReviewId !== undefined
+        ? `Y_anime?r=${pendingReviewId}`
+        : `Y_anime?id=${episodeId}&c=${cacheId}`;
+
+    const errorCallbackData = pendingReviewId !== undefined
+        ? `F_anime?r=${pendingReviewId}`
+        : `F_anime?id=${episodeId}&c=${cacheId}`;
 
     await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
         topic_id: {
@@ -277,9 +286,7 @@ export async function promptAdminConfirmAnimeWithCandidates(
                             text: "正确",
                             type: {
                                 _: "inlineKeyboardButtonTypeCallback",
-                                data: Buffer.from(
-                                    `Y_anime?id=${episodeId}&c=${cacheId}`
-                                ).toString("base64"),
+                                data: Buffer.from(callbackData).toString("base64"),
                             },
                         },
                         {
@@ -287,9 +294,7 @@ export async function promptAdminConfirmAnimeWithCandidates(
                             text: "错误",
                             type: {
                                 _: "inlineKeyboardButtonTypeCallback",
-                                data: Buffer.from(
-                                    `F_anime?id=${episodeId}&c=${cacheId}`
-                                ).toString("base64"),
+                                data: Buffer.from(errorCallbackData).toString("base64"),
                             },
                         },
                     ],

@@ -2,7 +2,7 @@ import logger from "@log/index.ts";
 import parseTorrent from "parse-torrent";
 import { animeinfo } from "../bangumi/get.ts";
 import { updateAnimeBtdata } from "../database/update.ts";
-import { addCacheItem, addTorrent, saveAnime } from "../database/create.ts";
+import { addCacheItem, addTorrent, saveAnime, createPendingReview } from "../database/create.ts";
 import { getEpisodeMetasBySubjectId } from "../database/query.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMegToAnime, sendMegToCache, sendMegToNavAnime } from "./sendAnime.ts";
@@ -153,9 +153,20 @@ async function handleNewAnimeWithConfidentMatch(
     const subject = await getSubjectById(subjectId);
     const anime = await buildAndSaveAnimeFromInfo(subject, false, item.names);
 
-    // 匹配集数
-    const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
-    const episodeMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+    // ── 集数匹配：优先使用 LLM Agent 返回的 episodeId ──
+    // 如果 Agent 已经精确匹配到章节 ID，直接使用，无需再调用 matchBangumiEpisode
+    let episodeId: number | undefined;
+    let episodeMatch: ReturnType<typeof matchBangumiEpisode> | undefined;
+
+    if (matchResult.episodeId !== undefined) {
+        episodeId = matchResult.episodeId;
+    } else {
+        const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
+        episodeMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+        if (episodeMatch.status === "MATCHED") {
+            episodeId = episodeMatch.episodeId;
+        }
+    }
 
     // 解析磁力 hash 以供进度追踪
     const magnetHash = tryParseMagnetHash(item.magnet);
@@ -167,7 +178,12 @@ async function handleNewAnimeWithConfidentMatch(
     const torrent = await downloadAndValidateTorrent(item, manager);
     if (!torrent) return;
 
-    if (episodeMatch.status !== "MATCHED") {
+    if (!episodeId) {
+        // 集数未匹配成功：使用 matchResult.episodeId 或 episodeMatch 判定
+        const matchResultForPrompt = episodeMatch ?? {
+            status: "NOT_FOUND_IN_DB" as const,
+            msg: matchResult.reason || "Agent 未能匹配到集数",
+        };
         // 集数匹配失败：仍发送到缓冲频道让管理员确认集数
         manager.updateProgress(item.title, "发送视频到缓冲频道（集数待确认）");
         const animeMeg = await sendMegToCache(
@@ -203,7 +219,7 @@ async function handleNewAnimeWithConfidentMatch(
         );
 
         manager.updateProgress(item.title, "通知管理员确认集数");
-        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, episodeMatch);
+        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResultForPrompt);
         return;
     }
 
@@ -211,7 +227,7 @@ async function handleNewAnimeWithConfidentMatch(
     manager.updateProgress(item.title, "发送视频到动漫频道（高置信度）");
     const animeMeg = await sendMegToAnime(
         client, anime, item, torrent.content_path,
-        episodeMatch.episodeId, torrent.segments,
+        episodeId, torrent.segments,
     );
     removeTorrentAndData(torrent.hash).catch(() => { });
 
@@ -228,7 +244,7 @@ async function handleNewAnimeWithConfidentMatch(
 
     const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
     await updateAnimeBtdata(
-        anime.id, episodeMatch.episodeId, combineFansub(item.fansub),
+        anime.id, episodeId, combineFansub(item.fansub),
         item.episode || "未知",
         {
             chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
@@ -247,11 +263,26 @@ async function handleNewAnimeWithConfidentMatch(
     manager.updateProgress(item.title, "更新导航消息");
     await sendMegToNavAnime(client, anime.id);
 
-    // ── 后审核：通知管理员确认（携带匹配详情以便溯源纠正）──
+    // ── 创建待审核记录 ──
+    manager.updateProgress(item.title, "创建待审核记录");
+    const pendingReviewId = await createPendingReview({
+        item,
+        anime: { ...anime, names: anime.names ?? [] },
+        episodeId,
+        episodeSort: episodeId, // 由 prompt 内部根据 episodeId 查 sort，这里先用 episodeId 占位
+        sentMessages: allMsgData,
+        primaryMessage: {
+            chat_id: primaryMeg.chat_id,
+            message_id: primaryMeg.id,
+        },
+        matchDetail: matchResult,
+    });
+
+    // ── 后审核：通知管理员确认（只携带待审核 ID）──
     manager.updateProgress(item.title, "通知管理员审核（后审核）");
     await promptAdminConfirmAnimeWithCandidates(
-        client, anime, episodeMatch.episodeId, Cache_id, item,
-        matchResult,
+        client, anime, episodeId, Cache_id, item,
+        matchResult, pendingReviewId,
     );
 }
 
@@ -346,16 +377,31 @@ async function handleNewAnimeFallback(
     );
 
     const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
-    const epMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
-    if (epMatch.status !== "MATCHED") {
+
+    // 优先使用 Agent 返回的 episodeId，否则用 matchBangumiEpisode 匹配
+    let episodeId: number | undefined = matchResult.episodeId;
+    let epMatch: ReturnType<typeof matchBangumiEpisode> | undefined;
+
+    if (!episodeId) {
+        epMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+        if (epMatch.status === "MATCHED") {
+            episodeId = epMatch.episodeId;
+        }
+    }
+
+    if (!episodeId) {
+        const matchResultForPrompt = epMatch ?? {
+            status: "NOT_FOUND_IN_DB" as const,
+            msg: matchResult.reason || "Agent 未能匹配到集数",
+        };
         manager.updateProgress(item.title, "通知管理员确认集数");
-        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, epMatch);
+        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResultForPrompt);
         return;
     }
 
     manager.updateProgress(item.title, "通知管理员确认番剧信息");
     await promptAdminConfirmAnimeWithCandidates(
-        client, anime, epMatch.episodeId, Cache_id, item,
+        client, anime, episodeId, Cache_id, item,
         matchResult,
     );
 }
