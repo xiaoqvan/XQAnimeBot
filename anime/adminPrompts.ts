@@ -226,6 +226,7 @@ export async function promptAdminConfirmAnimeEpisodes(
  * @param item - 待处理的动漫 BT 条目
  * @param matchDetail - matchAnimeSubject 的匹配详情
  * @param pendingReviewId - 可选，待审核记录 ID。提供后回调数据只携带此 ID，不再携带 episodeId+cacheId
+ * @param isPostSend - 是否为"先发后审"模式（视频已发到频道，只需确认/纠正）
  */
 export async function promptAdminConfirmAnimeWithCandidates(
     client: Client,
@@ -235,6 +236,7 @@ export async function promptAdminConfirmAnimeWithCandidates(
     item: animeItem,
     matchDetail?: MatchResult,
     pendingReviewId?: number,
+    isPostSend?: boolean,
 ): Promise<void> {
     // 根据 episodeId 从 episodes_meta 找到对应剧集的显示集数（sort 字段）
     let epSort: number = episodeId;
@@ -263,12 +265,18 @@ export async function promptAdminConfirmAnimeWithCandidates(
         ? `F_anime?r=${pendingReviewId}`
         : `F_anime?id=${episodeId}&c=${cacheId}`;
 
+    // 先发后审模式：视频已发到频道，消息带上频道链接提醒管理员去查看
+    const modePrefix = isPostSend
+        ? `🔄 **先发后审**\n\n`
+        : `⏳ **待审核**\n\n`;
+
     await sendMessage(client, Number(env.data.ADMIN_GROUP_ID), {
         topic_id: {
             _: "messageTopicForum",
             forum_topic_id: Number(env.data.NAV_GROUP_THREAD_ID),
         },
         text:
+            modePrefix +
             `当前番剧为${item.title}\n\n匹配到的动漫信息：\n\n` +
             `**名称：** [${anime.name_cn || anime.name}](https://bgm.tv/subject/${anime.id})\n` +
             `**ID：** ${anime.id}\n` +

@@ -223,7 +223,12 @@ async function handleNewAnimeWithConfidentMatch(
         return;
     }
 
-    // ── 集数匹配成功：直接发送到正式动漫频道 ──
+    // ── 集数匹配成功：先创建导航消息，再发送视频到正式频道 ──
+    // 先发导航消息，确保 AnimeText 生成视频 caption 时 navMessage.link 有值，追踪标记正常显示
+    manager.updateProgress(item.title, "创建导航消息");
+    await sendMegToNavAnime(client, anime.id);
+
+    // 再发送视频到动漫频道（此时 navMessage.link 已存在，追踪标记会正常显示）
     manager.updateProgress(item.title, "发送视频到动漫频道（高置信度）");
     const animeMeg = await sendMegToAnime(
         client, anime, item, torrent.content_path,
@@ -259,8 +264,8 @@ async function handleNewAnimeWithConfidentMatch(
         allMsgData.length > 1 ? allMsgData : undefined,
     );
 
-    // 更新导航消息
-    manager.updateProgress(item.title, "更新导航消息");
+    // 再次更新导航消息，补充新发送的资源条目
+    manager.updateProgress(item.title, "更新导航消息（补充资源）");
     await sendMegToNavAnime(client, anime.id);
 
     // ── 创建待审核记录 ──
@@ -282,7 +287,7 @@ async function handleNewAnimeWithConfidentMatch(
     manager.updateProgress(item.title, "通知管理员审核（后审核）");
     await promptAdminConfirmAnimeWithCandidates(
         client, anime, episodeId, Cache_id, item,
-        matchResult, pendingReviewId,
+        matchResult, pendingReviewId, true, // isPostSend: 先发后审模式
     );
 }
 
