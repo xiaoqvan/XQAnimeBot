@@ -16,7 +16,7 @@ import { formatPubDate } from "../anime/rss/bangumi.ts";
 import { formatDmhyPubDate } from "../anime/rss/dmhy.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
-import { parseInfo } from "../utils/animeParser.ts";
+import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
 import { getEpisodeById } from "../bangumi/get.ts";
 
 export default async function addAnime(
@@ -144,6 +144,12 @@ export default async function addAnime(
     if (!infoq) {
       return;
     }
+    if (!infoq.episode || infoq.episode === "未知") {
+      const aiEpisode = await extractEpisodeByAI(torrentInfo.title, infoq.names);
+      if (aiEpisode) {
+        infoq.episode = aiEpisode;
+      }
+    }
     // 将 nameLocales 中每个语言的文本追加到 infoq.names 中，去重并去空
     const localeNames = [nameLocales.cn, nameLocales.jp, nameLocales.en]
       .filter((s) => typeof s === "string" && s.trim() !== "")
@@ -199,6 +205,12 @@ export default async function addAnime(
     const infoq = parseInfo(dmhyinfo.title, dmhyinfo.team);
     if (!infoq) {
       return;
+    }
+    if (!infoq.episode || infoq.episode === "未知") {
+      const aiEpisode = await extractEpisodeByAI(dmhyinfo.title, infoq.names);
+      if (aiEpisode) {
+        infoq.episode = aiEpisode;
+      }
     }
 
     animeBtInfo = {

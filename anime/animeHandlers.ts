@@ -3,7 +3,7 @@ import parseTorrent from "parse-torrent";
 import { animeinfo } from "../bangumi/get.ts";
 import { updateAnimeBtdata } from "../database/update.ts";
 import { addCacheItem, addTorrent, saveAnime, createPendingReview } from "../database/create.ts";
-import { getEpisodeMetasBySubjectId } from "../database/query.ts";
+import { getAnimeById, getEpisodeMetasBySubjectId } from "../database/query.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
 import { sendMegToAnime, sendMegToCache, sendMegToNavAnime } from "./sendAnime.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
@@ -228,10 +228,13 @@ async function handleNewAnimeWithConfidentMatch(
     manager.updateProgress(item.title, "创建导航消息");
     await sendMegToNavAnime(client, anime.id);
 
+    // 重新读取一次，确保 sendMegToAnime 使用的 anime 对象包含最新 navMessage.link
+    const animeAfterNav = (await getAnimeById(anime.id)) ?? anime;
+
     // 再发送视频到动漫频道（此时 navMessage.link 已存在，追踪标记会正常显示）
     manager.updateProgress(item.title, "发送视频到动漫频道（高置信度）");
     const animeMeg = await sendMegToAnime(
-        client, anime, item, torrent.content_path,
+        client, animeAfterNav, item, torrent.content_path,
         episodeId, torrent.segments,
     );
     removeTorrentAndData(torrent.hash).catch(() => { });

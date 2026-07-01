@@ -1,4 +1,91 @@
 import { groupRules } from "./groupRules.ts";
+import { OpenAI } from "openai";
+
+type ParseInfoResult = {
+  names: string[];
+  source: string;
+  episode: string;
+};
+
+const EPISODE_AI_MODEL = "deepseek-v4-flash";
+
+function getEpisodeAiClient(): OpenAI {
+  const apiKey = process.env.DEEPSEEK_API_KEY ?? process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("缺少 API Key：请设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY");
+  }
+  return new OpenAI({
+    apiKey,
+    baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
+  });
+}
+
+function normalizeAiEpisode(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (/^未知$/i.test(value)) return null;
+  if (/^(?:null|none|n\/a)$/i.test(value)) return null;
+
+  // 只接受常见的单集/特殊集格式，避免模型回传长句污染流程
+  if (/^\d{1,3}(?:v\d+)?$/i.test(value)) return value;
+  if (/^(?:SP|OVA|OAD|Extra|番外|特典)\d{0,3}$/i.test(value)) return value;
+  if (/^(?:剧场版|剧场总集篇|电影|SP)$/i.test(value)) return value;
+  if (/^\d{1,3}\.\d$/.test(value)) return value;
+  return null;
+}
+
+export async function extractEpisodeByAI(
+  title: string,
+  names: string[]
+): Promise<string | null> {
+  try {
+    const client = getEpisodeAiClient();
+    const nameHints = names.filter(Boolean).slice(0, 5).join(" / ");
+
+    const completion = await client.chat.completions.create({
+      model: EPISODE_AI_MODEL,
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content:
+            "你是动漫资源标题的集数提取器。请从标题中提取单个集数字段，仅输出 JSON：{\"episode\":\"...\"}。如果无法确定则输出 {\"episode\":\"未知\"}。禁止输出解释。",
+        },
+        {
+          role: "user",
+          content:
+            `标题: ${title}\n` +
+            `候选番名: ${nameHints || "(空)"}\n` +
+            "可接受 episode 示例：01, 12, 02v2, SP, SP1, OVA2, 12.5, 剧场版, 电影。",
+        },
+      ],
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          name: "episode_extract",
+          schema: {
+            type: "object",
+            properties: {
+              episode: { type: "string" },
+            },
+            required: ["episode"],
+            additionalProperties: false,
+          },
+        },
+      },
+    });
+
+    const content = completion.choices[0]?.message?.content ?? "";
+    if (!content) return null;
+
+    const parsed = JSON.parse(content) as { episode?: unknown };
+    if (typeof parsed.episode !== "string") return null;
+    return normalizeAiEpisode(parsed.episode);
+  } catch {
+    // AI 兜底失败时静默回退，不影响主解析流程
+    return null;
+  }
+}
 
 /**
  * 格式化番剧信息
@@ -6,7 +93,10 @@ import { groupRules } from "./groupRules.ts";
  * @param teamName - 动漫发布组名称
  * @returns
  */
-export function parseInfo(title: string, teamName: string | null) {
+export function parseInfo(
+  title: string,
+  teamName: string | null
+): ParseInfoResult | undefined {
   let names = [];
   let source = "";
   let episode;
@@ -253,5 +343,5 @@ export function parseInfo(title: string, teamName: string | null) {
     episode = "未知";
   }
 
-  return { names, source, episode };
+  return { names, source, episode: String(episode) };
 }

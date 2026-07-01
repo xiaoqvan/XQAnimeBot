@@ -1,6 +1,6 @@
 import logger from "@log/index.ts";
 import { hasTorrentTitle, hasAnimeSend } from "../database/query.ts";
-import { parseInfo } from "../utils/animeParser.ts";
+import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
 import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
 import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
@@ -102,6 +102,13 @@ async function parseBangumiItem(
     const infoq = parseInfo(item.title, team[0]?.name ?? null);
     if (!infoq) return undefined;
 
+    if (!infoq.episode || infoq.episode === "未知") {
+        const aiEpisode = await extractEpisodeByAI(item.title, infoq.names);
+        if (aiEpisode) {
+            infoq.episode = aiEpisode;
+        }
+    }
+
     // 将多语言名合并进 infoq.names，去重去空
     const localeNames = [nameLocales.cn, nameLocales.jp, nameLocales.en]
         .filter((s) => typeof s === "string" && s.trim() !== "")
@@ -139,6 +146,13 @@ async function parseDmhyOrAcgnxItem(
 ): Promise<animeItem | undefined> {
     const infoq = parseInfo(item.title, item.author);
     if (!infoq) return undefined;
+
+    if (!infoq.episode || infoq.episode === "未知") {
+        const aiEpisode = await extractEpisodeByAI(item.title, infoq.names);
+        if (aiEpisode) {
+            infoq.episode = aiEpisode;
+        }
+    }
 
     return {
         title: item.title,
