@@ -9,6 +9,7 @@ import type { EpisodeResourceDoc } from "../types/episodeResource.d.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
 import logger from "@log/index.ts";
 import { getDatabase } from "@db/index.ts";
+import { getErrorMessage } from "@utils/error.ts";
 
 const db = await getDatabase();
 
@@ -195,7 +196,7 @@ export async function updateAnimeScore(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新动漫评分失败: ${error instanceof Error ? error.message : error}`
+      `更新动漫评分失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -218,11 +219,11 @@ export async function updateAnimeScore(
  * @returns 更新成功返回true，否则返回false
  * @throws 当参数无效或数据库操作失败时抛出异常
  */
-export async function updateAnimeBtdata(
+export async function saveAnimeResource(
   animeId: number,
   episodeId: number | undefined,
   subGroup: string,
-  episode: string | "未知",
+  episode: string,
   Message: messageType,
   title: string,
   source: string | undefined,
@@ -331,7 +332,7 @@ export async function updateAnimeBtdata(
     return saved;
   } catch (error) {
     throw new Error(
-      `更新TGMegLink失败: ${error instanceof Error ? error.message : error}`
+      `更新TGMegLink失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -370,7 +371,7 @@ export async function addAnimeNameAlias(
     const anime = await db
       .collection("anime")
       .findOne({ id: Number(animeId) }, { projection: { names: 1 } });
-    let currentNames = Array.isArray(anime?.names) ? anime.names : [];
+    const currentNames = Array.isArray(anime?.names) ? anime.names : [];
     // 合并去重
     const merged = Array.from(new Set([...currentNames, ...namesArr]));
     // 更新
@@ -383,7 +384,7 @@ export async function addAnimeNameAlias(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `添加别名失败: ${error instanceof Error ? error.message : error}`
+      `添加别名失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -421,7 +422,7 @@ export async function updateAnimeR18(animeId: number, r18: boolean) {
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新动漫R18字段失败: ${error instanceof Error ? error.message : error}`
+      `更新动漫R18字段失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -463,7 +464,39 @@ export async function updateAnimeNavMessage(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新导航频道消息失败: ${error instanceof Error ? error.message : error}`
+      `更新导航频道消息失败: ${getErrorMessage(error)}`
+    );
+  }
+}
+
+/**
+ * 更新动漫导航封面图片的哈希值（用于去重判断）。
+ * @param animeId - 动漫的id字段值
+ * @param hash - 导航封面图片内容的哈希值
+ * @returns 更新成功返回true，否则返回false
+ */
+export async function updateAnimeNavImageHash(
+  animeId: number,
+  hash: string
+): Promise<boolean> {
+  if (!animeId || !hash) {
+    throw new Error("动漫ID和哈希值都是必需的参数");
+  }
+
+  try {
+    const result = await db.collection("anime").updateOne(
+      { id: animeId },
+      {
+        $set: {
+          navImageHash: hash,
+          updatedAt: new Date(),
+        },
+      }
+    );
+    return result.modifiedCount > 0;
+  } catch (error) {
+    throw new Error(
+      `更新导航封面哈希值失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -520,8 +553,7 @@ export async function updateAnimeNavVideoMessage(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新导航频道视频消息失败: ${error instanceof Error ? error.message : error
-      }`
+      `更新导航频道视频消息失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -567,7 +599,7 @@ export async function updateAnimeInfo(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新动漫基础信息失败: ${error instanceof Error ? error.message : error}`
+      `更新动漫基础信息失败: ${getErrorMessage(error)}`
     );
   }
 }
@@ -658,7 +690,7 @@ export async function updateAnimeEpisodes(
     return result.modifiedCount > 0;
   } catch (error) {
     throw new Error(
-      `更新动漫集数信息失败: ${error instanceof Error ? error.message : error}`
+      `更新动漫集数信息失败: ${getErrorMessage(error)}`
     );
   }
 }

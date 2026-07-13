@@ -5,6 +5,7 @@ import logger from "@log/index.ts";
 import {
   updateAnimeEpisodes,
   updateAnimeInfo,
+  updateAnimeNavImageHash,
   updateAnimeNavMessage,
   // updateAnimeNavMessageLink, // 不再使用链接单独更新
   updateAnimeNavVideoMessage, // 新增
@@ -13,16 +14,19 @@ import {
 
 import {
   editMessageCaption,
+  editMessageMedia,
   editMessageText,
   sendMessage,
   sendMessageAlbum,
 } from "@TDLib/function/message.ts";
-import { getAnimeById } from "../database/query.ts";
+import { getAnimeById, getResourcesByAnimeId } from "../database/query.ts";
 import { AnimeText, navmegtext } from "./text.ts";
 import { getEpisodeInfo, getSubjectById } from "./get.ts";
 import { getMessageLink, getMessageLinkInfo } from "@TDLib/function/get.ts";
 import { downloadFile, extractVideoMetadata } from "../function/index.ts";
 import { env } from "../database/initDb.ts";
+import { generateBangumiNavImage } from "../img/generateBangumiImage.ts";
+import { updateImgCache } from "@db/update.ts";
 
 import type { anime as animeType } from "../types/anime.ts";
 import type { messageType } from "../types/message.d.ts";
@@ -64,6 +68,29 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       updateAnimeEpisodes(Anime.id, episodeInfo),
     ]);
 
+    // ── 使用已获取的 API 数据生成导航封面图片 ──
+    let navImageHash: string | undefined;
+    let generatedImagePath: string | undefined;
+    // 获取活跃字幕组列表（用于图片中渲染）
+    let fansubs: string[] = [];
+    try {
+      const grouped = await getResourcesByAnimeId(Anime.id);
+      fansubs = Object.keys(grouped).filter(Boolean);
+    } catch { /* 获取失败不影响图片生成 */ }
+
+    try {
+      const imgResult = await generateBangumiNavImage({
+        subjectData: animeInfo,
+        episodeInfo,
+        anime: Anime,
+        fansubs,
+      });
+      navImageHash = imgResult.hash;
+      generatedImagePath = imgResult.path;
+    } catch (imgErr) {
+      logger.error(imgErr, `生成导航封面图片失败: ${Anime.id}，将继续使用旧图片`);
+    }
+
     // 同步内存中的 Anime 对象，确保导航消息文本使用最新数据
     Anime.score = animeInfo?.rating?.score ?? Anime.score;
     if (episodeInfo?.total) {
@@ -82,42 +109,83 @@ export async function sendMegToNavAnime(client: Client, id: number) {
       throw new Error(`Failed to generate navigation text for anime: ${Anime.name}`);
     }
 
-    // 主导航消息（应为 messagePhoto）：仅在文本变化时才编辑
-    try {
-      const navInfo = await getMessageLinkInfo(client, Anime.navMessage.link);
-      const newCaptionText = await parseTextEntities(client, megtexts[0]);
-      const oldCaptionText =
-        navInfo?.message?.content?._ === "messagePhoto"
-          ? navInfo.message.content.caption ?? ""
-          : navInfo?.message?.content?._ === "messageText"
-            ? // 兼容极端情况：历史主消息是文本
-            navInfo.message.content.text ?? ""
-            : "";
+    // ── 判断封面图片是否发生变化 ──
+    // 若 hash 不同或有新图片生成但尚未缓存，需要编辑媒体内容（图片+文本）
+    // 若 hash 相同，只需更新文本说明
+    const needUpdateImage = navImageHash !== undefined &&
+      navImageHash !== Anime.navImageHash &&
+      generatedImagePath !== undefined;
 
-      if (oldCaptionText !== newCaptionText) {
-        await editMessageCaption(
+    if (needUpdateImage) {
+      // 封面已变化：编辑媒体内容（替换图片 + 更新文本）
+      try {
+        const editResult = await editMessageMedia(
           client,
           Anime.navMessage.chat_id,
           Anime.navMessage.message_id,
           {
             text: megtexts[0],
-          }
+            media: { photo: { path: generatedImagePath } },
+          },
         );
-        // 添加延迟避免频繁编辑触发风控
+
+        // 提取 Telegram file_id 并写入图片缓存
+        if (editResult?.content?._ === "messagePhoto" && navImageHash) {
+          const sizes = editResult.content.photo.sizes;
+          const fileId = sizes?.at(-1)?.photo.remote.id;
+          if (fileId) {
+            await updateImgCache(navImageHash, fileId).catch(() => { });
+          }
+        }
+
+        // 持久化新的哈希值
+        if (navImageHash) {
+          await updateAnimeNavImageHash(Anime.id, navImageHash);
+        }
+        await sleep(5000);
+      } catch (editErr) {
+        logger.error(editErr, `编辑导航封面图片失败: ${Anime.id}，尝试仅更新文本`);
+        // 回退到仅更新文本
+        await editMessageCaption(
+          client,
+          Anime.navMessage.chat_id,
+          Anime.navMessage.message_id,
+          { text: megtexts[0] },
+        ).catch(() => { });
         await sleep(5000);
       }
-    } catch {
-      // 获取旧消息失败则按原逻辑尝试编辑
-      await editMessageCaption(
-        client,
-        Anime.navMessage.chat_id,
-        Anime.navMessage.message_id,
-        {
-          text: megtexts[0],
+    } else {
+      // 封面未变化：仅在文本变化时编辑 caption
+      try {
+        const navInfo = await getMessageLinkInfo(client, Anime.navMessage.link);
+        const newCaptionText = await parseTextEntities(client, megtexts[0]);
+        const oldCaptionText =
+          navInfo?.message?.content?._ === "messagePhoto"
+            ? navInfo.message.content.caption ?? ""
+            : navInfo?.message?.content?._ === "messageText"
+              ? // 兼容极端情况：历史主消息是文本
+              navInfo.message.content.text ?? ""
+              : "";
+
+        if (oldCaptionText !== newCaptionText) {
+          await editMessageCaption(
+            client,
+            Anime.navMessage.chat_id,
+            Anime.navMessage.message_id,
+            { text: megtexts[0] },
+          );
+          await sleep(5000);
         }
-      );
-      // 添加延迟避免频繁编辑触发风控
-      await sleep(5000);
+      } catch {
+        // 获取旧消息失败则按原逻辑尝试编辑
+        await editMessageCaption(
+          client,
+          Anime.navMessage.chat_id,
+          Anime.navMessage.message_id,
+          { text: megtexts[0] },
+        );
+        await sleep(5000);
+      }
     }
 
     // 没有就发送新的，有就修改（并补足多出来的）
@@ -296,37 +364,77 @@ export async function sendMegToNavAnime(client: Client, id: number) {
   // 导航频道中没有的番剧，新动漫发送逻辑
   let navmeg = null;
   let localImagePath: string | null = null;
+  let generatedImageHash: string | undefined;
+  let generatedImageCleanup: string | undefined;
   const megtexts = await navmegtext(client, Anime);
 
-  // 首先尝试使用远程图片（caption 只使用首条 megtexts[0]）
-  navmeg = await sendMessage(client, Number(env.data.NAV_CHANNEL), {
-    text: megtexts[0],
-    media: {
-      photo: {
-        id: Anime.image,
-      },
-    },
-  });
+  // ── 优先使用 Bangumi 数据生成导航封面图片 ──
+  let imageSent = false;
+  try {
+    const bgAnimeInfo = await getSubjectById(Anime.id);
+    const bgEpInfo = await getEpisodeInfo(Anime.id);
+
+    // 获取活跃字幕组列表
+    let fansubs: string[] = [];
+    try {
+      const grouped = await getResourcesByAnimeId(Anime.id);
+      fansubs = Object.keys(grouped).filter(Boolean);
+    } catch { /* ignore */ }
+
+    const imgResult = await generateBangumiNavImage({
+      subjectData: bgAnimeInfo,
+      episodeInfo: bgEpInfo,
+      anime: Anime,
+      fansubs,
+    });
+
+    if (imgResult.file_id) {
+      // 缓存命中：直接使用缓存的 file_id 发送
+      navmeg = await sendMessage(client, Number(env.data.NAV_CHANNEL), {
+        text: megtexts[0],
+        media: { photo: { id: imgResult.file_id } },
+      });
+      if (navmeg) {
+        generatedImageHash = imgResult.hash;
+        imageSent = true;
+      }
+    } else if (imgResult.path) {
+      // 新生成的图片：使用本地路径发送
+      generatedImageCleanup = imgResult.path;
+      generatedImageHash = imgResult.hash;
+      navmeg = await sendMessage(client, Number(env.data.NAV_CHANNEL), {
+        text: megtexts[0],
+        media: { photo: { path: imgResult.path } },
+      });
+      if (navmeg) {
+        imageSent = true;
+      }
+    }
+  } catch (genImgErr) {
+    logger.warn(genImgErr, `生成导航封面失败，回退到 Anime.image: ${Anime.id}`);
+  }
+
+  // ── 回退：使用 Anime.image 远程图片 ──
+  if (!imageSent) {
+    navmeg = await sendMessage(client, Number(env.data.NAV_CHANNEL), {
+      text: megtexts[0],
+      media: { photo: { id: Anime.image } },
+    });
+  }
 
   // 如果远程图片发送失败，尝试下载到本地
   if (!navmeg) {
     try {
       localImagePath = await downloadFile(Anime.image);
 
-      // 使用本地图片发送
       navmeg = await sendMessage(client, Number(env.data.NAV_CHANNEL), {
         text: megtexts[0],
-        media: {
-          photo: {
-            path: localImagePath,
-          },
-        },
+        media: { photo: { path: localImagePath } },
       });
     } catch (localError) {
       logger.error(localError, `本地图片上传也失败: ${Anime.image}`);
       throw localError;
     } finally {
-      // 清理本地图片文件
       if (localImagePath) {
         await fs.unlink(localImagePath).catch(() => { });
       }
@@ -335,6 +443,21 @@ export async function sendMegToNavAnime(client: Client, id: number) {
 
   if (!navmeg) {
     throw new Error("发送导航消息失败");
+  }
+
+  // ── 提取 file_id 缓存（如果是新生成的图片） ──
+  if (generatedImageHash && navmeg.content?._ === "messagePhoto") {
+    const sizes = navmeg.content.photo.sizes;
+    const fileId = sizes?.at(-1)?.photo.remote.id;
+    if (fileId) {
+      await updateImgCache(generatedImageHash, fileId).catch(() => { });
+    }
+    await updateAnimeNavImageHash(Anime.id, generatedImageHash).catch(() => { });
+  }
+
+  // 清理临时生成的图片文件
+  if (generatedImageCleanup) {
+    await fs.unlink(generatedImageCleanup).catch(() => { });
   }
 
   // 获取首条（图片）消息链接并写入 navMessage

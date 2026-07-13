@@ -18,14 +18,14 @@ type AnimeWithRelations = animeType & {
     total: number;
     list: EpisodeMetaDoc[];
   };
-  btdata?: Record<string, any[]>;
+  resources?: Record<string, any[]>;
 };
 
 /**
- * 从 resources 集合构建旧逻辑需要的 btdata 结构。
+ * 从 resources 集合获取番剧所有资源，按字幕组分组的结构。
  * @param animeId - 番剧 ID
  */
-export async function getBtDataByAnimeId(
+export async function getResourcesByAnimeId(
   animeId: number,
   collectionName: "resources" | "cache_resources" = "resources"
 ): Promise<Record<string, any[]>> {
@@ -196,7 +196,6 @@ export async function hasAnimeSend(names: string[]) {
           navMessage: 1,
           navVideoMessage: 1,
           eps: 1,
-          btdata: 1,
         },
         sort: { updatedAt: -1 },
       }
@@ -257,22 +256,22 @@ export async function getAnimeById(
 
     if (!anime) return null;
     if (cache) {
-      const btdata = await getBtDataByAnimeId(animeId, "cache_resources");
+      const resources = await getResourcesByAnimeId(animeId, "cache_resources");
       return {
         ...(anime as AnimeWithRelations),
-        btdata,
+        resources,
       };
     }
 
-    const [eps, btdata] = await Promise.all([
+    const [eps, resources] = await Promise.all([
       buildEpisodesByAnimeId(animeId),
-      getBtDataByAnimeId(animeId),
+      getResourcesByAnimeId(animeId),
     ]);
 
     return {
       ...(anime as AnimeWithRelations),
       eps,
-      btdata,
+      resources,
     };
   } catch (error) {
     throw new Error(

@@ -1,7 +1,7 @@
 import logger from "@log/index.ts";
 import parseTorrent from "parse-torrent";
 import { animeinfo } from "../bangumi/get.ts";
-import { updateAnimeBtdata } from "../database/update.ts";
+import { saveAnimeResource } from "../database/update.ts";
 import { addCacheItem, addTorrent, saveAnime, createPendingReview } from "../database/create.ts";
 import { getAnimeById, getEpisodeMetasBySubjectId } from "../database/query.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
@@ -202,7 +202,7 @@ async function handleNewAnimeWithConfidentMatch(
         const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
 
         const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
-        await updateAnimeBtdata(
+        await saveAnimeResource(
             anime.id, undefined, combineFansub(item.fansub),
             item.episode || "未知",
             {
@@ -251,7 +251,7 @@ async function handleNewAnimeWithConfidentMatch(
     const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
 
     const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
-    await updateAnimeBtdata(
+    await saveAnimeResource(
         anime.id, episodeId, combineFansub(item.fansub),
         item.episode || "未知",
         {
@@ -368,7 +368,7 @@ async function handleNewAnimeFallback(
     const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
 
     const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
-    await updateAnimeBtdata(
+    await saveAnimeResource(
         anime.id, undefined, combineFansub(item.fansub),
         item.episode || "未知",
         {
@@ -493,7 +493,7 @@ export async function handleExistingAnime(
         );
         const Cache_id = await addCacheItem(item);
 
-        await updateAnimeBtdata(
+        await saveAnimeResource(
             canimeid,
             undefined,
             combineFansub(item.fansub),
@@ -562,7 +562,7 @@ export async function handleExistingAnime(
         primaryAnimeMeg.id
     );
 
-    await updateAnimeBtdata(
+    await saveAnimeResource(
         anime.id,
         matchResult.episodeId,
         combineFansub(item.fansub),

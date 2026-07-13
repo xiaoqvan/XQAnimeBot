@@ -14,7 +14,7 @@ export default class AnimePlugin extends Plugin {
 
     this.onLoad = async () => {
       logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
-      anime(this.client).then();
+      // anime(this.client).then();
     };
 
     this.cmdHandlers = {
@@ -127,6 +127,15 @@ export default class AnimePlugin extends Plugin {
         permission: "admin",
         handler: async (message, commandParts) => {
           const mod = await import("./cmd/animeblacklist.ts");
+          return mod.default(this.client, message.message, commandParts);
+        },
+      },
+      testbgimg: {
+        description: "测试生成 Bangumi 番剧信息卡片图片（主人专用）",
+        scope: "private",
+        permission: "admin",
+        handler: async (message, commandParts) => {
+          const mod = await import("./cmd/testbgimg.ts");
           return mod.default(this.client, message.message, commandParts);
         },
       },

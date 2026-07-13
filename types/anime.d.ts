@@ -31,6 +31,8 @@ export type anime = {
     airingStart?: string;
     /** 数据库中创建时间 */
     createdAt?: Date;
+    /** 导航封面图片内容的哈希值（用于去重判断是否需要重新上传） */
+    navImageHash?: string;
     /** 数据库中最后更新时间 */
     updatedAt?: Date;
 };

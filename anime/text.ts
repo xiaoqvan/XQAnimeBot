@@ -1,5 +1,5 @@
 import { parseTextEntities } from "@TDLib/function/index.ts";
-import { getBtDataByAnimeId } from "../database/query.ts";
+import { getResourcesByAnimeId } from "../database/query.ts";
 import type { anime as animeType } from "../types/anime.d.ts";
 import type { animeItem } from "../types/rss.d.ts";
 
@@ -14,7 +14,7 @@ type BtEntry = {
   TGMegLink?: string;
 };
 
-type BtDataType = Record<string, BtEntry[]>;
+type GroupedResources = Record<string, BtEntry[]>;
 
 /**
  * 生成导航消息文本（首条带图，1024 文本长度限制；资源分条纯文本，每条 4096 文本长度限制）
@@ -27,8 +27,8 @@ export async function navmegtext(
   anime: animeType
 ): Promise<string[]> {
   const messages: string[] = [];
-  const btdata = await getBtDataByAnimeId(anime.id);
-  const sections = formatBtData(btdata); // 资源段
+  const grouped = await getResourcesByAnimeId(anime.id);
+  const sections = formatGroupedResources(grouped); // 资源段
 
   // 构造首条消息（可选择是否包含资源区、summary 最大长度、资源分页导航）
   const buildMain = (
@@ -268,10 +268,10 @@ export function getBeijingDate() {
 /**
  * 将 BtDataType 格式化为字符串数组
  */
-export function formatBtData(btdata: BtDataType): string[] {
-  if (!btdata || typeof btdata !== "object") return [];
+export function formatGroupedResources(grouped: GroupedResources): string[] {
+  if (!grouped || typeof grouped !== "object") return [];
 
-  return Object.entries(btdata).map(([key, entries]) => {
+  return Object.entries(grouped).map(([key, entries]) => {
     const line = entries
       // 过滤掉没有链接的
       .filter((entry) => entry.Message?.link || entry.TGMegLink)
