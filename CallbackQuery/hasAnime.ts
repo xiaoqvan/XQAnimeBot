@@ -25,7 +25,7 @@ import { getMessageLink, getMessage } from "@TDLib/function/get.ts";
 import { sendMessageAlbum } from "@TDLib/function/message.ts";
 import {
   rebindCacheResourceAnime,
-  updateAnimeBtdata,
+  saveAnimeResource,
   addAnimeNameAlias,
   updateTorrentStatus,
 } from "../database/update.ts";
@@ -847,7 +847,7 @@ async function updateAnimeLinks(
     throw new Error("更新进度消息失败");
   }
 
-  await updateAnimeBtdata(
+  await saveAnimeResource(
     animeId,
     episode_id,
     combineFansub(cacheItem.fansub),

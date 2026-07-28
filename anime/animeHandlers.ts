@@ -156,13 +156,13 @@ async function handleNewAnimeWithConfidentMatch(
     // ── 集数匹配：优先使用 LLM Agent 返回的 episodeId ──
     // 如果 Agent 已经精确匹配到章节 ID，直接使用，无需再调用 matchBangumiEpisode
     let episodeId: number | undefined;
-    let episodeMatch: ReturnType<typeof matchBangumiEpisode> | undefined;
+    let episodeMatch: Awaited<ReturnType<typeof matchBangumiEpisode>> | undefined;
 
     if (matchResult.episodeId !== undefined) {
         episodeId = matchResult.episodeId;
     } else {
         const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
-        episodeMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+        episodeMatch = await matchBangumiEpisode(anime, episodeMetas, item.episode);
         if (episodeMatch.status === "MATCHED") {
             episodeId = episodeMatch.episodeId;
         }
@@ -388,10 +388,10 @@ async function handleNewAnimeFallback(
 
     // 优先使用 Agent 返回的 episodeId，否则用 matchBangumiEpisode 匹配
     let episodeId: number | undefined = matchResult.episodeId;
-    let epMatch: ReturnType<typeof matchBangumiEpisode> | undefined;
+    let epMatch: Awaited<ReturnType<typeof matchBangumiEpisode>> | undefined;
 
     if (!episodeId) {
-        epMatch = matchBangumiEpisode(anime, episodeMetas, item.episode);
+        epMatch = await matchBangumiEpisode(anime, episodeMetas, item.episode);
         if (epMatch.status === "MATCHED") {
             episodeId = epMatch.episodeId;
         }
@@ -433,7 +433,7 @@ export async function handleExistingAnime(
     manager: AnimeProcessorManager
 ): Promise<void> {
     const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
-    const matchResult = matchBangumiEpisode(anime, episodeMetas, item.episode);
+    const matchResult = await matchBangumiEpisode(anime, episodeMetas, item.episode);
     await addTorrent(item.magnet, "等待下载", item.title);
 
     // 解析磁力 hash 以供进度追踪（失败不阻断主流程）

@@ -161,7 +161,7 @@ function parsePubDate(pubDateString: string): number {
       return Number.isNaN(d.getTime()) ? Date.now() : d.getTime();
     }
 
-    const [, year, month, day, hour, minute, ampm] = match;
+    const [, year = "", month = "", day = "", hour = "", minute = "", ampm = ""] = match;
 
     let hour24 = parseInt(hour);
     if (ampm === "PM" && hour24 !== 12) {

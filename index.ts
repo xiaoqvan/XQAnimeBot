@@ -143,6 +143,7 @@ export default class AnimePlugin extends Plugin {
 
     this.inlineHandlers = {
       animeNavigation: {
+        name: "animeNavigation",
         description: "内联搜索番剧导航消息（图片导航）",
         scope: "all",
         matcher: (ctx) => {
@@ -157,6 +158,7 @@ export default class AnimePlugin extends Plugin {
         },
       },
       episodeVideo: {
+        name: "episodeVideo",
         description: "内联按 EPID 或 bgm 链接发送对应视频",
         scope: "all",
         matcher: (ctx) => {

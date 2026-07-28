@@ -10,7 +10,7 @@ import {
 import { isUserAdmin, parseTextEntities } from "@TDLib/function/index.ts";
 import { env } from "../database/initDb.ts";
 
-import { getAnimeById, getBtDataByAnimeId } from "../database/query.ts";
+import { getAnimeById, getResourcesByAnimeId } from "../database/query.ts";
 import { updateAnimeR18 } from "../database/update.ts";
 import type { anime as animeType } from "../types/anime.d.ts";
 import type { animeItem } from "../types/rss.d.ts";
@@ -137,7 +137,7 @@ async function updateAssociatedVideoMessagesR18(
   message: messageType,
   r18Value: boolean
 ) {
-  const btdata = await getBtDataByAnimeId(anime.id);
+  const btdata = await getResourcesByAnimeId(anime.id);
   if (!btdata || typeof btdata !== "object") return;
   // 统计总的视频消息数量
   let totalMessages = 0;
@@ -149,8 +149,8 @@ async function updateAssociatedVideoMessagesR18(
   }
   let processed = 0,
     success = 0,
-    fail = 0,
-    failDetails = [];
+    fail = 0;
+  const failDetails = [];
   // 进度提示消息
   await editMessageText(client, message.chat_id, message.id, {
     text: `🔄 正在更新视频消息 r18 字段...\n进度: ${processed}/${totalMessages}\n成功: ${success}\n失败: ${fail}`,

@@ -28,7 +28,7 @@ import type {
     albumMessageType,
 } from "../types/message.d.ts";
 import { getMessageLink } from "@TDLib/function/get.ts";
-import { updateAnimeBtdata } from "../database/update.ts";
+import { saveAnimeResource } from "../database/update.ts";
 import { combineFansub } from "../utils/index.ts";
 import { AnimeText } from "../anime/text.ts";
 
@@ -145,7 +145,7 @@ export default async function addAnime(
                 en: "",
             };
 
-        const infoq = parseInfo(torrentInfo.title, team[0]?.name!);
+        const infoq = parseInfo(torrentInfo.title, team[0]?.name ?? "");
         if (!infoq) {
             return;
         }
@@ -173,7 +173,7 @@ export default async function addAnime(
             title: torrentInfo.title,
             pubDate: formatPubDate(torrentInfo.pubDate),
             magnet: torrentInfo.magnet,
-            team: team[0]?.name!,
+            team: team[0]?.name ?? "",
             link: url,
             fansub,
             ...infoq,
@@ -225,23 +225,23 @@ export default async function addAnime(
 
     // ── LoliHouse 特殊处理：标题转换 ──
     if (animeBtInfo.team === "LoliHouse") {
-      animeBtInfo.title = animeBtInfo.title.replace(/\[简繁内封字幕\]/g, "[简体内嵌]");
+        animeBtInfo.title = animeBtInfo.title.replace(/\[简繁内封字幕\]/g, "[简体内嵌]");
     }
 
     // 预检查种子格式：若为 MKV，路由到独立 MKV 队列
     if (animeBtInfo.magnet) {
-      const format = await checkTorrentFormat(animeBtInfo.magnet);
-      if (format === "mkv") {
-        // 先保存番剧信息（路由到 MKV 队列后不会再回来的）
-        const newanime = await buildAndSaveAnimeFromInfo(anime, false);
-        await animeProcessor.enqueueMkv(client, animeBtInfo);
-        if (tipsMsg) {
-          await editMessageText(client, message.chat_id, tipsMsg.id, {
-            text: `🎬 MKV 资源已加入 MKV 处理队列（烧录字幕完成后自动发送）: ${newanime.name_cn || newanime.name}`,
-          });
+        const format = await checkTorrentFormat(animeBtInfo.magnet);
+        if (format === "mkv") {
+            // 先保存番剧信息（路由到 MKV 队列后不会再回来的）
+            const newanime = await buildAndSaveAnimeFromInfo(anime, false);
+            await animeProcessor.enqueueMkv(client, animeBtInfo);
+            if (tipsMsg) {
+                await editMessageText(client, message.chat_id, tipsMsg.id, {
+                    text: `🎬 MKV 资源已加入 MKV 处理队列（烧录字幕完成后自动发送）: ${newanime.name_cn || newanime.name}`,
+                });
+            }
+            return;
         }
-        return;
-      }
     }
 
     const newanime = await buildAndSaveAnimeFromInfo(anime, false);
@@ -283,7 +283,7 @@ export default async function addAnime(
     const animeLink = await getMessageLink(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id);
 
     // 更新动漫的数据库信息
-    await updateAnimeBtdata(
+    await saveAnimeResource(
         anime.id,
         Number(epid),
         combineFansub(animeBtInfo.fansub),
