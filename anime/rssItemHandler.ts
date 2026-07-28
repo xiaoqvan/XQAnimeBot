@@ -3,6 +3,7 @@ import { hasTorrentTitle, hasAnimeSend } from "../database/query.ts";
 import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
 import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
 import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
+import { checkTorrentFormat } from "../utils/checkTorrentFormat.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
 import type { RssAnimeItem, animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
@@ -51,8 +52,23 @@ export async function handleRssAnimeItem(
 
     if (!newitem) return;
 
+    // 预检查种子格式：若为 MKV（需烧录字幕），路由到独立的 MKV 处理队列
+    // 避免 MKV 下载+转码过程中长时间占用普通 worker 槽位
+    if (newitem.magnet) {
+        manager.updateProgress(item.title, "检查种子格式");
+        const format = await checkTorrentFormat(newitem.magnet);
+        if (format === "mkv") {
+            manager.updateProgress(item.title, "路由到MKV队列");
+            await manager.enqueueMkv(client, newitem);
+            return;
+        }
+    }
+
     await animeDownload(client, newitem, manager);
 }
+
+/** 导出给 AnimeProcessorManager 的 MKV worker 使用 */
+export { animeDownload };
 
 /**
  * 解析 bangumi.moe 类型的 RSS 条目，补充字幕组/标签/多语言名称信息

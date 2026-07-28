@@ -1,8 +1,8 @@
 import logger from "@log/index.ts";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
-import { handleRssAnimeItem } from "./rssItemHandler.ts";
+import { handleRssAnimeItem, animeDownload } from "./rssItemHandler.ts";
 import { hasTorrentTitle } from "../database/query.ts";
-import type { RssAnimeItem } from "../types/rss.d.ts";
+import type { RssAnimeItem, animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
 
 /**
@@ -76,6 +76,15 @@ export class AnimeProcessorManager {
     /** 重型转换任务等待队列 */
     private readonly conversionWaiters: Array<() => void> = [];
 
+    /** MKV 队列条目 */
+    private readonly mkvQueue: { client: Client; item: animeItem }[] = [];
+
+    /** 当前正在运行的 MKV worker 数量 */
+    private mkvActiveCount = 0;
+
+    /** MKV 最大并发数（始终为 1，因为转码串行） */
+    private readonly maxMkvConcurrency = 1;
+
     /** 记录已经被“强制释放槽位”的任务标题，避免 finally 重复扣减 activeCount */
     private readonly forceReleasedTitles: Set<string> = new Set();
 
@@ -85,6 +94,16 @@ export class AnimeProcessorManager {
      */
     constructor(maxConcurrency = 3) {
         this.maxConcurrency = maxConcurrency;
+    }
+
+    /**
+     * 将已解析的 MKV 条目加入 MKV 专用队列（独立于普通 worker 池），
+     * 不会占用普通 worker 的并发槽位。
+     * MKV 项会在单独的槽位中完成下载 → 烧录 → 发送。
+     */
+    async enqueueMkv(client: Client, item: animeItem): Promise<void> {
+        this.mkvQueue.push({ client, item });
+        this.trySpawnMkvWorkers();
     }
 
     /**
@@ -247,6 +266,45 @@ export class AnimeProcessorManager {
             const next = this.queue.shift()!;
             this.spawnWorker(next.client, next.item);
         }
+    }
+
+    /**
+     * 尝试启动 MKV worker，直到达到 MKV 并发上限或队列为空
+     */
+    private trySpawnMkvWorkers(): void {
+        while (this.mkvActiveCount < this.maxMkvConcurrency && this.mkvQueue.length > 0) {
+            const next = this.mkvQueue.shift()!;
+            this.spawnMkvWorker(next.client, next.item);
+        }
+    }
+
+    /**
+     * 以非阻塞方式启动单个 MKV worker（独立于普通 worker 池）
+     * Worker 完成（无论成功/失败）后自动尝试从队列补充下一个 MKV 任务
+     */
+    private spawnMkvWorker(client: Client, item: animeItem): void {
+        this.mkvActiveCount++;
+        this.progressMap.set(item.title, {
+            title: item.title,
+            stage: "初始化（MKV队列）",
+            startTime: new Date(),
+            updatedAt: new Date(),
+        });
+
+        // 注意：intentionally 不 await，让 worker 独立运行不阻塞调用方
+        animeDownload(client, item, this)
+            .catch((error: unknown) => {
+                logger.error(error, `[AnimeProcessor] MKV处理出错: ${item.title}`);
+                ErrorHandler(
+                    client,
+                    new Error(`MKV处理出错: ${item.title}\n${String(error)}`)
+                ).catch(() => {});
+            })
+            .finally(() => {
+                this.mkvActiveCount = Math.max(0, this.mkvActiveCount - 1);
+                this.progressMap.delete(item.title);
+                this.trySpawnMkvWorkers();
+            });
     }
 
     /**

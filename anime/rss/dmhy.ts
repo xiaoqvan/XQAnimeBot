@@ -40,7 +40,8 @@ export const authorMapping: Record<string, string> = {
   kevin14827: "爱恋字幕社",
   HYSUB: "幻樱字幕组",
   summer1278: "幻樱字幕组",
-  MingHyuk: "雪飄工作室"
+  MingHyuk: "雪飄工作室",
+  LoliHouse: "LoliHouse"
 };
 
 // 白名单：只允许这些作者的内容
@@ -87,7 +88,7 @@ export async function fetchDmhyRss() {
     // 只处理前50条数据
     const limitedItems = items.slice(0, 50);
     for (const item of limitedItems) {
-      const title = $(item).find("title").text().trim().replace(/\s+/g, " ");
+      let title = $(item).find("title").text().trim().replace(/\s+/g, " ");
       const link = $(item).find("link").text();
       const pubDateRaw = $(item).find("pubDate").text();
       const pubDate = formatDmhyPubDate(pubDateRaw);
@@ -103,7 +104,12 @@ export async function fetchDmhyRss() {
         continue;
       }
 
-      if (!isTitleAllowed(title)) continue;
+      // LoliHouse 使用内封字幕（简繁双语），烧录后变为硬编码内嵌，需特殊处理
+      if (originalAuthor === "LoliHouse") {
+        title = title.replace(/\[简繁内封字幕\]/g, "[简体内嵌]");
+      } else if (!isTitleAllowed(title)) {
+        continue;
+      }
 
       // 检查作者是否在白名单中
       if (!authorWhitelist.includes(originalAuthor)) {
