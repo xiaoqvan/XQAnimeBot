@@ -17,6 +17,8 @@ import { formatDmhyPubDate } from "../anime/rss/dmhy.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
 import { parseInfo } from "../utils/animeParser.ts";
+import { checkTorrentFormat } from "../utils/checkTorrentFormat.ts";
+import { animeProcessor } from "../anime/AnimeProcessorManager.ts";
 import { getEpisodeById } from "../bangumi/get.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
 import { addTorrent } from "../database/create.ts";
@@ -221,11 +223,32 @@ export default async function addAnime(
         return;
     }
 
+    // ── LoliHouse 特殊处理：标题转换 ──
+    if (animeBtInfo.team === "LoliHouse") {
+      animeBtInfo.title = animeBtInfo.title.replace(/\[简繁内封字幕\]/g, "[简体内嵌]");
+    }
+
+    // 预检查种子格式：若为 MKV，路由到独立 MKV 队列
+    if (animeBtInfo.magnet) {
+      const format = await checkTorrentFormat(animeBtInfo.magnet);
+      if (format === "mkv") {
+        // 先保存番剧信息（路由到 MKV 队列后不会再回来的）
+        const newanime = await buildAndSaveAnimeFromInfo(anime, false);
+        await animeProcessor.enqueueMkv(client, animeBtInfo);
+        if (tipsMsg) {
+          await editMessageText(client, message.chat_id, tipsMsg.id, {
+            text: `🎬 MKV 资源已加入 MKV 处理队列（烧录字幕完成后自动发送）: ${newanime.name_cn || newanime.name}`,
+          });
+        }
+        return;
+      }
+    }
+
     const newanime = await buildAndSaveAnimeFromInfo(anime, false);
 
     await addTorrent(animeBtInfo.magnet, "等待下载", animeBtInfo.title);
 
-    const torrent = await downloadAndValidateTorrent(animeBtInfo);
+    const torrent = await downloadAndValidateTorrent(animeBtInfo, animeProcessor);
 
     const animeMeg = await sendMegToAnime(
         client,

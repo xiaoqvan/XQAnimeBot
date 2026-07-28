@@ -18,47 +18,47 @@ export type TorrentFormat = "mkv" | "mp4" | "mixed" | "unknown";
  *   - "unknown": 无法获取元数据或无视频文件
  */
 export async function checkTorrentFormat(
-  magnetLink: string
+    magnetLink: string
 ): Promise<TorrentFormat> {
-  try {
-    const parsed = await new Promise<any>((resolve, reject) => {
-      (remote as any)(
-        magnetLink,
-        { timeout: 30_000 },
-        (err: Error | null, parsed: any) => {
-          if (err) reject(err);
-          else resolve(parsed);
+    try {
+        const parsed = await new Promise<any>((resolve, reject) => {
+            (remote as any)(
+                magnetLink,
+                { timeout: 30_000 },
+                (err: Error | null, parsed: any) => {
+                    if (err) reject(err);
+                    else resolve(parsed);
+                }
+            );
+        });
+
+        const files: { name?: string; path?: string; length?: number }[] =
+            parsed.files ?? [];
+
+        if (files.length === 0) {
+            // 无文件列表，尝试从 parsed.name 推断
+            const name: string = parsed.name ?? "";
+            if (name.toLowerCase().endsWith(".mkv")) return "mkv";
+            if (name.toLowerCase().endsWith(".mp4")) return "mp4";
+            return "unknown";
         }
-      );
-    });
 
-    const files: { name?: string; path?: string; length?: number }[] =
-      parsed.files ?? [];
+        let hasMkv = false;
+        let hasMp4 = false;
 
-    if (files.length === 0) {
-      // 无文件列表，尝试从 parsed.name 推断
-      const name: string = parsed.name ?? "";
-      if (name.toLowerCase().endsWith(".mkv")) return "mkv";
-      if (name.toLowerCase().endsWith(".mp4")) return "mp4";
-      return "unknown";
+        for (const f of files) {
+            const fileName = f.name ?? f.path ?? "";
+            const lower = fileName.toLowerCase();
+            if (lower.endsWith(".mkv")) hasMkv = true;
+            else if (lower.endsWith(".mp4")) hasMp4 = true;
+        }
+
+        if (hasMkv && !hasMp4) return "mkv";
+        if (hasMp4 && !hasMkv) return "mp4";
+        if (hasMkv && hasMp4) return "mixed";
+        return "unknown";
+    } catch (err) {
+        logger.warn(err, `[checkTorrentFormat] 获取种子元数据失败，标记为 unknown: ${magnetLink.slice(0, 60)}...`);
+        return "unknown";
     }
-
-    let hasMkv = false;
-    let hasMp4 = false;
-
-    for (const f of files) {
-      const fileName = f.name ?? f.path ?? "";
-      const lower = fileName.toLowerCase();
-      if (lower.endsWith(".mkv")) hasMkv = true;
-      else if (lower.endsWith(".mp4")) hasMp4 = true;
-    }
-
-    if (hasMkv && !hasMp4) return "mkv";
-    if (hasMp4 && !hasMkv) return "mp4";
-    if (hasMkv && hasMp4) return "mixed";
-    return "unknown";
-  } catch (err) {
-    logger.warn(err, `[checkTorrentFormat] 获取种子元数据失败，标记为 unknown: ${magnetLink.slice(0, 60)}...`);
-    return "unknown";
-  }
 }

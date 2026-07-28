@@ -15,19 +15,19 @@ export async function fetchMergedRss() {
   try {
     // 并行获取所有RSS源的数据，失效的源会被自动跳过
     const [bangumiData, dmhyData, acgnxData] = await Promise.allSettled([
-        fetchBangumiRss().catch((err) => {
-          logger.warn("Bangumi RSS获取失败:", err.message);
-          return [];
-        }),
-        fetchDmhyRss().catch((err) => {
-          logger.warn("DMHY RSS获取失败:", err.message);
-          return [];
-        }),
-        fetchAcgnxRss().catch((err) => {
-          logger.warn("ACGNX RSS获取失败:", err.message);
-          return [];
-        }),
-      ]);
+      fetchBangumiRss().catch((err) => {
+        logger.warn("Bangumi RSS获取失败:", err.message);
+        return [];
+      }),
+      fetchDmhyRss().catch((err) => {
+        logger.warn("DMHY RSS获取失败:", err.message);
+        return [];
+      }),
+      fetchAcgnxRss().catch((err) => {
+        logger.warn("ACGNX RSS获取失败:", err.message);
+        return [];
+      }),
+    ]);
 
     // 提取成功的数据
     const bangumi = bangumiData.status === "fulfilled" ? bangumiData.value : [];

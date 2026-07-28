@@ -17,6 +17,7 @@ import { formatDmhyPubDate } from "../anime/rss/dmhy.ts";
 import { env } from "../database/initDb.ts";
 import { getConfig } from "@db/config.ts";
 import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
+import { checkTorrentFormat } from "../utils/checkTorrentFormat.ts";
 import { getEpisodeById } from "../bangumi/get.ts";
 
 export default async function addAnime(
@@ -228,6 +229,25 @@ export default async function addAnime(
       text: "目前仅支持添加bangumi和dmhy的链接。",
     });
     return;
+  }
+
+  // ── LoliHouse 特殊处理：标题转换 + 格式预检 ──
+  if (animeBtInfo.team === "LoliHouse") {
+    animeBtInfo.title = animeBtInfo.title.replace(/\[简繁内封字幕\]/g, "[简体内嵌]");
+  }
+
+  // 预检查种子格式：若为 MKV，路由到独立 MKV 队列，避免阻塞其他任务
+  if (animeBtInfo.magnet) {
+    const format = await checkTorrentFormat(animeBtInfo.magnet);
+    if (format === "mkv") {
+      await animeProcessor.enqueueMkv(client, animeBtInfo);
+      if (tipsMsg) {
+        await editMessageText(client, message.chat_id, tipsMsg.id, {
+          text: `🎬 MKV 资源已加入 MKV 处理队列（烧录字幕完成后自动发送）: ${animeinfo.name_cn || animeinfo.name}`,
+        });
+      }
+      return;
+    }
   }
 
   await handleExistingAnime(client, animeBtInfo, animeinfo, animeProcessor);

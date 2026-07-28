@@ -298,7 +298,7 @@ export class AnimeProcessorManager {
                 ErrorHandler(
                     client,
                     new Error(`MKV处理出错: ${item.title}\n${String(error)}`)
-                ).catch(() => {});
+                ).catch(() => { });
             })
             .finally(() => {
                 this.mkvActiveCount = Math.max(0, this.mkvActiveCount - 1);
