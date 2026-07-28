@@ -1,5 +1,6 @@
 import type { anime } from '../types/anime.d.ts';
 import type { EpisodeMetaDoc } from '../types/episodeMeta.d.ts';
+import { aiEpisodeSearch } from '../bangumi/bangumiAgent.ts';
 
 /** 匹配结果接口 */
 export type EpisodeMatchResult =
@@ -14,11 +15,11 @@ export type EpisodeMatchResult =
  * @param episodes 从剧集数据库读取的该番剧全部章节（建议已按 sort 排序）
  * @param btEpisodeStr BT 标题提取出的集数 (如 "02", "13", "05v2", "SP01")
  */
-export function matchBangumiEpisode(
+export async function matchBangumiEpisode(
     dbAnime: anime,
     episodes: EpisodeMetaDoc[],
     btEpisodeStr: string | undefined
-): EpisodeMatchResult {
+): Promise<EpisodeMatchResult> {
     if (!btEpisodeStr) {
         return { status: 'INVALID_INPUT', msg: 'BT 条目未包含集数' };
     }
@@ -30,7 +31,23 @@ export function matchBangumiEpisode(
     const epNum = parseFloat(rawEp);
 
     if (isNaN(epNum)) {
-        // 如果是 SP/OVA，Bangumi 中 type 通常不为 0，这里仅演示匹配本篇
+        // 规则无法解析集数，尝试 AI 辅助查找
+        const aiCandidate = {
+            id: dbAnime.id,
+            name: dbAnime.name,
+            name_cn: dbAnime.name_cn,
+            episode_range: dbAnime.episode,
+            summary: dbAnime.summary,
+        };
+        const aiResult = await aiEpisodeSearch(dbAnime.id, btEpisodeStr, aiCandidate);
+        if (aiResult) {
+            return {
+                status: 'MATCHED',
+                episodeId: aiResult.episodeId,
+                ep: aiResult.episodeSort,
+                sort: aiResult.episodeSort,
+            };
+        }
         return { status: 'INVALID_INPUT', msg: `无法从标题解析出集数: ${btEpisodeStr}` };
     }
 
@@ -80,6 +97,24 @@ export function matchBangumiEpisode(
         const minEpisode = mainEpisodeSorts.length > 0 ? Math.min(...mainEpisodeSorts) : 1;
         const maxEpisode = mainEpisodeSorts.length > 0 ? Math.max(...mainEpisodeSorts) : 1;
         const episodeRange = minEpisode === maxEpisode ? `${minEpisode}` : `${minEpisode}-${maxEpisode}`;
+
+        // 规则匹配失败，尝试 AI 辅助查找
+        const aiCandidate = {
+            id: dbAnime.id,
+            name: dbAnime.name,
+            name_cn: dbAnime.name_cn,
+            episode_range: dbAnime.episode,
+            summary: dbAnime.summary,
+        };
+        const aiResult = await aiEpisodeSearch(dbAnime.id, btEpisodeStr, aiCandidate);
+        if (aiResult) {
+            return {
+                status: 'MATCHED',
+                episodeId: aiResult.episodeId,
+                ep: aiResult.episodeSort,
+                sort: aiResult.episodeSort,
+            };
+        }
 
         return {
             status: 'NOT_FOUND_IN_DB',

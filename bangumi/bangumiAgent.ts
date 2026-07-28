@@ -387,6 +387,18 @@ export async function matchAnimeSubject(
                             reason: `唯一候选 + 集数 ${episodeSort} 匹配（章节 ID: ${epDetail.id}）`,
                         };
                     }
+
+                    // 规则集数匹配失败，使用 AI 辅助查找
+                    const aiEp = await aiEpisodeSearch(subjectId, anime.episode, candidates[0]);
+                    if (aiEp) {
+                        return {
+                            subjectId,
+                            episodeId: aiEp.episodeId,
+                            episodeSort: aiEp.episodeSort,
+                            confidence: 0.95,
+                            reason: `唯一候选 + AI 辅助集数匹配（集数 ${aiEp.episodeSort}，章节 ID: ${aiEp.episodeId}）`,
+                        };
+                    }
                 }
             }
             return {
@@ -418,6 +430,21 @@ export async function matchAnimeSubject(
                             reason: `集数范围命中 + 集数 ${episodeNumber} 匹配（章节 ID: ${epDetail.id}）`,
                         };
                     }
+
+                    // 规则集数匹配失败，使用 AI 辅助查找
+                    if (anime.episode) {
+                        const aiEp = await aiEpisodeSearch(subjectId, anime.episode, rangeMatched[0]);
+                        if (aiEp) {
+                            return {
+                                subjectId,
+                                episodeId: aiEp.episodeId,
+                                episodeSort: aiEp.episodeSort,
+                                confidence: 0.96,
+                                reason: `集数范围命中 + AI 辅助集数匹配（集数 ${aiEp.episodeSort}，章节 ID: ${aiEp.episodeId}）`,
+                            };
+                        }
+                    }
+
                     return {
                         subjectId,
                         confidence: 0.98,
@@ -458,6 +485,21 @@ export async function matchAnimeSubject(
                         reason: `集数范围命中 + 集数 ${episodeNumber} 匹配（章节 ID: ${epDetail.id}）`,
                     };
                 }
+
+                // 规则集数匹配失败，使用 AI 辅助查找
+                if (anime.episode) {
+                    const aiEp = await aiEpisodeSearch(subjectId, anime.episode, rangeMatched[0]);
+                    if (aiEp) {
+                        return {
+                            subjectId,
+                            episodeId: aiEp.episodeId,
+                            episodeSort: aiEp.episodeSort,
+                            confidence: 0.96,
+                            reason: `集数范围命中 + AI 辅助集数匹配（集数 ${aiEp.episodeSort}，章节 ID: ${aiEp.episodeId}）`,
+                        };
+                    }
+                }
+
                 return {
                     subjectId,
                     confidence: 0.98,
@@ -531,6 +573,332 @@ function isEpisodeInRange(episode: number, range?: string): boolean {
     return false;
 }
 
+// ─── AI 辅助集数查找 ─────────────────────────────────────────────────────────
+
+/**
+ * 使用 LLM Tool Calling Loop 辅助查找正确的集数 ID。
+ * 当规则提取的集数编号无法匹配时，调用此函数通过迭代工具调用找到正确的集数。
+ */
+export async function aiEpisodeSearch(
+    subjectId: number,
+    episode: string,
+    candidate?: AnimeCandidate,
+): Promise<{ episodeId: number; episodeSort: number } | null> {
+    const AI_EPISODE_SYSTEM_PROMPT = `你是 Bangumi 集数匹配助手。
+根据番剧信息和集数字符串，通过工具调用迭代查找最准确的集数编号（sort 值）和章节 ID（id）。
+
+番剧信息包含原名、中文名、放送日期和集数范围。
+集数字符串可能包含"第X集"、"EP X"、"X話"等各种格式。
+
+可用工具：
+- searchAnimeCandidates: 搜索番剧候选项。当需要从当前候选之外搜索更多相关信息时调用。
+- getRelatedSubjects: 获取关联条目（前传/续集/番外）。当集数可能属于关联条目时调用。
+- getEpisodeDetail: 获取指定条目中某集的具体详情。调用此工具验证集数是否存在并获取章节 ID。
+
+流程建议：
+1. 根据番剧信息和集数字符串确定目标条目
+2. 调用 getEpisodeDetail 验证集数是否存在
+3. 如果不在当前条目中，可调用 getRelatedSubjects 查看关联条目
+4. 需要更多信息时调用 searchAnimeCandidates
+5. 重复直到找到匹配的集数或确定无法匹配
+
+限制：
+- 不要对相同的集数编号重复调用 getEpisodeDetail
+- 优先根据已有信息得出结论，而不是无限制地探索
+
+最终必须返回 JSON，格式如下：
+{
+  "episodeSort": 5,
+  "episodeId": 12345,
+  "reason": "解释为什么是这个集数以及验证过程"
+}
+
+如果完全无法确定，返回：
+{
+  "episodeSort": null,
+  "episodeId": null,
+  "reason": "..."
+}
+
+禁止输出 markdown 代码块标记或其他包装文本。`;
+
+    const candidateLines: string[] = [];
+    if (candidate) {
+        candidateLines.push("番剧信息：");
+        candidateLines.push(`- 原名: ${candidate.name}`);
+        candidateLines.push(`- 中文名: ${candidate.name_cn ?? "(无)"}`);
+        candidateLines.push(`- 放送日期: ${candidate.date ?? "(未知)"}`);
+        candidateLines.push(`- 集数范围: ${candidate.episode_range ?? "(未知)"}`);
+        candidateLines.push(`- 简介: ${candidate.summary ?? "(无)"}`);
+        candidateLines.push("");
+    }
+    candidateLines.push(`集数字符串: "${episode}"`);
+    candidateLines.push("");
+    candidateLines.push("可用工具：searchAnimeCandidates（搜索更多候选项）、getRelatedSubjects（查看关联条目）、getEpisodeDetail（验证集数）。");
+    candidateLines.push("请先确定目标条目，然后调用 getEpisodeDetail 验证集数。");
+
+    const userPrompt = candidateLines.join("\n");
+
+    const messages: ChatMessage[] = [
+        { role: "system", content: AI_EPISODE_SYSTEM_PROMPT },
+        { role: "user", content: userPrompt },
+    ];
+
+    const MAX_ITERATIONS = 8;
+    let iteration = 0;
+
+    // 去重追踪
+    const exploredEpisodeSorts = new Set<number>();
+    const searchedKeywords = new Set<string>();
+    const exploredSubjectIds = new Set<number>();
+
+    while (iteration < MAX_ITERATIONS) {
+        iteration++;
+
+        let response;
+        try {
+            response = await getClient().chat.completions.create({
+                model: MODEL,
+                messages,
+                tools: [
+                    {
+                        type: "function",
+                        function: {
+                            name: "searchAnimeCandidates",
+                            description:
+                                "使用关键词搜索 Bangumi 番剧候选列表。返回 AnimeCandidate[]，包含 id、名称、中文名、放送日期、集数范围和简介。在需要从当前候选之外查找更多番剧信息时调用此工具。",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    keyword: {
+                                        type: "string",
+                                        description: "搜索关键词，可以是番剧原名、中文名、别名等",
+                                    },
+                                    limit: {
+                                        type: "number",
+                                        description: "返回结果数量上限（1-50），默认 10",
+                                        default: 10,
+                                    },
+                                },
+                                required: ["keyword"],
+                            },
+                        },
+                    },
+                    {
+                        type: "function",
+                        function: {
+                            name: "getRelatedSubjects",
+                            description:
+                                "获取指定 Bangumi 条目的关联作品列表（如前传、续集、番外篇等）。仅返回 type=2（动画）的关联条目。当需要查找关联作品的集数信息时调用此工具。",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    subjectId: {
+                                        type: "number",
+                                        description: "Bangumi 条目 ID",
+                                    },
+                                },
+                                required: ["subjectId"],
+                            },
+                        },
+                    },
+                    {
+                        type: "function",
+                        function: {
+                            name: "getEpisodeDetail",
+                            description:
+                                "获取指定 Bangumi 条目中某集的具体详情，包括章节 ID（id）、集数编号（sort）和放送日期。当确定了条目和集数编号时，调用此工具验证该集是否存在并获取精确的章节 ID。",
+                            parameters: {
+                                type: "object",
+                                properties: {
+                                    subjectId: {
+                                        type: "number",
+                                        description: "Bangumi 条目 ID",
+                                    },
+                                    episodeSort: {
+                                        type: "number",
+                                        description: "集数编号，如第 5 集则传入 5",
+                                    },
+                                },
+                                required: ["subjectId", "episodeSort"],
+                            },
+                        },
+                    },
+                ],
+                tool_choice: "auto" as const,
+                temperature: 0.1,
+            });
+        } catch {
+            return null;
+        }
+
+        const choice = response.choices[0];
+        if (!choice) {
+            return null;
+        }
+
+        const message = choice.message;
+        const toolCalls = message.tool_calls;
+        const content = message.content;
+
+        // 只处理 type === 'function' 的 tool_calls
+        const functionToolCalls = (toolCalls ?? []).filter(
+            (tc): tc is OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall =>
+                tc.type === "function",
+        );
+
+        if (functionToolCalls.length === 0) {
+            // 没有工具调用，视为最终回答，尝试解析 JSON
+            try {
+                const jsonStr = extractJsonFromText(content ?? "");
+                const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+                const episodeSort = parsed.episodeSort;
+                const episodeId = parsed.episodeId;
+                if (
+                    typeof episodeSort === "number" && episodeSort > 0 &&
+                    typeof episodeId === "number" && episodeId > 0
+                ) {
+                    return { episodeId, episodeSort };
+                }
+            } catch {
+                // 解析失败
+            }
+            return null;
+        }
+
+        // 记录助手消息
+        messages.push({
+            role: "assistant",
+            content: message.content,
+            tool_calls: toolCalls,
+        });
+
+        // 执行工具调用
+        for (const toolCall of functionToolCalls) {
+            const name = toolCall.function.name;
+            let args: Record<string, unknown>;
+            try {
+                args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+            } catch {
+                continue;
+            }
+
+            switch (name) {
+                case "searchAnimeCandidates": {
+                    try {
+                        const parsed = SearchAnimeCandidatesSchema.parse(args);
+                        const normalizedKeyword = parsed.keyword.trim().toLowerCase();
+                        if (searchedKeywords.has(normalizedKeyword)) {
+                            messages.push({
+                                role: "tool",
+                                tool_call_id: toolCall.id,
+                                content: JSON.stringify({
+                                    _notice: `关键词 "${parsed.keyword}" 已搜索过，跳过重复调用`,
+                                    data: [],
+                                }),
+                            });
+                            continue;
+                        }
+                        searchedKeywords.add(normalizedKeyword);
+                        const results = await searchAnimeCandidates(parsed.keyword, parsed.limit);
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: toolCall.id,
+                            content: JSON.stringify(results),
+                        });
+                    } catch {
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: toolCall.id,
+                            content: JSON.stringify({ error: "参数校验或执行失败" }),
+                        });
+                    }
+                    break;
+                }
+
+                case "getRelatedSubjects": {
+                    try {
+                        const parsed = GetRelatedSubjectsSchema.parse(args);
+                        if (exploredSubjectIds.has(parsed.subjectId)) {
+                            messages.push({
+                                role: "tool",
+                                tool_call_id: toolCall.id,
+                                content: JSON.stringify({
+                                    _notice: `条目 ${parsed.subjectId} 的关联作品已查过，跳过重复调用`,
+                                    data: [],
+                                }),
+                            });
+                            continue;
+                        }
+                        exploredSubjectIds.add(parsed.subjectId);
+                        const results = await getRelatedSubjects(parsed.subjectId);
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: toolCall.id,
+                            content: JSON.stringify(results),
+                        });
+                    } catch {
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: toolCall.id,
+                            content: JSON.stringify({ error: "参数校验或执行失败" }),
+                        });
+                    }
+                    break;
+                }
+
+                case "getEpisodeDetail": {
+                    const sort = args.episodeSort as number;
+
+                    // 去重：相同集数编号不重复查询
+                    if (exploredEpisodeSorts.has(sort)) {
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: toolCall.id,
+                            content: JSON.stringify({
+                                _notice: `集数 ${sort} 已查过，跳过重复调用`,
+                                data: null,
+                            }),
+                        });
+                        continue;
+                    }
+                    exploredEpisodeSorts.add(sort);
+
+                    try {
+                        const parsed = GetEpisodeDetailSchema.parse(args);
+                        const result = await getEpisodeDetail(parsed.subjectId, parsed.episodeSort);
+                        messages.push({
+                            role: "tool",
+                            tool_call_id: toolCall.id,
+                            content: JSON.stringify(result),
+                        });
+                    } catch (error: unknown) {
+                        if (error instanceof z.ZodError) {
+                            messages.push({
+                                role: "tool",
+                                tool_call_id: toolCall.id,
+                                content: JSON.stringify({
+                                    error: `参数校验失败: ${error.message}`,
+                                    issues: error.issues,
+                                }),
+                            });
+                        } else {
+                            messages.push({
+                                role: "tool",
+                                tool_call_id: toolCall.id,
+                                content: JSON.stringify({ error: "工具执行异常" }),
+                            });
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
 // ─── LLM Tool Calling Loop ───────────────────────────────────────────────────
 
 /**
@@ -551,10 +919,13 @@ async function llmDecision(
         { role: "user", content: userPrompt },
     ];
 
+    const processLog: string[] = [];
+    processLog.push(`LLM 决策开始，候选数: ${candidates.length}`);
+
     let finalRaw = "";
 
     // 最大迭代轮次防止无限循环
-    const MAX_ITERATIONS = 6;
+    const MAX_ITERATIONS = 15;
     let iteration = 0;
 
     // 追踪已搜索过的关键词和已查过关联的 subjectId，防止重复调用
@@ -668,6 +1039,7 @@ async function llmDecision(
         if (functionToolCalls.length === 0) {
             // 没有可执行的 function tool，视为最终回答
             finalRaw = content ?? "";
+            processLog.push(`第 ${iteration} 轮迭代: LLM 给出最终决策`);
             break;
         }
 
@@ -688,16 +1060,22 @@ async function llmDecision(
                 content: result,
             });
         }
+
+        // 记录本轮迭代的工具调用
+        const toolNames = functionToolCalls.map(tc => tc.function.name);
+        processLog.push(`第 ${iteration} 轮迭代: 调用工具 [${toolNames.join(', ')}]`);
     }
 
     if (iteration >= MAX_ITERATIONS) {
         return {
             confidence: 0,
-            reason: "LLM 工具调用达到最大迭代次数，未能得出结果",
+            reason: `LLM 工具调用达到最大迭代次数，未能得出结果\n\n迭代流程:\n${processLog.join('\n')}`,
         };
     }
 
-    return safeParseMatchResult(finalRaw);
+    const result = safeParseMatchResult(finalRaw);
+    result.reason += `\n\n迭代流程:\n${processLog.join('\n')}`;
+    return result;
 }
 
 // ─── Prompt 构建 ─────────────────────────────────────────────────────────────
