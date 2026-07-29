@@ -141,7 +141,7 @@ export default async function addAnime(
         en: "",
       };
 
-    const infoq = parseInfo(torrentInfo.title, team[0]?.name!);
+    const infoq = parseInfo(torrentInfo.title, team[0]!.name);
     if (!infoq) {
       return;
     }
@@ -175,7 +175,7 @@ export default async function addAnime(
       title: torrentInfo.title,
       pubDate: formatPubDate(torrentInfo.pubDate),
       magnet: torrentInfo.magnet,
-      team: team[0]?.name!,
+      team: team[0]!.name,
       link: url,
       fansub,
       ...infoq,

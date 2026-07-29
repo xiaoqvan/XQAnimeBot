@@ -908,4 +908,22 @@ export const groupRules: Record<string, (title: string) => string[]> = {
 
     return [];
   },
+
+  // LoliHouse：字幕组后直接是番剧名（中文名/英文名用 / 分割），到 - 集数或技术标记前
+  // 格式：[LoliHouse] 才女的侍从 / Saijo no Osewa - 04 [WebRip 1080p HEVC-10bit AAC][简体内嵌]
+  LoliHouse: (title: string) => {
+    const t = title.replace(/^\[LoliHouse\]\s*/, "");
+
+    const parts = t.split(/\s*\/\s*/);
+    const names: string[] = [];
+    for (const part of parts) {
+      let name = part.split(/\s*-\s*\d{1,3}|\s*\[\d{1,3}\]/)[0]!.trim();
+
+      // 移除各种技术标记 [WebRip 1080p HEVC-10bit AAC] 等
+      name = name.replace(/\[.*?\]|\(.*?\)/g, "").trim();
+
+      if (name.length > 2) names.push(name);
+    }
+    return sortNamesByPriority(names, title);
+  },
 };
