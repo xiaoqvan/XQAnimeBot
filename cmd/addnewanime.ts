@@ -20,6 +20,7 @@ import { parseInfo } from "../utils/animeParser.ts";
 import { checkTorrentFormat } from "../utils/checkTorrentFormat.ts";
 import { animeProcessor } from "../anime/AnimeProcessorManager.ts";
 import { getEpisodeById } from "../bangumi/get.ts";
+import logger from "@log/index.ts";
 import { buildAndSaveAnimeFromInfo } from "../utils/buildAnimeinfo.ts";
 import { addTorrent } from "../database/create.ts";
 import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
@@ -248,7 +249,11 @@ export default async function addAnime(
 
     await addTorrent(animeBtInfo.magnet, "等待下载", animeBtInfo.title);
 
-    const torrent = await downloadAndValidateTorrent(animeBtInfo, animeProcessor);
+    const onStage = (stage: string) => {
+        // addnewanime 没有 manager，仅打印日志
+        logger.debug(`[addnewanime] ${stage}: ${animeBtInfo.title}`);
+    };
+    const torrent = await downloadAndValidateTorrent(animeBtInfo, animeProcessor, onStage);
 
     const animeMeg = await sendMegToAnime(
         client,

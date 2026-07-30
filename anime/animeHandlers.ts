@@ -175,7 +175,9 @@ async function handleNewAnimeWithConfidentMatch(
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
 
-    const torrent = await downloadAndValidateTorrent(item, manager);
+    const onStage = (stage: string) =>
+        manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
+    const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) return;
 
     if (!episodeId) {
@@ -347,7 +349,9 @@ async function handleNewAnimeFallback(
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
 
-    const torrent = await downloadAndValidateTorrent(item, manager);
+    const onStage = (stage: string) =>
+        manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
+    const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) return;
 
     manager.updateProgress(item.title, "发送视频到缓冲频道");
@@ -443,7 +447,9 @@ export async function handleExistingAnime(
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
 
-    const torrent = await downloadAndValidateTorrent(item, manager);
+    const onStage = (stage: string) =>
+        manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
+    const torrent = await downloadAndValidateTorrent(item, manager, onStage);
 
     // ── 集数匹配失败：视频发到缓冲频道并通知管理员 ──
     if (matchResult.status !== "MATCHED") {

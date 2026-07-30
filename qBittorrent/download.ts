@@ -12,8 +12,15 @@ import type { TorrentInfo } from "../types/qb.js";
 import type { ExclusiveSlotController } from "../anime/AnimeProcessorManager.ts";
 
 export interface ExtendedTorrentInfo extends TorrentInfo {
-    segments: string[]
+    segments: string[];
+    /** 原始文件是否为 MKV（尚未/正在转换） */
+    isMkv?: boolean;
 }
+
+/**
+ * 下载进度更新回调
+ */
+export type ProgressCallback = (stage: string) => void;
 
 /**
  * 需要串行执行的重型转换槽位控制器
@@ -25,12 +32,17 @@ const TORRENT_MAX_SIZE = 2 * 1024 * 1024 * 1024;
 /**
  * 下载并验证种子文件
  * @param item - 动漫条目包含种子信息
+ * @param heavyTaskGate - 重型任务槽位控制器
+ * @param onStage - 可选的进度回调，用于外部更新进度显示（如"烧录字幕中"）
+ * @param skipConversion - 若为 true，遇到 MKV 时不转码，暂停种子后直接返回（由 MKV 队列处理）
  * @returns 已下载并验证的种子对象
  * @throws 当下载失败或文件不符合要求时抛出异常
  */
 export async function downloadAndValidateTorrent(
     item: animeItem,
     heavyTaskGate?: HeavyVideoTaskGate,
+    onStage?: ProgressCallback,
+    skipConversion?: boolean,
 ): Promise<ExtendedTorrentInfo> {
     let failMessage = `种子下载失败: ${item.title}, magnet: ${item.magnet}`;
     const QBclient = await getQBClient();
@@ -67,13 +79,25 @@ export async function downloadAndValidateTorrent(
             };
 
             if (currentVideoStats.isFile() && fileExt === ".mkv") {
+                if (skipConversion) {
+                    // 不下Convert，暂停种子，标记后返回，由 MKV 队列处理后续转码+发送
+                    logger.warn(
+                        `下载文件为 MKV，暂停种子并移交 MKV 队列: ${currentVideoPath} (${item.title})`
+                    );
+                    await QBclient.pauseTorrent(extendedTorrent.hash).catch(() => {});
+                    extendedTorrent.isMkv = true;
+                    return extendedTorrent;
+                }
+
                 logger.warn(
                     `下载文件为 MKV，先转换为 MP4: ${currentVideoPath} (${item.title})`
                 );
+                onStage?.("烧录字幕中");
                 const sourceVideoPath = currentVideoPath;
                 const convertedVideoPath = await runHeavyVideoTask(() =>
                     mkvToMp4(sourceVideoPath)
                 );
+                onStage?.("烧录完成");
                 await fs.unlink(sourceVideoPath).catch(() => { });
                 currentVideoPath = convertedVideoPath;
                 extendedTorrent.content_path = convertedVideoPath;
@@ -94,6 +118,7 @@ export async function downloadAndValidateTorrent(
                     currentVideoStats.size /
                     (1024 * 1024 * 1024)
                 ).toFixed(2)} GiB，超过限制，尝试分段: ${item.title}`);
+                onStage?.("分段切割中");
                 try {
                     const videoPath = await runHeavyVideoTask(() =>
                         splitVideoByMaxSize({

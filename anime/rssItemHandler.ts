@@ -4,6 +4,8 @@ import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
 import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
 import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
 import { checkTorrentFormat } from "../utils/checkTorrentFormat.ts";
+import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
+import { getQBClient } from "../qBittorrent/index.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
 import type { RssAnimeItem, animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
@@ -61,6 +63,25 @@ export async function handleRssAnimeItem(
             manager.updateProgress(item.title, "路由到MKV队列");
             await manager.enqueueMkv(client, newitem);
             return;
+        }
+
+        // 格式预检失败（超时等），回退到下载完成后判断
+        if (format === "unknown") {
+            manager.updateProgress(item.title, "格式预检超时，下载后判断");
+            const onStage = (stage: string) =>
+                manager.updateProgress(item.title, stage, { animeName: newitem.names[0] });
+            const torrent = await downloadAndValidateTorrent(newitem, manager, onStage, true);
+            if (!torrent) return;
+
+            if (torrent.isMkv) {
+                // MKV：种子已暂停，路由到 MKV 队列，释放主线程
+                manager.updateProgress(item.title, "下载完成（MKV），路由到MKV队列");
+                await manager.enqueueMkv(client, newitem);
+                return;
+            }
+            // 非 MKV：删除种子（保留文件），走正常主线程流程
+            const QBclient = await getQBClient();
+            await QBclient.deleteTorrent(torrent.hash, false).catch(() => {});
         }
     }
 
