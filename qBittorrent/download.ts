@@ -57,6 +57,15 @@ export async function downloadAndValidateTorrent(
         if (Array.isArray(extendedTorrent.content_path)) {
             return extendedTorrent;
         }
+        // 记录本次转换/分段产生的临时文件，出错时统一清理，避免 cache 目录堆积占满磁盘
+        const tempFilesToClean: string[] = [];
+        let currentVideoPath = extendedTorrent.content_path;
+        const runHeavyVideoTask = async <T>(task: () => Promise<T>) => {
+            if (!heavyTaskGate) {
+                return await task();
+            }
+            return await heavyTaskGate.withExclusiveSlot(task);
+        };
         try {
             const stats = await fs.stat(extendedTorrent.content_path);
             if (stats.isDirectory()) {
@@ -66,17 +75,9 @@ export async function downloadAndValidateTorrent(
                 await QBclient.deleteTorrent(extendedTorrent.hash, true);
                 throw new Error(`下载路径是文件夹: ${item.title}`);
             }
-            let currentVideoPath = extendedTorrent.content_path;
             let currentVideoStats = stats;
             let convertedFromMkv = false;
             const fileExt = extname(currentVideoPath).toLowerCase();
-            const runHeavyVideoTask = async <T>(task: () => Promise<T>) => {
-                if (!heavyTaskGate) {
-                    return await task();
-                }
-
-                return await heavyTaskGate.withExclusiveSlot(task);
-            };
 
             if (currentVideoStats.isFile() && fileExt === ".mkv") {
                 if (skipConversion) {
@@ -84,7 +85,7 @@ export async function downloadAndValidateTorrent(
                     logger.warn(
                         `下载文件为 MKV，暂停种子并移交 MKV 队列: ${currentVideoPath} (${item.title})`
                     );
-                    await QBclient.pauseTorrent(extendedTorrent.hash).catch(() => {});
+                    await QBclient.pauseTorrent(extendedTorrent.hash).catch(() => { });
                     extendedTorrent.isMkv = true;
                     return extendedTorrent;
                 }
@@ -100,6 +101,7 @@ export async function downloadAndValidateTorrent(
                 onStage?.("烧录完成");
                 await fs.unlink(sourceVideoPath).catch(() => { });
                 currentVideoPath = convertedVideoPath;
+                tempFilesToClean.push(convertedVideoPath);
                 extendedTorrent.content_path = convertedVideoPath;
                 currentVideoStats = await fs.stat(currentVideoPath);
                 convertedFromMkv = true;
@@ -110,6 +112,7 @@ export async function downloadAndValidateTorrent(
                 failMessage += "，文件类型不符合要求（非 MKV/MP4）";
                 logger.error(failMessage);
                 await QBclient.deleteTorrent(extendedTorrent.hash, true);
+                await cleanupTempFiles(tempFilesToClean);
                 throw new Error(failMessage);
             }
 
@@ -128,6 +131,8 @@ export async function downloadAndValidateTorrent(
                         })
                     );
                     extendedTorrent.segments = videoPath;
+                    // 分段文件发送完成后由 sendMegTo* 清理，此处只记录以便出错时兜底
+                    tempFilesToClean.push(...videoPath);
 
                     if (convertedFromMkv) {
                         await fs.unlink(currentVideoPath).catch(() => { });
@@ -135,6 +140,8 @@ export async function downloadAndValidateTorrent(
                     return extendedTorrent;
                 } catch (error) {
                     logger.error(error, "分段视频失败");
+                    // 分段失败：清理已生成的分段文件和转换产物，避免残留
+                    await cleanupTempFiles(tempFilesToClean);
                     throw error;
                 }
             }
@@ -143,6 +150,8 @@ export async function downloadAndValidateTorrent(
         } catch (err) {
             logger.error(err, "检查下载路径类型时出错");
             await QBclient.deleteTorrent(extendedTorrent.hash, true);
+            // 出错时清理已生成的转换/分段临时文件
+            await cleanupTempFiles(tempFilesToClean);
             throw err;
         }
     }
@@ -153,10 +162,45 @@ export async function downloadAndValidateTorrent(
 }
 
 /**
- * 从 qBittorrent 中删除指定种子及其数据
- * @param torrentId - 种子哈希或 ID
+ * 批量删除临时文件并抑制单个文件删除失败抛出的错误。
+ * 用于在转换/分段失败时清理中间产物，避免 cache 目录堆积。
+ * @param paths - 待删除的文件路径数组
  */
-export async function removeTorrentAndData(torrentId: string) {
-    const QBclient = await getQBClient();
-    await QBclient.deleteTorrent(torrentId, true);
+async function cleanupTempFiles(paths: string[]): Promise<void> {
+    for (const p of paths) {
+        try {
+            await fs.unlink(p);
+        } catch {
+            // 文件可能已不存在，忽略删除错误
+        }
+    }
+}
+
+/**
+ * 从 qBittorrent 中删除指定种子及其数据。
+ *
+ * 删除失败会自动重试一次，并记录日志（不再静默吞错）。
+ * 返回值表示是否成功删除，调用方无需再 .catch 吞错。
+ *
+ * @param torrentId - 种子哈希或 ID
+ * @returns 删除成功返回 true，失败返回 false
+ */
+export async function removeTorrentAndData(torrentId: string): Promise<boolean> {
+    if (!torrentId) return false;
+    let QBclient;
+    try {
+        QBclient = await getQBClient();
+        await QBclient.deleteTorrent(torrentId, true);
+        return true;
+    } catch (err) {
+        logger.warn(err, `删除种子失败（将重试一次）: ${torrentId}`);
+    }
+    try {
+        if (!QBclient) QBclient = await getQBClient();
+        await QBclient.deleteTorrent(torrentId, true);
+        return true;
+    } catch (err) {
+        logger.error(err, `删除种子重试仍失败，请手动清理: ${torrentId}`);
+        return false;
+    }
 }

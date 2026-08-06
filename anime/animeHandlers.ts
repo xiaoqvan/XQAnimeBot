@@ -180,21 +180,71 @@ async function handleNewAnimeWithConfidentMatch(
     const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) return;
 
-    if (!episodeId) {
-        // 集数未匹配成功：使用 matchResult.episodeId 或 episodeMatch 判定
-        const matchResultForPrompt = episodeMatch ?? {
-            status: "NOT_FOUND_IN_DB" as const,
-            msg: matchResult.reason || "Agent 未能匹配到集数",
-        };
-        // 集数匹配失败：仍发送到缓冲频道让管理员确认集数
-        manager.updateProgress(item.title, "发送视频到缓冲频道（集数待确认）");
-        const animeMeg = await sendMegToCache(
-            client, anime, item, torrent.content_path, torrent.segments,
+    // 无论后续发送/写库成功或失败，都必须清理 qBittorrent 种子及其数据，
+    // 避免异常导致种子残留、磁盘被堆满
+    try {
+        if (!episodeId) {
+            // 集数未匹配成功：使用 matchResult.episodeId 或 episodeMatch 判定
+            const matchResultForPrompt = episodeMatch ?? {
+                status: "NOT_FOUND_IN_DB" as const,
+                msg: matchResult.reason || "Agent 未能匹配到集数",
+            };
+            // 集数匹配失败：仍发送到缓冲频道让管理员确认集数
+            manager.updateProgress(item.title, "发送视频到缓冲频道（集数待确认）");
+            const animeMeg = await sendMegToCache(
+                client, anime, item, torrent.content_path, torrent.segments,
+            );
+
+            if (!animeMeg) throw new Error("发送动漫消息失败");
+
+            const megList = normalizeMsgResult(animeMeg);
+            const primaryMeg = megList[0];
+            if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
+
+            const allMsgData = extractAlbumMsgData(megList);
+            const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
+            const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
+
+            const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
+            await saveAnimeResource(
+                anime.id, undefined, combineFansub(item.fansub),
+                item.episode || "未知",
+                {
+                    chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
+                    thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
+                        ? primaryMeg.topic_id.forum_topic_id : 0,
+                    link: animeLink.link,
+                },
+                item.title, item.source, item.names,
+                allVideoids[0], allUniqueIds[0], Cache_id, true,
+                allVideoids.length > 1 ? allVideoids : undefined,
+                allUniqueIds.length > 1 ? allUniqueIds : undefined,
+                allMsgData.length > 1 ? allMsgData : undefined,
+            );
+
+            manager.updateProgress(item.title, "通知管理员确认集数");
+            await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResultForPrompt);
+            return;
+        }
+
+        // ── 集数匹配成功：先创建导航消息，再发送视频到正式频道 ──
+        // 先发导航消息，确保 AnimeText 生成视频 caption 时 navMessage.link 有值，追踪标记正常显示
+        manager.updateProgress(item.title, "创建导航消息");
+        await sendMegToNavAnime(client, anime.id);
+
+        // 重新读取一次，确保 sendMegToAnime 使用的 anime 对象包含最新 navMessage.link
+        const animeAfterNav = (await getAnimeById(anime.id)) ?? anime;
+
+        // 再发送视频到动漫频道（此时 navMessage.link 已存在，追踪标记会正常显示）
+        manager.updateProgress(item.title, "发送视频到动漫频道（高置信度）");
+        const animeMeg = await sendMegToAnime(
+            client, animeAfterNav, item, torrent.content_path,
+            episodeId, torrent.segments,
         );
-        removeTorrentAndData(torrent.hash).catch(() => { });
 
-        if (!animeMeg) throw new Error("发送动漫消息失败");
+        if (!animeMeg) throw new Error(`发送动漫消息失败: ${item.title}`);
 
+        manager.updateProgress(item.title, "更新数据库");
         const megList = normalizeMsgResult(animeMeg);
         const primaryMeg = megList[0];
         if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
@@ -205,7 +255,7 @@ async function handleNewAnimeWithConfidentMatch(
 
         const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
         await saveAnimeResource(
-            anime.id, undefined, combineFansub(item.fansub),
+            anime.id, episodeId, combineFansub(item.fansub),
             item.episode || "未知",
             {
                 chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
@@ -214,86 +264,41 @@ async function handleNewAnimeWithConfidentMatch(
                 link: animeLink.link,
             },
             item.title, item.source, item.names,
-            allVideoids[0], allUniqueIds[0], Cache_id, true,
+            allVideoids[0], allUniqueIds[0], Cache_id, false,
             allVideoids.length > 1 ? allVideoids : undefined,
             allUniqueIds.length > 1 ? allUniqueIds : undefined,
             allMsgData.length > 1 ? allMsgData : undefined,
         );
 
-        manager.updateProgress(item.title, "通知管理员确认集数");
-        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResultForPrompt);
-        return;
+        // 再次更新导航消息，补充新发送的资源条目
+        manager.updateProgress(item.title, "更新导航消息（补充资源）");
+        await sendMegToNavAnime(client, anime.id);
+
+        // ── 创建待审核记录 ──
+        manager.updateProgress(item.title, "创建待审核记录");
+        const pendingReviewId = await createPendingReview({
+            item,
+            anime: { ...anime, names: anime.names ?? [] },
+            episodeId,
+            episodeSort: episodeId, // 由 prompt 内部根据 episodeId 查 sort，这里先用 episodeId 占位
+            sentMessages: allMsgData,
+            primaryMessage: {
+                chat_id: primaryMeg.chat_id,
+                message_id: primaryMeg.id,
+            },
+            matchDetail: matchResult,
+        });
+
+        // ── 后审核：通知管理员确认（只携带待审核 ID）──
+        manager.updateProgress(item.title, "通知管理员审核（后审核）");
+        await promptAdminConfirmAnimeWithCandidates(
+            client, anime, episodeId, Cache_id, item,
+            matchResult, pendingReviewId, true, // isPostSend: 先发后审模式
+        );
+    } finally {
+        // 无论成功失败都清理 qBittorrent 种子及其数据
+        await removeTorrentAndData(torrent.hash);
     }
-
-    // ── 集数匹配成功：先创建导航消息，再发送视频到正式频道 ──
-    // 先发导航消息，确保 AnimeText 生成视频 caption 时 navMessage.link 有值，追踪标记正常显示
-    manager.updateProgress(item.title, "创建导航消息");
-    await sendMegToNavAnime(client, anime.id);
-
-    // 重新读取一次，确保 sendMegToAnime 使用的 anime 对象包含最新 navMessage.link
-    const animeAfterNav = (await getAnimeById(anime.id)) ?? anime;
-
-    // 再发送视频到动漫频道（此时 navMessage.link 已存在，追踪标记会正常显示）
-    manager.updateProgress(item.title, "发送视频到动漫频道（高置信度）");
-    const animeMeg = await sendMegToAnime(
-        client, animeAfterNav, item, torrent.content_path,
-        episodeId, torrent.segments,
-    );
-    removeTorrentAndData(torrent.hash).catch(() => { });
-
-    if (!animeMeg) throw new Error(`发送动漫消息失败: ${item.title}`);
-
-    manager.updateProgress(item.title, "更新数据库");
-    const megList = normalizeMsgResult(animeMeg);
-    const primaryMeg = megList[0];
-    if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
-
-    const allMsgData = extractAlbumMsgData(megList);
-    const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
-    const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
-
-    const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
-    await saveAnimeResource(
-        anime.id, episodeId, combineFansub(item.fansub),
-        item.episode || "未知",
-        {
-            chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
-            thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
-                ? primaryMeg.topic_id.forum_topic_id : 0,
-            link: animeLink.link,
-        },
-        item.title, item.source, item.names,
-        allVideoids[0], allUniqueIds[0], Cache_id, false,
-        allVideoids.length > 1 ? allVideoids : undefined,
-        allUniqueIds.length > 1 ? allUniqueIds : undefined,
-        allMsgData.length > 1 ? allMsgData : undefined,
-    );
-
-    // 再次更新导航消息，补充新发送的资源条目
-    manager.updateProgress(item.title, "更新导航消息（补充资源）");
-    await sendMegToNavAnime(client, anime.id);
-
-    // ── 创建待审核记录 ──
-    manager.updateProgress(item.title, "创建待审核记录");
-    const pendingReviewId = await createPendingReview({
-        item,
-        anime: { ...anime, names: anime.names ?? [] },
-        episodeId,
-        episodeSort: episodeId, // 由 prompt 内部根据 episodeId 查 sort，这里先用 episodeId 占位
-        sentMessages: allMsgData,
-        primaryMessage: {
-            chat_id: primaryMeg.chat_id,
-            message_id: primaryMeg.id,
-        },
-        matchDetail: matchResult,
-    });
-
-    // ── 后审核：通知管理员确认（只携带待审核 ID）──
-    manager.updateProgress(item.title, "通知管理员审核（后审核）");
-    await promptAdminConfirmAnimeWithCandidates(
-        client, anime, episodeId, Cache_id, item,
-        matchResult, pendingReviewId, true, // isPostSend: 先发后审模式
-    );
 }
 
 /**
@@ -354,68 +359,73 @@ async function handleNewAnimeFallback(
     const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) return;
 
-    manager.updateProgress(item.title, "发送视频到缓冲频道");
-    const animeMeg = await sendMegToCache(
-        client, anime, item, torrent.content_path, torrent.segments,
-    );
-    removeTorrentAndData(torrent.hash).catch(() => { });
+    // 无论后续发送/写库成功或失败，都必须在 finally 中清理种子，避免残留
+    try {
+        manager.updateProgress(item.title, "发送视频到缓冲频道");
+        const animeMeg = await sendMegToCache(
+            client, anime, item, torrent.content_path, torrent.segments,
+        );
 
-    if (!animeMeg) throw new Error("发送动漫消息失败");
+        if (!animeMeg) throw new Error("发送动漫消息失败");
 
-    manager.updateProgress(item.title, "更新数据库");
-    const megList = normalizeMsgResult(animeMeg);
-    const primaryMeg = megList[0];
-    if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
+        manager.updateProgress(item.title, "更新数据库");
+        const megList = normalizeMsgResult(animeMeg);
+        const primaryMeg = megList[0];
+        if (!primaryMeg) throw new Error("发送动漫消息失败: 无有效消息");
 
-    const allMsgData = extractAlbumMsgData(megList);
-    const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
-    const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
+        const allMsgData = extractAlbumMsgData(megList);
+        const allVideoids = allMsgData.map(m => m.videoid).filter((id): id is string => !!id);
+        const allUniqueIds = allMsgData.map(m => m.unique_id).filter((id): id is string => !!id);
 
-    const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
-    await saveAnimeResource(
-        anime.id, undefined, combineFansub(item.fansub),
-        item.episode || "未知",
-        {
-            chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
-            thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
-                ? primaryMeg.topic_id.forum_topic_id : 0,
-            link: animeLink.link,
-        },
-        item.title, item.source, item.names,
-        allVideoids[0], allUniqueIds[0], Cache_id, true,
-        allVideoids.length > 1 ? allVideoids : undefined,
-        allUniqueIds.length > 1 ? allUniqueIds : undefined,
-        allMsgData.length > 1 ? allMsgData : undefined,
-    );
+        const animeLink = await getMessageLink(client, primaryMeg.chat_id, primaryMeg.id);
+        await saveAnimeResource(
+            anime.id, undefined, combineFansub(item.fansub),
+            item.episode || "未知",
+            {
+                chat_id: primaryMeg.chat_id, message_id: primaryMeg.id,
+                thread_id: primaryMeg.topic_id?._ === "messageTopicForum"
+                    ? primaryMeg.topic_id.forum_topic_id : 0,
+                link: animeLink.link,
+            },
+            item.title, item.source, item.names,
+            allVideoids[0], allUniqueIds[0], Cache_id, true,
+            allVideoids.length > 1 ? allVideoids : undefined,
+            allUniqueIds.length > 1 ? allUniqueIds : undefined,
+            allMsgData.length > 1 ? allMsgData : undefined,
+        );
 
-    const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
+        const episodeMetas = await getEpisodeMetasBySubjectId(anime.id);
 
-    // 优先使用 Agent 返回的 episodeId，否则用 matchBangumiEpisode 匹配
-    let episodeId: number | undefined = matchResult.episodeId;
-    let epMatch: Awaited<ReturnType<typeof matchBangumiEpisode>> | undefined;
+        // 优先使用 Agent 返回的 episodeId，否则用 matchBangumiEpisode 匹配
+        let episodeId: number | undefined = matchResult.episodeId;
+        let epMatch: Awaited<ReturnType<typeof matchBangumiEpisode>> | undefined;
 
-    if (!episodeId) {
-        epMatch = await matchBangumiEpisode(anime, episodeMetas, item.episode);
-        if (epMatch.status === "MATCHED") {
-            episodeId = epMatch.episodeId;
+        if (!episodeId) {
+            epMatch = await matchBangumiEpisode(anime, episodeMetas, item.episode);
+            if (epMatch.status === "MATCHED") {
+                episodeId = epMatch.episodeId;
+            }
         }
-    }
 
-    if (!episodeId) {
-        const matchResultForPrompt = epMatch ?? {
-            status: "NOT_FOUND_IN_DB" as const,
-            msg: matchResult.reason || "Agent 未能匹配到集数",
-        };
-        manager.updateProgress(item.title, "通知管理员确认集数");
-        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResultForPrompt);
-        return;
-    }
+        if (!episodeId) {
+            const matchResultForPrompt = epMatch ?? {
+                status: "NOT_FOUND_IN_DB" as const,
+                msg: matchResult.reason || "Agent 未能匹配到集数",
+            };
+            manager.updateProgress(item.title, "通知管理员确认集数");
+            await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResultForPrompt);
+            return;
+        }
 
-    manager.updateProgress(item.title, "通知管理员确认番剧信息");
-    await promptAdminConfirmAnimeWithCandidates(
-        client, anime, episodeId, Cache_id, item,
-        matchResult,
-    );
+        manager.updateProgress(item.title, "通知管理员确认番剧信息");
+        await promptAdminConfirmAnimeWithCandidates(
+            client, anime, episodeId, Cache_id, item,
+            matchResult,
+        );
+    } finally {
+        // 无论成功失败都清理 qBittorrent 种子及其数据
+        await removeTorrentAndData(torrent.hash);
+    }
 }
 
 /**
@@ -450,150 +460,157 @@ export async function handleExistingAnime(
     const onStage = (stage: string) =>
         manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
     const torrent = await downloadAndValidateTorrent(item, manager, onStage);
+    if (!torrent) {
+        logger.warn(`下载种子失败，跳过: ${item.title}`);
+        return;
+    }
 
-    // ── 集数匹配失败：视频发到缓冲频道并通知管理员 ──
-    if (matchResult.status !== "MATCHED") {
-        manager.updateProgress(item.title, "发送视频到缓冲频道（集数待确认）");
-        const animeMeg = await sendMegToCache(
+    // 无论后续发送/写库成功或失败，都必须在 finally 中清理种子，避免残留堆满磁盘
+    try {
+        // ── 集数匹配失败：视频发到缓冲频道并通知管理员 ──
+        if (matchResult.status !== "MATCHED") {
+            manager.updateProgress(item.title, "发送视频到缓冲频道（集数待确认）");
+            const animeMeg = await sendMegToCache(
+                client,
+                anime,
+                item,
+                torrent.content_path,
+                torrent.segments
+            );
+            if (!animeMeg) {
+                logger.error("发送动漫消息失败");
+                throw new Error("发送动漫消息失败");
+            }
+
+            manager.updateProgress(item.title, "更新数据库");
+            const cacheMegList = normalizeMsgResult(animeMeg);
+            const primaryCacheMeg = cacheMegList[0];
+            if (!primaryCacheMeg) throw new Error("发送动漫消息失败: 无有效消息");
+
+            const cacheAllMsgData = extractAlbumMsgData(cacheMegList);
+            const cacheAllVideoids = cacheAllMsgData
+                .map((m) => m.videoid)
+                .filter((id): id is string => !!id);
+            const cacheAllUniqueIds = cacheAllMsgData
+                .map((m) => m.unique_id)
+                .filter((id): id is string => !!id);
+
+            // 将 RSS 解析的名称合并进缓存，避免下次去重失败
+            const animeForCache = {
+                ...anime,
+                names: [
+                    ...new Set(
+                        [
+                            ...(anime.names || []),
+                            ...(item.names || []),
+                        ].filter((n): n is string => typeof n === "string" && n.trim().length > 0)
+                    ),
+                ] as string[],
+            };
+            const canimeid = await saveAnime(animeForCache, true);
+            const animeLink = await getMessageLink(
+                client,
+                primaryCacheMeg.chat_id,
+                primaryCacheMeg.id
+            );
+            const Cache_id = await addCacheItem(item);
+
+            await saveAnimeResource(
+                canimeid,
+                undefined,
+                combineFansub(item.fansub),
+                item.episode || "未知",
+                {
+                    chat_id: primaryCacheMeg.chat_id,
+                    message_id: primaryCacheMeg.id,
+                    thread_id:
+                        primaryCacheMeg.topic_id?._ === "messageTopicForum"
+                            ? primaryCacheMeg.topic_id.forum_topic_id
+                            : 0,
+                    link: animeLink.link,
+                },
+                item.title,
+                item.source,
+                item.names,
+                cacheAllVideoids[0],
+                cacheAllUniqueIds[0],
+                Cache_id,
+                true,
+                cacheAllVideoids.length > 1 ? cacheAllVideoids : undefined,
+                cacheAllUniqueIds.length > 1 ? cacheAllUniqueIds : undefined,
+                cacheAllMsgData.length > 1 ? cacheAllMsgData : undefined
+            );
+
+            manager.updateProgress(item.title, "通知管理员确认集数");
+            await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
+            return;
+        }
+
+        // ── 集数匹配成功：视频发到正式动漫频道 ──
+        manager.updateProgress(item.title, "发送视频到动漫频道");
+        const animeMeg = await sendMegToAnime(
             client,
             anime,
             item,
             torrent.content_path,
+            matchResult.episodeId,
             torrent.segments
         );
+
         if (!animeMeg) {
-            logger.error("发送动漫消息失败");
-            throw new Error("发送动漫消息失败");
+            throw new Error(`发送动漫消息失败: ${item.title}`);
         }
 
         manager.updateProgress(item.title, "更新数据库");
-        const cacheMegList = normalizeMsgResult(animeMeg);
-        const primaryCacheMeg = cacheMegList[0];
-        if (!primaryCacheMeg) throw new Error("发送动漫消息失败: 无有效消息");
+        const animeMegList = normalizeMsgResult(animeMeg);
+        const primaryAnimeMeg = animeMegList[0];
+        if (!primaryAnimeMeg)
+            throw new Error(`发送动漫消息失败: 无有效消息 ${item.title}`);
 
-        const cacheAllMsgData = extractAlbumMsgData(cacheMegList);
-        const cacheAllVideoids = cacheAllMsgData
+        const animeAllMsgData = extractAlbumMsgData(animeMegList);
+        const animeAllVideoids = animeAllMsgData
             .map((m) => m.videoid)
             .filter((id): id is string => !!id);
-        const cacheAllUniqueIds = cacheAllMsgData
+        const animeAllUniqueIds = animeAllMsgData
             .map((m) => m.unique_id)
             .filter((id): id is string => !!id);
 
-        // 将 RSS 解析的名称合并进缓存，避免下次去重失败
-        const animeForCache = {
-            ...anime,
-            names: [
-                ...new Set(
-                    [
-                        ...(anime.names || []),
-                        ...(item.names || []),
-                    ].filter((n): n is string => typeof n === "string" && n.trim().length > 0)
-                ),
-            ] as string[],
-        };
-        const canimeid = await saveAnime(animeForCache, true);
         const animeLink = await getMessageLink(
             client,
-            primaryCacheMeg.chat_id,
-            primaryCacheMeg.id
+            primaryAnimeMeg.chat_id,
+            primaryAnimeMeg.id
         );
-        const Cache_id = await addCacheItem(item);
 
         await saveAnimeResource(
-            canimeid,
-            undefined,
+            anime.id,
+            matchResult.episodeId,
             combineFansub(item.fansub),
             item.episode || "未知",
             {
-                chat_id: primaryCacheMeg.chat_id,
-                message_id: primaryCacheMeg.id,
+                chat_id: primaryAnimeMeg.chat_id,
+                message_id: primaryAnimeMeg.id,
                 thread_id:
-                    primaryCacheMeg.topic_id?._ === "messageTopicForum"
-                        ? primaryCacheMeg.topic_id.forum_topic_id
+                    primaryAnimeMeg.topic_id?._ === "messageTopicForum"
+                        ? primaryAnimeMeg.topic_id.forum_topic_id
                         : 0,
                 link: animeLink.link,
             },
             item.title,
             item.source,
             item.names,
-            cacheAllVideoids[0],
-            cacheAllUniqueIds[0],
-            Cache_id,
-            true,
-            cacheAllVideoids.length > 1 ? cacheAllVideoids : undefined,
-            cacheAllUniqueIds.length > 1 ? cacheAllUniqueIds : undefined,
-            cacheAllMsgData.length > 1 ? cacheAllMsgData : undefined
+            animeAllVideoids[0],
+            animeAllUniqueIds[0],
+            undefined,
+            false,
+            animeAllVideoids.length > 1 ? animeAllVideoids : undefined,
+            animeAllUniqueIds.length > 1 ? animeAllUniqueIds : undefined,
+            animeAllMsgData.length > 1 ? animeAllMsgData : undefined
         );
 
+        manager.updateProgress(item.title, "更新导航消息");
+        await sendMegToNavAnime(client, anime.id);
+    } finally {
+        // 无论成功失败都清理 qBittorrent 种子及其数据
         await removeTorrentAndData(torrent.hash);
-        manager.updateProgress(item.title, "通知管理员确认集数");
-        await promptAdminConfirmAnimeEpisodes(client, anime, Cache_id, item, matchResult);
-        return;
     }
-
-    // ── 集数匹配成功：视频发到正式动漫频道 ──
-    manager.updateProgress(item.title, "发送视频到动漫频道");
-    const animeMeg = await sendMegToAnime(
-        client,
-        anime,
-        item,
-        torrent.content_path,
-        matchResult.episodeId,
-        torrent.segments
-    );
-
-    if (!animeMeg) {
-        await removeTorrentAndData(torrent.hash);
-        throw new Error(`发送动漫消息失败: ${item.title}`);
-    }
-    await removeTorrentAndData(torrent.hash);
-
-    manager.updateProgress(item.title, "更新数据库");
-    const animeMegList = normalizeMsgResult(animeMeg);
-    const primaryAnimeMeg = animeMegList[0];
-    if (!primaryAnimeMeg)
-        throw new Error(`发送动漫消息失败: 无有效消息 ${item.title}`);
-
-    const animeAllMsgData = extractAlbumMsgData(animeMegList);
-    const animeAllVideoids = animeAllMsgData
-        .map((m) => m.videoid)
-        .filter((id): id is string => !!id);
-    const animeAllUniqueIds = animeAllMsgData
-        .map((m) => m.unique_id)
-        .filter((id): id is string => !!id);
-
-    const animeLink = await getMessageLink(
-        client,
-        primaryAnimeMeg.chat_id,
-        primaryAnimeMeg.id
-    );
-
-    await saveAnimeResource(
-        anime.id,
-        matchResult.episodeId,
-        combineFansub(item.fansub),
-        item.episode || "未知",
-        {
-            chat_id: primaryAnimeMeg.chat_id,
-            message_id: primaryAnimeMeg.id,
-            thread_id:
-                primaryAnimeMeg.topic_id?._ === "messageTopicForum"
-                    ? primaryAnimeMeg.topic_id.forum_topic_id
-                    : 0,
-            link: animeLink.link,
-        },
-        item.title,
-        item.source,
-        item.names,
-        animeAllVideoids[0],
-        animeAllUniqueIds[0],
-        undefined,
-        false,
-        animeAllVideoids.length > 1 ? animeAllVideoids : undefined,
-        animeAllUniqueIds.length > 1 ? animeAllUniqueIds : undefined,
-        animeAllMsgData.length > 1 ? animeAllMsgData : undefined
-    );
-
-    manager.updateProgress(item.title, "更新导航消息");
-    await sendMegToNavAnime(client, anime.id);
 }

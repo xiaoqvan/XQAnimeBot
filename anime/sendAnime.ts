@@ -566,21 +566,22 @@ export async function sendMegToAnime(
   }
 
   let result;
-  try {
-    result = await sendOnce();
-  } catch (firstError) {
-    logger.warn(firstError, `sendMegToAnime 首次发送失败，准备重试: ${item.title}`);
-    result = await sendOnce();
-  }
-
-  await updateTorrentStatus(item.title, "完成");
-
-  // 统一清理视频文件和封面
   const videoPaths = segments ?? [videoPath];
-  for (const p of videoPaths) fs.unlink(p).catch(() => { });
-  for (const p of coverPaths) fs.unlink(p).catch(() => { });
+  try {
+    try {
+      result = await sendOnce();
+    } catch (firstError) {
+      logger.warn(firstError, `sendMegToAnime 首次发送失败，准备重试: ${item.title}`);
+      result = await sendOnce();
+    }
 
-  return result;
+    await updateTorrentStatus(item.title, "完成");
+    return result;
+  } finally {
+    // 无论发送成功或失败，都必须清理视频文件和封面，避免临时文件堆积占满磁盘
+    for (const p of videoPaths) fs.unlink(p).catch(() => { });
+    for (const p of coverPaths) fs.unlink(p).catch(() => { });
+  }
 }
 
 /** 发送动漫视频到缓存频道
@@ -603,21 +604,55 @@ export async function sendMegToCache(
     Number.isFinite(cacheTopicId) && cacheTopicId > 0
       ? { _: "messageTopicForum" as const, forum_topic_id: cacheTopicId }
       : undefined;
-  if (segments) {
-    const videoInfos = [];
-    for (const path of segments) {
-      const videoInfo = await extractVideoMetadata(path);
-      videoInfos.push(videoInfo);
+
+  // 无论发送成功或失败，都必须清理视频/封面临时文件，避免堆积
+  const mediaToClean: string[] = [];
+  try {
+    if (segments) {
+      const videoInfos = [];
+      for (const path of segments) {
+        const videoInfo = await extractVideoMetadata(path);
+        videoInfos.push(videoInfo);
+        mediaToClean.push(path, videoInfo.coverPath);
+      }
+      const animeMessages = await sendMessageAlbum(
+        client,
+        Number(env.data.ADMIN_GROUP_ID),
+        {
+          topic_id: validCacheTopic,
+          timeout: 3600,
+          medias: videoInfos.map((videoInfo, index) => ({
+            video: {
+              path: segments[index],
+            },
+            cover: {
+              path: videoInfo.coverPath,
+            },
+            width: videoInfo.width,
+            height: videoInfo.height,
+            duration: Math.floor(videoInfo.duration),
+            supports_streaming: true,
+            has_spoiler: anime?.r18 === true || false,
+            caption: index === 0 ? item.title : undefined,
+          }))
+        }
+      );
+
+      await updateTorrentStatus(item.title, "等待纠正");
+      return animeMessages;
     }
-    const animeMessages = await sendMessageAlbum(
+    const videoInfo = await extractVideoMetadata(videoPath);
+    mediaToClean.push(videoPath, videoInfo.coverPath);
+    const animeMessage = await sendMessage(
       client,
       Number(env.data.ADMIN_GROUP_ID),
       {
+        text: item.title,
         topic_id: validCacheTopic,
         timeout: 3600,
-        medias: videoInfos.map((videoInfo, index) => ({
+        media: {
           video: {
-            path: segments[index],
+            path: videoPath,
           },
           cover: {
             path: videoInfo.coverPath,
@@ -627,46 +662,14 @@ export async function sendMegToCache(
           duration: Math.floor(videoInfo.duration),
           supports_streaming: true,
           has_spoiler: anime?.r18 === true || false,
-          caption: index === 0 ? item.title : undefined,
-        }))
+        },
       }
-    )
-
-    // 清理 segments 文件和封面
-    for (const path of segments) {
-      fs.unlink(path).catch(() => { });
+    );
+    await updateTorrentStatus(item.title, "等待纠正");
+    return animeMessage;
+  } finally {
+    for (const p of mediaToClean) {
+      fs.unlink(p).catch(() => { });
     }
-    for (const videoInfo of videoInfos) {
-      fs.unlink(videoInfo.coverPath).catch(() => { });
-    }
-
-    return animeMessages;
   }
-  const videoInfo = await extractVideoMetadata(videoPath);
-  const animeMessage = await sendMessage(
-    client,
-    Number(env.data.ADMIN_GROUP_ID),
-    {
-      text: item.title,
-      topic_id: validCacheTopic,
-      timeout: 3600,
-      media: {
-        video: {
-          path: videoPath,
-        },
-        cover: {
-          path: videoInfo.coverPath,
-        },
-        width: videoInfo.width,
-        height: videoInfo.height,
-        duration: Math.floor(videoInfo.duration),
-        supports_streaming: true,
-        has_spoiler: anime?.r18 === true || false,
-      },
-    }
-  );
-  await updateTorrentStatus(item.title, "等待纠正");
-  fs.unlink(videoPath).catch(() => { });
-  fs.unlink(videoInfo.coverPath).catch(() => { });
-  return animeMessage;
 }

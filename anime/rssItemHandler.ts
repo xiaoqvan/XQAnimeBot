@@ -74,14 +74,21 @@ export async function handleRssAnimeItem(
             if (!torrent) return;
 
             if (torrent.isMkv) {
-                // MKV：种子已暂停，路由到 MKV 队列，释放主线程
+                // MKV：这里已经下载完成并暂停了种子。
+                // 若直接重新入队，MKV worker 会再次 downloadAndReturnPath 命中同一种子，
+                // 而该种子处于暂停状态、不会进入 seeding 状态，导致等待死循环，
+                // 最终种子与视频都无法清理。
+                // 因此先删除已暂停的种子（保留文件，避免重复下载 MKV），
+                // MKV worker 重新添加后会自动 recheck 已存在的文件并继续烧录流程。
+                const QBclientForMkv = await getQBClient();
+                await QBclientForMkv.deleteTorrent(torrent.hash, false).catch(() => { });
                 manager.updateProgress(item.title, "下载完成（MKV），路由到MKV队列");
                 await manager.enqueueMkv(client, newitem);
                 return;
             }
             // 非 MKV：删除种子（保留文件），走正常主线程流程
             const QBclient = await getQBClient();
-            await QBclient.deleteTorrent(torrent.hash, false).catch(() => {});
+            await QBclient.deleteTorrent(torrent.hash, false).catch(() => { });
         }
     }
 
