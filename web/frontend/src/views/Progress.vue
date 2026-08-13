@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { api, type ProgressData } from "../api/client.ts";
+import { api, readCache, type ProgressData } from "../api/client.ts";
 
-const data = ref<ProgressData | null>(null);
+const data = ref<ProgressData | null>(readCache<ProgressData>("progress"));
 const error = ref("");
-const loading = ref(true);
+const loading = ref(!data.value);
 
 let timer: ReturnType<typeof setInterval> | null = null;
 

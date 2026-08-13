@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { api, type AiCallItem } from "../api/client.ts";
+import { api, readCache, type AiCallItem, type AiCallPage } from "../api/client.ts";
 
 const items = ref<AiCallItem[]>([]);
 const error = ref("");
@@ -12,7 +12,16 @@ const scene = ref("");
 const expanded = ref<number | null>(null);
 
 async function refresh(p = page.value) {
-    loading.value = true;
+    // 缓存优先
+    const cacheKey = `ai:${p}:20:${scene.value || "all"}`;
+    const cached = readCache<AiCallPage>(cacheKey);
+    if (cached) {
+        items.value = cached.items;
+        total.value = cached.total;
+        totalPages.value = Math.max(1, Math.ceil(cached.total / cached.pageSize));
+        page.value = cached.page;
+    }
+    loading.value = !cached;
     error.value = "";
     try {
         const res = await api.listAiCalls(p, 20, scene.value || undefined);
@@ -21,7 +30,7 @@ async function refresh(p = page.value) {
         totalPages.value = Math.max(1, Math.ceil(res.total / res.pageSize));
         page.value = res.page;
     } catch (e) {
-        error.value = (e as Error).message;
+        if (!cached) error.value = (e as Error).message;
     } finally {
         loading.value = false;
     }

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { api, type AnimeItem, type SeasonItem } from "../api/client.ts";
+import { api, readCache, type AnimeItem, type AnimePage, type SeasonItem } from "../api/client.ts";
 
 const router = useRouter();
 const keyword = ref("");
@@ -17,7 +17,7 @@ const total = ref(0);
 const totalPages = ref(0);
 
 // 年季分类
-const seasons = ref<SeasonItem[]>([]);
+const seasons = ref<SeasonItem[]>(readCache<{ items: SeasonItem[] }>("seasons")?.items ?? []);
 const activeSeason = ref("all"); // "all" | SeasonKey | "unknown"
 const seasonsLoading = ref(false);
 
@@ -40,7 +40,17 @@ async function loadSeasons() {
 }
 
 async function loadPage(p = page.value) {
-    loading.value = true;
+    // 缓存优先：刷新/切换时先用上次数据立即渲染，避免闪"加载中"
+    const cacheKey = `anime:${activeSeason.value}:${p}:${pageSize.value}`;
+    const cached = readCache<AnimePage>(cacheKey);
+    if (cached) {
+        items.value = cached.items;
+        total.value = cached.total;
+        totalPages.value = Math.max(1, Math.ceil(cached.total / cached.pageSize));
+        page.value = cached.page;
+        searched.value = false;
+    }
+    loading.value = !cached; // 有缓存则后台静默刷新，不闪"加载中"
     error.value = "";
     try {
         const res = await api.listAnime(p, pageSize.value, activeSeason.value);
@@ -50,7 +60,7 @@ async function loadPage(p = page.value) {
         page.value = res.page;
         searched.value = false;
     } catch (e) {
-        error.value = (e as Error).message;
+        if (!cached) error.value = (e as Error).message;
     } finally {
         loading.value = false;
     }

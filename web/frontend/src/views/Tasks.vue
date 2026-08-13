@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { api, type BtTask, type BtTaskType } from "../api/client.ts";
+import { api, readCache, type BtTask, type BtTaskType } from "../api/client.ts";
 
-const tasks = ref<BtTask[]>([]);
+const tasks = ref<BtTask[]>(readCache<{ items: BtTask[] }>("tasks")?.items ?? []);
 const error = ref("");
 const loading = ref(false);
 

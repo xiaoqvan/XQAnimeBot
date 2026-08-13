@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
-import { api, type AnimeItem } from "../api/client.ts";
+import { api, readCache, type AnimeItem, type AnimeDetail } from "../api/client.ts";
 
 const route = useRoute();
 const router = useRouter();
-const anime = ref<AnimeItem | null>(null);
+const anime = ref<AnimeItem | null>(
+    readCache<AnimeDetail>(`anime-detail:${route.params.id}`)?.anime ?? null
+);
 const error = ref("");
-const loading = ref(true);
+const loading = ref(!anime.value);
 
 onMounted(async () => {
     try {

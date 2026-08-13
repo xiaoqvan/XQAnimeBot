@@ -95,6 +95,42 @@ export class ApiError extends Error {
     }
 }
 
+// ---- 轻量缓存层（sessionStorage）----
+// 解决"每次刷新都闪加载中"：刷新/重挂载时先用上次缓存立即渲染，再后台刷新。
+// 用 sessionStorage 可在整页刷新后仍保留（关闭标签页自动清除）。
+const CACHE_PREFIX = "xq_web_cache_";
+
+export function readCache<T>(key: string): T | null {
+    try {
+        const raw = sessionStorage.getItem(CACHE_PREFIX + key);
+        return raw ? (JSON.parse(raw) as T) : null;
+    } catch {
+        return null;
+    }
+}
+
+export function writeCache<T>(key: string, data: T): void {
+    try {
+        sessionStorage.setItem(CACHE_PREFIX + key, JSON.stringify(data));
+    } catch {
+        // 容量不足或隐私模式等，忽略
+    }
+}
+
+export function clearCache(prefix = ""): void {
+    try {
+        const drop = CACHE_PREFIX + prefix;
+        const keys: string[] = [];
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const k = sessionStorage.key(i);
+            if (k && k.startsWith(drop)) keys.push(k);
+        }
+        keys.forEach((k) => sessionStorage.removeItem(k));
+    } catch {
+        // ignore
+    }
+}
+
 // ---- 类型定义 ----
 
 export interface Stats {
@@ -268,14 +304,26 @@ export const api = {
     // 验证当前连接配置是否有效（受鉴权保护，能返回即密钥有效）
     me: () =>
         request<{ ok: boolean; isDynamicKey?: boolean; expiresAt?: string }>("/api/auth/me"),
-    stats: () => request<Stats>("/api/stats"),
+    stats: () =>
+        request<Stats>("/api/stats").then((d) => {
+            writeCache("stats", d);
+            return d;
+        }),
 
     // 动漫库
     listAnime: (page = 1, pageSize = 30, season = "all") =>
-        request<AnimePage>(`/api/anime?page=${page}&pageSize=${pageSize}&season=${season}`),
+        request<AnimePage>(`/api/anime?page=${page}&pageSize=${pageSize}&season=${season}`).then(
+            (d) => {
+                writeCache(`anime:${season}:${page}:${pageSize}`, d);
+                return d;
+            }
+        ),
 
     listAnimeSeasons: () =>
-        request<{ items: SeasonItem[] }>("/api/anime/seasons"),
+        request<{ items: SeasonItem[] }>("/api/anime/seasons").then((d) => {
+            writeCache("seasons", d);
+            return d;
+        }),
 
     addAnime: (payload: {
         subjectId?: number | string;
@@ -293,6 +341,11 @@ export const api = {
         request<{ ok: boolean; id: number; anime?: AnimeItem }>("/api/anime", {
             method: "POST",
             body: JSON.stringify(payload),
+        }).then((d) => {
+            clearCache("anime:");
+            clearCache("seasons");
+            clearCache("stats");
+            return d;
         }),
 
     searchAnime: (q: string) =>
@@ -301,25 +354,52 @@ export const api = {
         ),
 
     getAnime: (id: number | string) =>
-        request<AnimeDetail>(`/api/anime/${id}`),
+        request<AnimeDetail>(`/api/anime/${id}`).then((d) => {
+            writeCache(`anime-detail:${id}`, d);
+            return d;
+        }),
 
     deleteAnime: (id: number | string) =>
-        request<{ ok: boolean; id: number }>(`/api/anime/${id}`, { method: "DELETE" }),
+        request<{ ok: boolean; id: number }>(`/api/anime/${id}`, { method: "DELETE" }).then(
+            (d) => {
+                clearCache("anime:");
+                clearCache("anime-detail:");
+                clearCache("seasons");
+                clearCache("stats");
+                return d;
+            }
+        ),
 
     // BT 任务（addanime / addnewanime 映射）
     createTask: (type: BtTaskType, epid: number | string, url: string) =>
         request<{ ok: boolean; id: number }>(`/api/tasks/${type}`, {
             method: "POST",
             body: JSON.stringify({ epid, url }),
+        }).then((d) => {
+            clearCache("tasks");
+            clearCache("progress");
+            return d;
         }),
-    listTasks: () => request<{ items: BtTask[] }>("/api/tasks"),
+    listTasks: () =>
+        request<{ items: BtTask[] }>("/api/tasks").then((d) => {
+            writeCache("tasks", d);
+            return d;
+        }),
     getTask: (id: number) => request<{ task: BtTask }>(`/api/tasks/${id}`),
     cancelTask: (id: number) =>
         request<{ ok: boolean; id: number }>(`/api/tasks/${id}/cancel`, { method: "POST" }),
-    clearTasks: () => request<{ ok: boolean }>("/api/tasks/clear", { method: "POST" }),
+    clearTasks: () =>
+        request<{ ok: boolean }>("/api/tasks/clear", { method: "POST" }).then((d) => {
+            clearCache("tasks");
+            return d;
+        }),
 
     // 处理进度
-    getProgress: () => request<ProgressData>("/api/progress"),
+    getProgress: () =>
+        request<ProgressData>("/api/progress").then((d) => {
+            writeCache("progress", d);
+            return d;
+        }),
 
     cancelProgress: (title: string) =>
         request<{ ok: boolean; message: string }>("/api/progress/cancel", {
@@ -334,34 +414,64 @@ export const api = {
         ),
 
     // BT 下载
-    getTorrents: () => request<TorrentsResponse>("/api/torrents"),
-    getTransfer: () => request<TransferInfo>("/api/torrents/transfer"),
+    getTorrents: () =>
+        request<TorrentsResponse>("/api/torrents").then((d) => {
+            writeCache("torrents", d);
+            return d;
+        }),
+    getTransfer: () =>
+        request<TransferInfo>("/api/torrents/transfer").then((d) => {
+            writeCache("transfer", d);
+            return d;
+        }),
     pauseTorrent: (hash: string) =>
-        request<{ ok: boolean }>(`/api/torrents/${hash}/pause`, { method: "POST" }),
+        request<{ ok: boolean }>(`/api/torrents/${hash}/pause`, { method: "POST" }).then((d) => {
+            clearCache("torrents");
+            return d;
+        }),
     resumeTorrent: (hash: string) =>
-        request<{ ok: boolean }>(`/api/torrents/${hash}/resume`, { method: "POST" }),
+        request<{ ok: boolean }>(`/api/torrents/${hash}/resume`, { method: "POST" }).then((d) => {
+            clearCache("torrents");
+            return d;
+        }),
     deleteTorrent: (hash: string, deleteFiles = true) =>
         request<{ ok: boolean }>(`/api/torrents/${hash}/delete`, {
             method: "POST",
             body: JSON.stringify({ deleteFiles }),
+        }).then((d) => {
+            clearCache("torrents");
+            clearCache("transfer");
+            return d;
         }),
 
     // 待确认番剧
     listReviews: (flow: "pre_post" | "pre_review" = "pre_post", status = "pending", page = 1, pageSize = 30) =>
         request<{ items: ReviewItem[]; total?: number; page?: number; pageSize?: number; flow?: string }>(
             `/api/reviews?flow=${flow}&status=${status}&page=${page}&pageSize=${pageSize}`
-        ),
+        ).then((d) => {
+            writeCache(`reviews:${flow}:${status}:${page}:${pageSize}`, d);
+            return d;
+        }),
     approveReview: (id: number) =>
-        request<{ ok: boolean }>(`/api/reviews/${id}/approve`, { method: "POST" }),
+        request<{ ok: boolean }>(`/api/reviews/${id}/approve`, { method: "POST" }).then((d) => {
+            clearCache("reviews:");
+            return d;
+        }),
     rejectReview: (id: number, remove = false) =>
         request<{ ok: boolean }>(`/api/reviews/${id}/reject`, {
             method: "POST",
             body: JSON.stringify({ remove }),
+        }).then((d) => {
+            clearCache("reviews:");
+            return d;
         }),
 
     // AI 调用记录
     listAiCalls: (page = 1, pageSize = 20, scene?: string) =>
         request<AiCallPage>(
             `/api/ai-calls?page=${page}&pageSize=${pageSize}${scene ? `&scene=${scene}` : ""}`
-        ),
+        ).then((d) => {
+            writeCache(`ai:${page}:${pageSize}:${scene ?? "all"}`, d);
+            return d;
+        }),
 };

@@ -93,11 +93,15 @@ async function runTask(id: number, client: Client): Promise<void> {
 
     let item: animeItem | null = null;
 
-    // 1. 解析 BT 来源
+    // 1. 解析 BT 来源（parseBtSource 抛出具体原因）
     task.stage = "解析 BT 来源";
-    item = await parseBtSource(task.url);
+    try {
+        item = await parseBtSource(task.url);
+    } catch (e) {
+        throw new Error(`解析 BT 来源失败：${(e as Error).message}`);
+    }
     if (!item || !item.magnet) {
-        throw new Error("BT 链接解析失败（仅支持 bangumi / dmhy）");
+        throw new Error("解析 BT 来源后未取到磁力链接");
     }
     task.title = item.title;
     task.animeName = item.names?.[0] ?? item.title;

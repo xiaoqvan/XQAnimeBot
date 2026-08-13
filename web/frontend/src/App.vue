@@ -3,7 +3,8 @@ import { ref, onMounted } from "vue";
 import { api, getToken, setToken, getApiBase, setApiBase, configureConnection } from "./api/client.ts";
 
 // 登录状态：未配置或密钥无效时显示登录页
-const ready = ref(false);
+// 已保存过连接则初始即就绪（刷新整页直接进主界面，不再闪登录页/加载中），后台再校验密钥
+const ready = ref(!!getToken() && !!getApiBase());
 const checking = ref(false);
 const authError = ref("");
 const connecting = ref(false);

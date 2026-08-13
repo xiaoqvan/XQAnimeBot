@@ -1,9 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { api, type ReviewItem } from "../api/client.ts";
+import { api, readCache, type ReviewItem } from "../api/client.ts";
 
 const router = useRouter();
+type ReviewsRes = {
+    items: ReviewItem[];
+    total?: number;
+    page?: number;
+    pageSize?: number;
+    flow?: string;
+};
 const items = ref<ReviewItem[]>([]);
 const error = ref("");
 const loading = ref(true);
@@ -16,7 +23,19 @@ const totalPages = ref(1);
 const acting = ref<number | null>(null);
 
 async function refresh(p = 1) {
-    loading.value = true;
+    // 缓存优先：已有该页缓存则先用其渲染，再后台刷新
+    const cacheKey = `reviews:${flow.value}:${filter.value}:${p}:${pageSize.value}`;
+    const cached = readCache<ReviewsRes>(cacheKey);
+    if (cached) {
+        items.value = cached.items;
+        total.value = cached.total ?? cached.items.length;
+        totalPages.value = Math.max(
+            1,
+            Math.ceil((cached.total ?? cached.items.length) / (cached.pageSize ?? pageSize.value))
+        );
+        page.value = cached.page ?? p;
+    }
+    loading.value = !cached;
     error.value = "";
     try {
         const res = await api.listReviews(flow.value, filter.value, p, pageSize.value);
@@ -25,7 +44,7 @@ async function refresh(p = 1) {
         totalPages.value = Math.max(1, Math.ceil((res.total ?? res.items.length) / (res.pageSize ?? pageSize.value)));
         page.value = res.page ?? p;
     } catch (e) {
-        error.value = (e as Error).message;
+        if (!cached) error.value = (e as Error).message;
     } finally {
         loading.value = false;
     }

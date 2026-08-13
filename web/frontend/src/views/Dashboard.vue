@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
-import { api, type Stats } from "../api/client.ts";
+import { api, readCache, type Stats } from "../api/client.ts";
 
-const stats = ref<Stats | null>(null);
+const stats = ref<Stats | null>(readCache<Stats>("stats"));
 const error = ref("");
-const loading = ref(true);
+const loading = ref(!stats.value);
 
 onMounted(async () => {
     try {

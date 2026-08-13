@@ -1,11 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from "vue";
-import { api, type TorrentItem } from "../api/client.ts";
+import { api, readCache, type TorrentItem, type TorrentsResponse } from "../api/client.ts";
 
-const items = ref<TorrentItem[]>([]);
+const items = ref<TorrentItem[]>(readCache<TorrentsResponse>("torrents")?.items ?? []);
 const error = ref("");
-const loading = ref(true);
-const transfer = ref<{ dlSpeedLabel?: string; upSpeedLabel?: string }>({});
+const loading = ref(false);
+const transfer = ref<{ dlSpeedLabel?: string; upSpeedLabel?: string }>(
+    readCache<{ dlSpeedLabel?: string; upSpeedLabel?: string }>("transfer") ?? {}
+);
 
 let timer: ReturnType<typeof setInterval> | null = null;
 
