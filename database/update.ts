@@ -6,6 +6,7 @@ import type { albumMessageType, messageType, navMessageType } from "../types/mes
 import type { bangumiAnime, BangumiUser } from "../types/bangumi.d.ts";
 import type { EpisodeMetaDoc } from "../types/episodeMeta.d.ts";
 import type { EpisodeResourceDoc } from "../types/episodeResource.d.ts";
+import type { PendingReviewDoc } from "../types/pendingReview.d.ts";
 import { cleanTitle } from "../anime/rss/index.ts";
 import logger from "@log/index.ts";
 import { getDatabase } from "@db/index.ts";
@@ -764,4 +765,27 @@ export async function rebindCacheResourceAnime(
     moved: moveRes.modifiedCount ?? 0,
     removedOldCacheAnime,
   };
+}
+
+/**
+ * 更新待审核番剧记录的状态（批准/拒绝）。
+ * @param id - 待审核记录的自增 id
+ * @param status - 目标状态："approved" | "rejected"
+ * @returns 更新成功返回 true，否则返回 false
+ */
+export async function updatePendingReviewStatus(
+  id: number,
+  status: Extract<PendingReviewDoc["status"], "approved" | "rejected">
+): Promise<boolean> {
+  if (!id) {
+    throw new Error("待审核ID是必需的参数");
+  }
+  try {
+    const result = await db
+      .collection<PendingReviewDoc>("pendingReviews")
+      .updateOne({ id }, { $set: { status, updatedAt: new Date() } });
+    return result.modifiedCount > 0;
+  } catch (error) {
+    throw new Error(`更新待审核记录状态失败: ${getErrorMessage(error)}`);
+  }
 }

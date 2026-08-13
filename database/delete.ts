@@ -74,3 +74,44 @@ export async function deletePendingReview(id: number): Promise<boolean> {
     throw new Error(`删除待审核记录失败: ${error?.message ?? error}`);
   }
 }
+
+/**
+ * 删除正式番剧及其关联数据（供 Web/命令调用）。
+ *
+ * 会联动删除：
+ * - `anime` 文档（含内嵌 navMessage / navVideoMessage）
+ * - `episodes_meta`（按 subject_id）
+ * - `resources`（按 anime_id）
+ * - `cache_resources`（按 anime_id）与 `cacheAnime`（按 id）
+ * - `pendingReviews`（其中 anime.id === animeId）
+ *
+ * 注意：不删除 `torrents` 集合（该集合用于 BT 标题去重，删除会导致重复下载）。
+ *
+ * @param animeId - 番剧 id（Bangumi subject_id）
+ * @returns 是否删除了 anime 文档（若本来就是 deleteMany 返回 deletedCount）
+ */
+export async function deleteAnime(animeId: number): Promise<boolean> {
+  if (!animeId) {
+    throw new Error("番剧 ID 是必需的参数");
+  }
+
+  try {
+    const [delAnime] = await Promise.all([
+      db.collection("anime").deleteOne({ id: animeId }),
+      db.collection("episodes_meta").deleteMany({ subject_id: animeId }),
+      db.collection("resources").deleteMany({ anime_id: animeId }),
+      db.collection("cache_resources").deleteMany({ anime_id: animeId }),
+      db.collection("cacheAnime").deleteMany({ id: animeId }),
+      db.collection("pendingReviews").deleteMany({ "anime.id": animeId }),
+    ]);
+
+    if (delAnime.deletedCount === 0) {
+      return false;
+    }
+    logger.info(`已删除番剧 ${animeId} 及其关联资源`);
+    return true;
+  } catch (error: any) {
+    logger.error(`删除番剧失败: ${error?.message ?? error}`);
+    throw new Error(`删除番剧失败: ${error?.message ?? error}`);
+  }
+}

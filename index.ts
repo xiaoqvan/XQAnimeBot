@@ -1,7 +1,7 @@
 import logger from "@log/index.ts";
 import { Plugin } from "@plugin/BasePlugin.ts";
 import type { Client } from "tdl";
-import { anime } from "./anime/index.ts";
+// import { anime } from "./anime/index.ts";
 
 export default class AnimePlugin extends Plugin {
   name = "XQ的动漫插件";
@@ -14,7 +14,22 @@ export default class AnimePlugin extends Plugin {
 
     this.onLoad = async () => {
       logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
-      anime(this.client).then();
+      // anime(this.client).then();
+
+      // 启动可选的管理 Web 界面（Fastify API + Vue3 前端，前后端分离）
+      try {
+        const { startWebServer } = await import("./web/server.ts");
+        // 传入 Bot client，供 Web 后端执行 BT 任务（addanime/addnewanime 的下载与发送）
+        await startWebServer(this.client);
+      } catch (err) {
+        logger.warn(err, "[XiaoQvanAnime]Web 管理界面启动失败，忽略（不影响 Bot 运行）");
+      }
+    };
+
+    // 卸载插件时关闭 Web 服务
+    this.destroy = async () => {
+      const { stopWebServer } = await import("./web/server.ts");
+      await stopWebServer();
     };
 
     this.cmdHandlers = {
@@ -25,6 +40,14 @@ export default class AnimePlugin extends Plugin {
           const mod = await import("./cmd/start.ts");
           return mod.default(this.client, message.message);
         }
+      },
+      web: {
+        description: "获取 Web 管理界面连接（主人/管理员）",
+        scope: "private",
+        handler: async (message, _) => {
+          const mod = await import("./cmd/web.ts");
+          return mod.default(this.client, message.message);
+        },
       },
       bindbangumi: {
         description: "绑定Bangumi账户",

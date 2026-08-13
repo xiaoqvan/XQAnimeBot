@@ -14,6 +14,15 @@ import { OpenAI } from "openai";
 import { z } from "zod";
 import { searchAnimeCandidates, getRelatedSubjects, getEpisodeDetail } from "./tools.ts";
 import type { AnimeCandidate, RelatedSubject, EpisodeDetail } from "./tools.ts";
+import { recordAiCall } from "../database/ai.ts";
+import type { AiCallDoc } from "../database/ai.ts";
+
+/** 当前 AI 调用场景（由各 Agent 入口设置，用于记录） */
+let activeAiScene: AiCallDoc["scene"] = "bangumi_match";
+
+export function setActiveAiScene(scene: AiCallDoc["scene"]): void {
+  activeAiScene = scene;
+}
 
 // ─── 公开类型 ────────────────────────────────────────────────────────────────
 
@@ -57,10 +66,42 @@ function getClient(): OpenAI {
             "缺少 API Key：请设置环境变量 DEEPSEEK_API_KEY 或 OPENAI_API_KEY",
         );
     }
-    return new OpenAI({
+    const client = new OpenAI({
         apiKey,
         baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
     });
+
+    // 包装底层 completions.create，自动记录每次 AI 调用（供 Web 展示）
+    const completions = client.chat.completions as unknown as {
+      create: (...args: any[]) => any;
+    };
+    const originalCreate = completions.create.bind(completions);
+    const scene = activeAiScene;
+    completions.create = async (...args: any[]) => {
+        const start = Date.now();
+        let output: string | undefined;
+        let ok = false;
+        try {
+            const result = await originalCreate(...args);
+            ok = true;
+            output = result?.choices?.[0]?.message?.content ?? "";
+            return result;
+        } finally {
+            const req = (args[0] ?? {}) as { messages?: Array<{ role: string; content: unknown }> };
+            const lastUserMsg = [...(req.messages ?? [])].reverse().find((m) => m.role === "user");
+            const input = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : "";
+            void recordAiCall({
+                scene,
+                input: input || "(AI 调用)",
+                output: ok ? output ?? undefined : undefined,
+                success: ok,
+                model: (args[0] as { model?: string } | undefined)?.model,
+                durationMs: Date.now() - start,
+            });
+        }
+    };
+
+    return client;
 }
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
@@ -335,6 +376,7 @@ export async function matchAnimeSubject(
     anime: animeItem,
     llmThreshold = 1,
 ): Promise<MatchResult> {
+    setActiveAiScene("bangumi_match");
     if (!anime || !anime.title) {
         return { confidence: 0, reason: "输入数据无效：缺少 title" };
     }
@@ -584,6 +626,7 @@ export async function aiEpisodeSearch(
     episode: string,
     candidate?: AnimeCandidate,
 ): Promise<{ episodeId: number; episodeSort: number } | null> {
+    setActiveAiScene("episode_match");
     const AI_EPISODE_SYSTEM_PROMPT = `你是 Bangumi 集数匹配助手。
 根据番剧信息和集数字符串，通过工具调用迭代查找最准确的集数编号（sort 值）和章节 ID（id）。
 
@@ -911,6 +954,7 @@ async function llmDecision(
     anime: animeItem,
     candidates: AnimeCandidate[],
 ): Promise<MatchResult> {
+    setActiveAiScene("bangumi_match");
     const userPrompt = buildLLMPrompt(anime, candidates);
 
     // messages 从 system 开始，后续逐步追加 user / assistant / tool

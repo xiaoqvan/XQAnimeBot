@@ -1,5 +1,6 @@
 import { groupRules } from "./groupRules.ts";
 import { OpenAI } from "openai";
+import { recordAiCall } from "../database/ai.ts";
 
 type ParseInfoResult = {
   names: string[];
@@ -14,10 +15,41 @@ function getEpisodeAiClient(): OpenAI {
   if (!apiKey) {
     throw new Error("缺少 API Key：请设置 DEEPSEEK_API_KEY 或 OPENAI_API_KEY");
   }
-  return new OpenAI({
+  const client = new OpenAI({
     apiKey,
     baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
   });
+
+  // 包装 completions.create，记录 AI 集数提取调用（供 Web 展示）
+  const completions = client.chat.completions as unknown as {
+    create: (...args: any[]) => any;
+  };
+  const originalCreate = completions.create.bind(completions);
+  completions.create = async (...args: any[]) => {
+    const start = Date.now();
+    let output: string | undefined;
+    let ok = false;
+    try {
+      const result = await originalCreate(...args);
+      ok = true;
+      output = result?.choices?.[0]?.message?.content ?? "";
+      return result;
+    } finally {
+      const req = (args[0] ?? {}) as { messages?: Array<{ role: string; content: unknown }> };
+      const lastUserMsg = [...(req.messages ?? [])].reverse().find((m) => m.role === "user");
+      const input = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : "";
+      void recordAiCall({
+        scene: "episode_extract",
+        input: input || "(AI 调用)",
+        output: ok ? output ?? undefined : undefined,
+        success: ok,
+        model: (args[0] as { model?: string } | undefined)?.model,
+        durationMs: Date.now() - start,
+      });
+    }
+  };
+
+  return client;
 }
 
 function normalizeAiEpisode(raw: string): string | null {
