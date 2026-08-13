@@ -6,19 +6,19 @@ import { deleteAnime } from "../../database/delete.ts";
 import { extractFilteredTagNames } from "../../utils/index.ts";
 
 function mapAnimeForList(a: Record<string, unknown>) {
-  return {
-    id: a.id,
-    name: a.name,
-    name_cn: a.name_cn,
-    names: a.names,
-    image: a.image,
-    episode: a.episode,
-    score: a.score,
-    r18: a.r18,
-    airingDay: a.airingDay,
-    airingStart: a.airingStart,
-    updatedAt: a.updatedAt instanceof Date ? a.updatedAt.toISOString() : a.updatedAt,
-  };
+    return {
+        id: a.id,
+        name: a.name,
+        name_cn: a.name_cn,
+        names: a.names,
+        image: a.image,
+        episode: a.episode,
+        score: a.score,
+        r18: a.r18,
+        airingDay: a.airingDay,
+        airingStart: a.airingStart,
+        updatedAt: a.updatedAt instanceof Date ? a.updatedAt.toISOString() : a.updatedAt,
+    };
 }
 
 /**

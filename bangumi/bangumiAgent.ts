@@ -21,7 +21,7 @@ import type { AiCallDoc } from "../database/ai.ts";
 let activeAiScene: AiCallDoc["scene"] = "bangumi_match";
 
 export function setActiveAiScene(scene: AiCallDoc["scene"]): void {
-  activeAiScene = scene;
+    activeAiScene = scene;
 }
 
 // ─── 公开类型 ────────────────────────────────────────────────────────────────
@@ -73,7 +73,7 @@ function getClient(): OpenAI {
 
     // 包装底层 completions.create，自动记录每次 AI 调用（供 Web 展示）
     const completions = client.chat.completions as unknown as {
-      create: (...args: any[]) => any;
+        create: (...args: any[]) => any;
     };
     const originalCreate = completions.create.bind(completions);
     const scene = activeAiScene;
