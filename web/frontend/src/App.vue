@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
+import { ref, onMounted, watch } from "vue";
+import { useRoute } from "vue-router";
 import { api, getToken, setToken, getApiBase, setApiBase, configureConnection } from "./api/client.ts";
 
 // 登录状态：未配置或密钥无效时显示登录页
@@ -8,6 +9,16 @@ const ready = ref(!!getToken() && !!getApiBase());
 const checking = ref(false);
 const authError = ref("");
 const connecting = ref(false);
+
+// 移动端抽屉菜单
+const menuOpen = ref(false);
+const route = useRoute();
+watch(
+    () => route.fullPath,
+    () => {
+        menuOpen.value = false; // 路由切换后关闭抽屉
+    }
+);
 
 // URL 参数自动注入（按钮跳转带 ?api=xxx&key=xxx）
 function autoInjectFromUrl(): boolean {
@@ -112,7 +123,17 @@ onMounted(() => {
 
     <!-- 主界面 -->
     <div v-else class="layout">
-        <aside class="sidebar">
+        <!-- 移动端顶栏 -->
+        <header class="mobile-topbar">
+            <button class="hamburger" @click="menuOpen = true" aria-label="打开菜单">☰</button>
+            <h1 class="logo">✨ XQ 动漫</h1>
+        </header>
+
+        <!-- 移动端遮罩：点击关闭抽屉 -->
+        <div v-if="menuOpen" class="scrim" @click="menuOpen = false"></div>
+
+        <aside class="sidebar" :class="{ open: menuOpen }">
+            <button class="sidebar-close" @click="menuOpen = false" aria-label="关闭菜单">✕</button>
             <h1 class="logo">✨ XQ 动漫</h1>
             <nav>
                 <RouterLink to="/">
@@ -203,6 +224,123 @@ body {
 .layout {
     display: flex;
     min-height: 100vh;
+}
+
+/* ===== 移动端顶栏 / 抽屉 ===== */
+.mobile-topbar {
+    display: none; /* 默认（桌面）隐藏 */
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 30;
+    height: 56px;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+}
+
+.hamburger {
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 10px;
+    background: var(--bg-blue);
+    color: var(--blue);
+    font-size: 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sidebar-close {
+    display: none;
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 34px;
+    height: 34px;
+    border: none;
+    border-radius: 10px;
+    background: #f3f4f6;
+    color: var(--text-soft);
+    font-size: 15px;
+    cursor: pointer;
+}
+
+.scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 19;
+    background: rgba(17, 24, 39, 0.45);
+}
+
+@media (max-width: 820px) {
+    /* 顶栏显示、内容区避开顶栏 */
+    .mobile-topbar {
+        display: flex;
+    }
+    .mobile-topbar .logo {
+        font-size: 18px;
+    }
+
+    .layout {
+        display: block;
+        padding-top: 56px;
+    }
+
+    /* 侧边栏 → 抽屉，默认滑出屏幕外 */
+    .sidebar {
+        position: fixed;
+        z-index: 20;
+        left: 0;
+        top: 0;
+        width: 80vw;
+        max-width: 300px;
+        height: 100vh;
+        transform: translateX(-100%);
+        transition: transform 0.28s ease;
+        box-shadow: 0 0 40px rgba(16, 24, 40, 0.18);
+        border-right: 1px solid var(--border);
+    }
+    .sidebar.open {
+        transform: translateX(0);
+    }
+    .sidebar-close {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    /* 内容区留全宽 */
+    .content {
+        padding: 18px 14px;
+        overflow: visible;
+    }
+
+    /* 遮罩显示 */
+    .scrim {
+        display: block;
+    }
+}
+
+/* 超小屏微调 */
+@media (max-width: 480px) {
+    .content {
+        padding: 14px 10px;
+    }
+    .card {
+        padding: 16px 14px;
+        border-radius: 14px;
+    }
+    h2 {
+        font-size: 20px;
+        margin-bottom: 14px;
+    }
 }
 
 /* ===== 白色侧边栏 ===== */
@@ -449,5 +587,51 @@ h3 {
     background: #f3f4f6;
     color: var(--text-soft);
     border: 1px solid var(--border);
+}
+
+/* ===== 全局限窄屏补丁：覆盖各 view 内通用横排布局 ===== */
+@media (max-width: 640px) {
+    /* 搜索栏 / 表单行纵向堆叠 */
+    .searchbar,
+    .fields {
+        flex-direction: column !important;
+        align-items: stretch !important;
+    }
+    .searchbar .btn,
+    .fields .btn {
+        width: 100% !important;
+        flex: none !important;
+    }
+
+    /* 头部（标题 + 右侧按钮）包行 */
+    .head {
+        flex-wrap: wrap !important;
+        gap: 10px !important;
+    }
+
+    /* tabs / 分类 chips 允许横向滚动，避免挤压换行溢出 */
+    .tabs,
+    .season-bar {
+        flex-wrap: wrap !important;
+    }
+
+    /* 详情页头部：封面与信息纵向堆叠 */
+    .detail .head {
+        flex-direction: column !important;
+        align-items: flex-start !important;
+    }
+
+    /* 分页整宽 */
+    .pager {
+        flex-wrap: wrap !important;
+        justify-content: center !important;
+    }
+
+    /* 模态框适配小屏 */
+    .modal {
+        width: 92vw !important;
+        max-height: 86vh !important;
+        overflow-y: auto !important;
+    }
 }
 </style>
