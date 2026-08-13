@@ -23,8 +23,9 @@ const statusMap: Record<string, { label: string; cls: string }> = {
     canceled: { label: "已取消", cls: "canceled" },
 };
 
-async function refresh() {
-    loading.value = true;
+async function refresh(showLoading = false) {
+    // 后台静默刷新：列表已有/有缓存时不闪"加载中"，只在真正首次无数据时显示
+    if (showLoading) loading.value = true;
     error.value = "";
     try {
         const res = await api.listTasks();
@@ -84,8 +85,9 @@ function fmt(iso?: string): string {
 }
 
 onMounted(() => {
-    refresh();
-    timer = setInterval(refresh, 3000);
+    // 首次：无缓存（tasks 为空）时显示加载中；有缓存则静默刷新
+    refresh(tasks.value.length === 0);
+    timer = setInterval(() => refresh(), 3000); // 后台静默轮询，不闪"加载中"
 });
 onUnmounted(() => {
     if (timer) clearInterval(timer);

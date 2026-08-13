@@ -927,3 +927,18 @@ export const groupRules: Record<string, (title: string) => string[]> = {
     return sortNamesByPriority(names, title);
   },
 };
+
+/**
+ * 字幕组别名映射表
+ * key = 实际发布组名（可能来自 dmhy 发布组 / 标题标识，与 groupRules 规则 key 不一致），
+ * value = 应使用的 groupRules 规则 key。
+ * 用于发布组名对不齐（如“悠哈C9字幕社”实际归属“悠哈璃羽字幕社”）时精确归组。
+ * 解析时优先按此表匹配，其次才做包含匹配。
+ */
+export const groupAliases: Record<string, string> = {
+  悠哈C9字幕社: "悠哈璃羽字幕社",
+  悠哈C9漢化組: "悠哈璃羽字幕社",
+  悠哈C9汉化组: "悠哈璃羽字幕社",
+  "悠哈C9字幕组": "悠哈璃羽字幕社",
+  "YUI-7&悠哈C9字幕组": "悠哈璃羽字幕社",
+};

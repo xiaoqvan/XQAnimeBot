@@ -1,4 +1,4 @@
-import { groupRules } from "./groupRules.ts";
+import { groupRules, groupAliases } from "./groupRules.ts";
 import { OpenAI } from "openai";
 import { recordAiCall } from "../database/ai.ts";
 
@@ -135,9 +135,22 @@ export function parseInfo(
 
   // 查找对应的字幕组规则
   const teamKeys = Object.keys(groupRules);
-  const teamKey = teamKeys.find(
-    (key) => teamName && teamName.toLowerCase().includes(key.toLowerCase())
-  );
+
+  let teamKey: string | undefined;
+  if (teamName) {
+    // 1) 精确别名（发布组名与规则 key 不一致时精确归组，如 悠哈C9字幕社 → 悠哈璃羽字幕社）
+    teamKey = Object.keys(groupAliases).find(
+      (alias) => teamName.toLowerCase() === alias.toLowerCase()
+    );
+    if (teamKey) {
+      teamKey = groupAliases[teamKey];
+    } else {
+      // 2) 包含匹配：规则 key 是发布组名的子串
+      teamKey = teamKeys.find((key) =>
+        teamName.toLowerCase().includes(key.toLowerCase())
+      );
+    }
+  }
 
   if (!teamKey || !groupRules[teamKey]) {
     return; // 明确返回空数组
