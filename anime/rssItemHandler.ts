@@ -146,7 +146,8 @@ async function parseBangumiItem(
     const infoq = parseInfo(item.title, team[0]?.name ?? null);
     if (!infoq) return undefined;
 
-    if (!infoq.episode || infoq.episode === "未知") {
+    // 始终优先 AI 提取集数，防止自动正则匹配错集数；AI 无结果时保留 parseInfo 自动结果
+    {
         const aiEpisode = await extractEpisodeByAI(item.title, infoq.names);
         if (aiEpisode) {
             infoq.episode = aiEpisode;
@@ -191,7 +192,8 @@ async function parseDmhyOrAcgnxItem(
     const infoq = parseInfo(item.title, item.author);
     if (!infoq) return undefined;
 
-    if (!infoq.episode || infoq.episode === "未知") {
+    // 始终优先 AI 提取集数，防止自动正则匹配错集数；AI 无结果时保留 parseInfo 自动结果
+    {
         const aiEpisode = await extractEpisodeByAI(item.title, infoq.names);
         if (aiEpisode) {
             infoq.episode = aiEpisode;

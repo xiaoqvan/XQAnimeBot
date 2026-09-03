@@ -1,3 +1,4 @@
+import { promises as fs } from "fs";
 import logger from "@log/index.ts";
 import parseTorrent from "parse-torrent";
 import { animeinfo } from "../bangumi/get.ts";
@@ -298,6 +299,10 @@ async function handleNewAnimeWithConfidentMatch(
     } finally {
         // 无论成功失败都清理 qBittorrent 种子及其数据
         await removeTorrentAndData(torrent.hash);
+        // 保底：显式删除 content_path 处的文件，防止 qBittorrent deleteFiles 失效导致残留
+        if (torrent.content_path) {
+            await fs.unlink(torrent.content_path).catch(() => { });
+        }
     }
 }
 
@@ -425,6 +430,10 @@ async function handleNewAnimeFallback(
     } finally {
         // 无论成功失败都清理 qBittorrent 种子及其数据
         await removeTorrentAndData(torrent.hash);
+        // 保底：显式删除 content_path 处的文件，防止 qBittorrent deleteFiles 失效导致残留
+        if (torrent.content_path) {
+            await fs.unlink(torrent.content_path).catch(() => { });
+        }
     }
 }
 
@@ -612,5 +621,9 @@ export async function handleExistingAnime(
     } finally {
         // 无论成功失败都清理 qBittorrent 种子及其数据
         await removeTorrentAndData(torrent.hash);
+        // 保底：显式删除 content_path 处的文件，防止 qBittorrent deleteFiles 失效导致残留
+        if (torrent.content_path) {
+            await fs.unlink(torrent.content_path).catch(() => { });
+        }
     }
 }

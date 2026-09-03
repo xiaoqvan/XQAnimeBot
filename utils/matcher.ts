@@ -24,14 +24,9 @@ export async function matchBangumiEpisode(
         return { status: 'INVALID_INPUT', msg: 'BT 条目未包含集数' };
     }
 
-    // 1. 预处理 BT 集数
-    // 移除 v2, end 等后缀，提取数字
-    // 针对 "SP01", "OVA" 等情况，可能需要特殊逻辑，这里优先处理本篇数字
-    const rawEp = btEpisodeStr.replace(/[vV]\d+/, '').replace(/END/i, '').trim();
-    const epNum = parseFloat(rawEp);
-
-    if (isNaN(epNum)) {
-        // 规则无法解析集数，尝试 AI 辅助查找
+    // ── 0. 始终优先 AI 匹配，防止自动匹配错集数 ──
+    // AI 审核不通过再 fallback 到自动匹配 / 转人工
+    {
         const aiCandidate = {
             id: dbAnime.id,
             name: dbAnime.name,
@@ -48,12 +43,20 @@ export async function matchBangumiEpisode(
                 sort: aiResult.episodeSort,
             };
         }
-        return { status: 'INVALID_INPUT', msg: `无法从标题解析出集数: ${btEpisodeStr}` };
+    }
+
+    // ── 1. AI 无结果，fallback 到自动匹配 ──
+
+    // 预处理 BT 集数：移除 v2, end 等后缀，提取数字
+    const rawEp = btEpisodeStr.replace(/[vV]\d+/, '').replace(/END/i, '').trim();
+    const epNum = parseFloat(rawEp);
+
+    if (isNaN(epNum)) {
+        return { status: 'NOT_FOUND_IN_DB', msg: `AI 未能匹配且无法从标题解析出集数: ${btEpisodeStr}（需人工审核）` };
     }
 
     // 2. 检查数据库是否有章节列表
     if (!Array.isArray(episodes) || episodes.length === 0) {
-        // 极端情况：Bangumi 条目存在但没有章节信息（如刚宣布未定档）
         return { status: 'NOT_FOUND_IN_DB', msg: '数据库中没有章节列表' };
     }
 
@@ -77,18 +80,10 @@ export async function matchBangumiEpisode(
         return toNum(a.id) - toNum(b.id);
     });
 
-    // 3. 在 eps.list 中查找
-    // Bangumi API: type 0 = 本篇, 1 = SP, 2 = OP, 3 = ED
-    // 我们优先匹配 type === 0 的本篇
-    // 显式类型转换匹配：防止 sort 为字符串类型
+    // 3. 自动匹配：在 eps.list 中按 sort 查找
     const matchedEp = sortedEpisodes.find(e => toNum(e.sort) === epNum && isMainEpisode(e));
 
-    // ==========================================
-    // 核心逻辑：越界检查 (Out of Range Check)
-    // ==========================================
     if (!matchedEp) {
-        // 场景：数据库只有 1-12 集，BT 是 13 集
-        // 结果：返回 NOT_FOUND，提示调用者这是潜在的新季或错误
         const mainEpisodeSorts = sortedEpisodes
             .filter(isMainEpisode)
             .map(e => toNum(e.sort))
@@ -98,27 +93,9 @@ export async function matchBangumiEpisode(
         const maxEpisode = mainEpisodeSorts.length > 0 ? Math.max(...mainEpisodeSorts) : 1;
         const episodeRange = minEpisode === maxEpisode ? `${minEpisode}` : `${minEpisode}-${maxEpisode}`;
 
-        // 规则匹配失败，尝试 AI 辅助查找
-        const aiCandidate = {
-            id: dbAnime.id,
-            name: dbAnime.name,
-            name_cn: dbAnime.name_cn,
-            episode_range: dbAnime.episode,
-            summary: dbAnime.summary,
-        };
-        const aiResult = await aiEpisodeSearch(dbAnime.id, btEpisodeStr, aiCandidate);
-        if (aiResult) {
-            return {
-                status: 'MATCHED',
-                episodeId: aiResult.episodeId,
-                ep: aiResult.episodeSort,
-                sort: aiResult.episodeSort,
-            };
-        }
-
         return {
             status: 'NOT_FOUND_IN_DB',
-            msg: `未在当前季度找到第 ${epNum} 集（当前季集数范围：${episodeRange} 集）`
+            msg: `AI 未能匹配，自动匹配也未找到第 ${epNum} 集（当前季集数范围：${episodeRange} 集，需人工审核）`
         };
     }
 

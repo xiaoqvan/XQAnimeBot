@@ -566,7 +566,8 @@ export async function sendMegToAnime(
   }
 
   let result;
-  const videoPaths = segments ?? [videoPath];
+  // 分段发送时，原始文件也必须清理（segments 是从原始文件切割出来的副本）
+  const videoPaths = segments ? [...segments, videoPath] : [videoPath];
   try {
     try {
       result = await sendOnce();
@@ -609,6 +610,8 @@ export async function sendMegToCache(
   const mediaToClean: string[] = [];
   try {
     if (segments) {
+      // 分段发送时，原始文件已不再需要，必须同步清理，否则依赖 qBittorrent deleteFiles 删除可能失败导致残留
+      mediaToClean.push(videoPath);
       const videoInfos = [];
       for (const path of segments) {
         const videoInfo = await extractVideoMetadata(path);
