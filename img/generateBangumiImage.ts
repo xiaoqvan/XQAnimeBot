@@ -217,7 +217,7 @@ export async function generateBangumiNavImage(
         currentEpNum = result.currentEpisode?.sort ?? 0;
         currentEpName = result.currentEpisode?.name_cn || result.currentEpisode?.name || "";
         currentEpAirDate = result.currentEpisode?.airdate || "";
-        nextEpNum = result.nextEpisode?.ep ?? 0;
+        nextEpNum = result.nextEpisode?.sort ?? 0;
         nextEpName = result.nextEpisode?.name_cn || result.nextEpisode?.name || "";
         nextEpAirDate = result.nextEpisode?.airdate || "";
     }

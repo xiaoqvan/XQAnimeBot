@@ -85,7 +85,7 @@
                     <div class="flex flex-row flex-wrap"
                         style="display: flex; flex-wrap: wrap; width: 400px; height: 120px;">
                         <div v-for="ep in episodes.slice(activePageIdx * episodesPerPage, activePageIdx * episodesPerPage + episodesPerPage)"
-                            :key="ep.ep" class="flex flex-row items-center justify-center"
+                            :key="ep.sort" class="flex flex-row items-center justify-center"
                             style="display: flex; width: 34px; height: 34px; border-radius: 6px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box;"
                             :style="{
                                 backgroundColor: ep.sort <= currentEpNum ? 'rgba(255,92,157,0.06)' : '#f5f5f5',
@@ -94,7 +94,7 @@
                             <span class="m-0 p-0" style="font-size: 13px; font-weight: 600;" :style="{
                                 color: ep.sort <= currentEpNum ? '#ff5c9d' : '#8c8c8c',
                                 fontWeight: ep.sort <= currentEpNum ? '600' : '400'
-                            }">{{ ep.ep < 10 ? '0' + ep.ep : ep.ep }}</span>
+                            }">{{ ep.sort < 10 ? '0' + ep.sort : ep.sort }}</span>
                         </div>
                         <!-- Fill empty slots -->
                         <div v-for="n in (episodesPerPage - Math.min(Math.max(0, episodes.length - activePageIdx * episodesPerPage), episodesPerPage))"
@@ -160,7 +160,7 @@
                                 class="flex flex-row items-center justify-center"
                                 style="display: flex; width: 26px; height: 26px; border-radius: 5px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box; background-color: #f5f5f5; border: 1.5px solid #e8e8e8;">
                                 <span class="m-0 p-0" style="font-size: 11px; font-weight: 500; color: #8c8c8c;">{{
-                                    ep.ep < 10 ? '0' + ep.ep : ep.ep }}</span>
+                                    ep.sort < 10 ? '0' + ep.sort : ep.sort }}</span>
                             </div>
                         </template>
                     </div>
