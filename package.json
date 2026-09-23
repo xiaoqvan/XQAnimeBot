@@ -1,19 +1,16 @@
 {
-  "name": "xq-anime-plugin",
+  "name": "XQ的动漫插件",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "description": "提供与动漫相关的功能",
+  "main": "index.ts",
   "type": "module",
-  "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
+  "pluginType": "bot",
   "license": "ISC",
   "packageManager": "pnpm@10.14.0",
   "dependencies": {
     "@fastify/cors": "^10.0.1",
     "@fastify/static": "^8.0.3",
+    "@fuyu-tdbot/plugin-api": "workspace:*",
     "cheerio": "^1.1.2",
     "fastify": "^5.2.0",
     "openai": "^6.44.0",
@@ -21,6 +18,12 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
-    "@types/parse-torrent": "^11.0.1"
+    "@types/parse-torrent": "^11.0.1",
+    "tdl": "^8.0.2",
+    "tdlib-types": "*"
+  },
+  "peerDependencies": {
+    "tdl": "^8.0.0",
+    "tdlib-types": "*"
   }
 }

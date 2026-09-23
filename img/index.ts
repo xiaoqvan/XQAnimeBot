@@ -1,5 +1,5 @@
 import axios from "axios";
-import { Plugin } from "@plugin/BasePlugin.ts";
+import { Plugin } from "@fuyu-tdbot/plugin-api";
 import type { Client } from "tdl";
 import { sendMessage } from "@TDLib/function/message.ts";
 import type { updateNewMessage } from "tdlib-types";

@@ -1,13 +1,10 @@
 import logger from "@log/index.ts";
-import { Plugin } from "@plugin/BasePlugin.ts";
+import { Plugin } from "@fuyu-tdbot/plugin-api";
 import type { Client } from "tdl";
 import { anime } from "./anime/index.ts";
 
 export default class AnimePlugin extends Plugin {
-  name = "XQ的动漫插件";
-  description = "提供与动漫相关的功能";
-  type = "bot";
-  version = "1.0.0";
+  // name/type/version/description 由 package.json 的 name/version/description/pluginType 注入
 
   constructor(client: Client) {
     super(client);
