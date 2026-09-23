@@ -70,6 +70,8 @@ export async function progressRoutes(app: FastifyInstance): Promise<void> {
                 animeName: item.animeName,
                 stage: item.stage,
                 torrentHash: item.torrentHash,
+                progressPercent: item.progressPercent,
+                progressLabel: item.progressLabel,
                 startTime: item.startTime.toISOString(),
                 updatedAt: item.updatedAt.toISOString(),
                 qb: item.torrentHash

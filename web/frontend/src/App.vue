@@ -165,7 +165,11 @@ onMounted(() => {
         </aside>
 
         <main class="content">
-            <RouterView />
+            <RouterView v-slot="{ Component }">
+                <KeepAlive :include="['AnimeList']">
+                    <component :is="Component" />
+                </KeepAlive>
+            </RouterView>
         </main>
     </div>
 </template>
@@ -228,7 +232,8 @@ body {
 
 /* ===== 移动端顶栏 / 抽屉 ===== */
 .mobile-topbar {
-    display: none; /* 默认（桌面）隐藏 */
+    display: none;
+    /* 默认（桌面）隐藏 */
     position: fixed;
     top: 0;
     left: 0;
@@ -280,10 +285,12 @@ body {
 }
 
 @media (max-width: 820px) {
+
     /* 顶栏显示、内容区避开顶栏 */
     .mobile-topbar {
         display: flex;
     }
+
     .mobile-topbar .logo {
         font-size: 18px;
     }
@@ -307,9 +314,11 @@ body {
         box-shadow: 0 0 40px rgba(16, 24, 40, 0.18);
         border-right: 1px solid var(--border);
     }
+
     .sidebar.open {
         transform: translateX(0);
     }
+
     .sidebar-close {
         display: flex;
         align-items: center;
@@ -333,10 +342,12 @@ body {
     .content {
         padding: 14px 10px;
     }
+
     .card {
         padding: 16px 14px;
         border-radius: 14px;
     }
+
     h2 {
         font-size: 20px;
         margin-bottom: 14px;
@@ -591,12 +602,14 @@ h3 {
 
 /* ===== 全局限窄屏补丁：覆盖各 view 内通用横排布局 ===== */
 @media (max-width: 640px) {
+
     /* 搜索栏 / 表单行纵向堆叠 */
     .searchbar,
     .fields {
         flex-direction: column !important;
         align-items: stretch !important;
     }
+
     .searchbar .btn,
     .fields .btn {
         width: 100% !important;

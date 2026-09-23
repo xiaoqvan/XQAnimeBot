@@ -249,94 +249,101 @@ export default async function addAnime(
 
     await addTorrent(animeBtInfo.magnet, "等待下载", animeBtInfo.title);
 
-    const onStage = (stage: string) => {
+    const onStage = (stage: string, progressPercent?: number, progressLabel?: string) => {
         // addnewanime 没有 manager，仅打印日志
-        logger.debug(`[addnewanime] ${stage}: ${animeBtInfo.title}`);
+        const pct = progressPercent !== undefined ? ` ${progressPercent.toFixed(0)}%` : "";
+        const label = progressLabel ? ` [${progressLabel}]` : "";
+        logger.debug(`[addnewanime] ${stage}${label}${pct}: ${animeBtInfo.title}`);
     };
     const torrent = await downloadAndValidateTorrent(animeBtInfo, animeProcessor, onStage);
 
-    const animeMeg = await sendMegToAnime(
-        client,
-        newanime,
-        animeBtInfo,
-        torrent.content_path,
-        Number(epid),
-        torrent.segments
-    );
+    try {
+        const animeMeg = await sendMegToAnime(
+            client,
+            newanime,
+            animeBtInfo,
+            torrent.content_path,
+            Number(epid),
+            torrent.segments
+        );
 
-    if (!animeMeg) {
-        await removeTorrentAndData(torrent.hash);
-        throw new Error(`发送动漫消息失败${animeBtInfo.title}`);
-    }
-    await removeTorrentAndData(torrent.hash);
+        if (!animeMeg) {
+            throw new Error(`发送动漫消息失败${animeBtInfo.title}`);
+        }
 
-    // 提取主消息（单条或相册第一条）
-    const animeMegList = animeMeg._ === "messages" ? animeMeg.messages.filter((m): m is messageType => m !== null) : [animeMeg];
-    const primaryAnimeMeg = animeMegList[0];
-    if (!primaryAnimeMeg) throw new Error(`发送动漫消息失败: 无有效消息 ${animeBtInfo.title}`);
+        // 提取主消息（单条或相册第一条）
+        const animeMegList = animeMeg._ === "messages" ? animeMeg.messages.filter((m): m is messageType => m !== null) : [animeMeg];
+        const primaryAnimeMeg = animeMegList[0];
+        if (!primaryAnimeMeg) throw new Error(`发送动漫消息失败: 无有效消息 ${animeBtInfo.title}`);
 
-    const animeAllMsgData: albumMessageType[] = animeMegList.map((msg) => ({
-        chat_id: msg.chat_id,
-        message_id: msg.id,
-        topic_id: msg.topic_id,
-        videoid: msg.content._ === "messageVideo" ? msg.content.video.video.remote.id : undefined,
-        unique_id: msg.content._ === "messageVideo" ? msg.content.video.video.remote.unique_id : undefined,
-    }));
-    const animeAllVideoids = animeAllMsgData.map((m) => m.videoid).filter((id): id is string => !!id);
-    const animeAllUniqueIds = animeAllMsgData.map((m) => m.unique_id).filter((id): id is string => !!id);
+        const animeAllMsgData: albumMessageType[] = animeMegList.map((msg) => ({
+            chat_id: msg.chat_id,
+            message_id: msg.id,
+            topic_id: msg.topic_id,
+            videoid: msg.content._ === "messageVideo" ? msg.content.video.video.remote.id : undefined,
+            unique_id: msg.content._ === "messageVideo" ? msg.content.video.video.remote.unique_id : undefined,
+        }));
+        const animeAllVideoids = animeAllMsgData.map((m) => m.videoid).filter((id): id is string => !!id);
+        const animeAllUniqueIds = animeAllMsgData.map((m) => m.unique_id).filter((id): id is string => !!id);
 
-    const animeLink = await getMessageLink(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id);
+        const animeLink = await getMessageLink(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id);
 
-    // 更新动漫的数据库信息
-    await saveAnimeResource(
-        anime.id,
-        Number(epid),
-        combineFansub(animeBtInfo.fansub),
-        animeBtInfo.episode || "未知",
-        {
-            chat_id: primaryAnimeMeg.chat_id,
-            message_id: primaryAnimeMeg.id,
-            thread_id: primaryAnimeMeg.topic_id
-                ? primaryAnimeMeg.topic_id._ === "messageTopicForum"
-                    ? primaryAnimeMeg.topic_id.forum_topic_id
-                    : 0
-                : 0,
-            link: animeLink.link,
-        },
-        animeBtInfo.title,
-        animeBtInfo.source,
-        animeBtInfo.names,
-        animeAllVideoids[0],
-        animeAllUniqueIds[0],
-        undefined,
-        false,
-        animeAllVideoids.length > 1 ? animeAllVideoids : undefined,
-        animeAllUniqueIds.length > 1 ? animeAllUniqueIds : undefined,
-        animeAllMsgData.length > 1 ? animeAllMsgData : undefined
-    );
-    await sendMegToNavAnime(client, newanime.id);
+        // 更新动漫的数据库信息
+        await saveAnimeResource(
+            anime.id,
+            Number(epid),
+            combineFansub(animeBtInfo.fansub),
+            animeBtInfo.episode || "未知",
+            {
+                chat_id: primaryAnimeMeg.chat_id,
+                message_id: primaryAnimeMeg.id,
+                thread_id: primaryAnimeMeg.topic_id
+                    ? primaryAnimeMeg.topic_id._ === "messageTopicForum"
+                        ? primaryAnimeMeg.topic_id.forum_topic_id
+                        : 0
+                    : 0,
+                link: animeLink.link,
+            },
+            animeBtInfo.title,
+            animeBtInfo.source,
+            animeBtInfo.names,
+            animeAllVideoids[0],
+            animeAllUniqueIds[0],
+            undefined,
+            false,
+            animeAllVideoids.length > 1 ? animeAllVideoids : undefined,
+            animeAllUniqueIds.length > 1 ? animeAllUniqueIds : undefined,
+            animeAllMsgData.length > 1 ? animeAllMsgData : undefined
+        );
+        await sendMegToNavAnime(client, newanime.id);
 
-    const nanime = await getAnimeById(anime.id);
-    if (!nanime) {
-        return
-    }
+        const nanime = await getAnimeById(anime.id);
+        if (!nanime) {
+            return
+        }
 
-    const text = AnimeText(nanime, animeBtInfo, Number(epid));
+        const text = AnimeText(nanime, animeBtInfo, Number(epid));
 
-    if (animeMeg._ === "messages" && animeMeg.messages[0]) {
-        await editMessageCaption(client, animeMeg.messages[0].chat_id, animeMeg.messages[0].id, {
-            text,
+        if (animeMeg._ === "messages" && animeMeg.messages[0]) {
+            await editMessageCaption(client, animeMeg.messages[0].chat_id, animeMeg.messages[0].id, {
+                text,
+            });
+        } else {
+            await editMessageCaption(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id, {
+                text,
+            });
+        }
+
+        if (!tipsMsg) {
+            return;
+        }
+        await editMessageText(client, message.chat_id, tipsMsg.id, {
+            text: `已为动漫 ${newanime.name_cn || newanime.name} 添加BT信息并发送相关消息！ ${animeLink.link} \n\n如果需要更新或修改BT信息，请使用 /addanime 命令。`,
         });
-    } else {
-        await editMessageCaption(client, primaryAnimeMeg.chat_id, primaryAnimeMeg.id, {
-            text,
-        });
+    } finally {
+        await removeTorrentAndData(torrent.hash, [
+            torrent.content_path,
+            ...(torrent.segments ?? []),
+        ]);
     }
-
-    if (!tipsMsg) {
-        return;
-    }
-    await editMessageText(client, message.chat_id, tipsMsg.id, {
-        text: `已为动漫 ${newanime.name_cn || newanime.name} 添加BT信息并发送相关消息！ ${animeLink.link} \n\n如果需要更新或修改BT信息，请使用 /addanime 命令。`,
-    });
 }

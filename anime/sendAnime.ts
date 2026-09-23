@@ -521,54 +521,55 @@ export async function sendMegToAnime(
   await updateTorrentStatus(item.title, "上传中");
 
   const coverPaths: string[] = [];
-  let sendOnce: () => ReturnType<typeof sendMessage | typeof sendMessageAlbum>;
-
-  if (segments) {
-    const text = AnimeText(anime, item, episodeId);
-    const videoInfos: Awaited<ReturnType<typeof extractVideoMetadata>>[] = [];
-    for (const path of segments) {
-      const videoInfo = await extractVideoMetadata(path);
-      videoInfos.push(videoInfo);
-      coverPaths.push(videoInfo.coverPath);
-    }
-    sendOnce = () =>
-      sendMessageAlbum(client, Number(env.data.ANIME_CHANNEL), {
-        timeout: 1800,
-        medias: videoInfos.map((videoInfo, index) => ({
-          video: { path: segments[index] },
-          cover: { path: videoInfo.coverPath },
-          width: videoInfo.width,
-          height: videoInfo.height,
-          duration: Math.floor(videoInfo.duration),
-          supports_streaming: true,
-          has_spoiler: anime?.r18 === true || false,
-          caption: index === 0 ? text : undefined,
-        })),
-      });
-  } else {
-    const videoInfo = await extractVideoMetadata(videoPath);
-    coverPaths.push(videoInfo.coverPath);
-    const text = AnimeText(anime, item, episodeId);
-    sendOnce = () =>
-      sendMessage(client, Number(env.data.ANIME_CHANNEL), {
-        text,
-        timeout: 1800,
-        media: {
-          video: { path: videoPath },
-          cover: { path: videoInfo.coverPath },
-          width: videoInfo.width,
-          height: videoInfo.height,
-          duration: Math.floor(videoInfo.duration),
-          supports_streaming: true,
-          has_spoiler: anime?.r18 === true || false,
-        },
-      });
-  }
-
-  let result;
   // 分段发送时，原始文件也必须清理（segments 是从原始文件切割出来的副本）
   const videoPaths = segments ? [...segments, videoPath] : [videoPath];
+
   try {
+    let sendOnce: () => ReturnType<typeof sendMessage | typeof sendMessageAlbum>;
+
+    if (segments) {
+      const text = AnimeText(anime, item, episodeId);
+      const videoInfos: Awaited<ReturnType<typeof extractVideoMetadata>>[] = [];
+      for (const path of segments) {
+        const videoInfo = await extractVideoMetadata(path);
+        videoInfos.push(videoInfo);
+        coverPaths.push(videoInfo.coverPath);
+      }
+      sendOnce = () =>
+        sendMessageAlbum(client, Number(env.data.ANIME_CHANNEL), {
+          timeout: 1800,
+          medias: videoInfos.map((videoInfo, index) => ({
+            video: { path: segments[index] },
+            cover: { path: videoInfo.coverPath },
+            width: videoInfo.width,
+            height: videoInfo.height,
+            duration: Math.floor(videoInfo.duration),
+            supports_streaming: true,
+            has_spoiler: anime?.r18 === true || false,
+            caption: index === 0 ? text : undefined,
+          })),
+        });
+    } else {
+      const videoInfo = await extractVideoMetadata(videoPath);
+      coverPaths.push(videoInfo.coverPath);
+      const text = AnimeText(anime, item, episodeId);
+      sendOnce = () =>
+        sendMessage(client, Number(env.data.ANIME_CHANNEL), {
+          text,
+          timeout: 1800,
+          media: {
+            video: { path: videoPath },
+            cover: { path: videoInfo.coverPath },
+            width: videoInfo.width,
+            height: videoInfo.height,
+            duration: Math.floor(videoInfo.duration),
+            supports_streaming: true,
+            has_spoiler: anime?.r18 === true || false,
+          },
+        });
+    }
+
+    let result;
     try {
       result = await sendOnce();
     } catch (firstError) {
@@ -579,7 +580,7 @@ export async function sendMegToAnime(
     await updateTorrentStatus(item.title, "完成");
     return result;
   } finally {
-    // 无论发送成功或失败，都必须清理视频文件和封面，避免临时文件堆积占满磁盘
+    // 无论发送成功或失败（含 extractVideoMetadata 抛错），都必须清理，避免临时文件堆积
     for (const p of videoPaths) fs.unlink(p).catch(() => { });
     for (const p of coverPaths) fs.unlink(p).catch(() => { });
   }
@@ -607,16 +608,15 @@ export async function sendMegToCache(
       : undefined;
 
   // 无论发送成功或失败，都必须清理视频/封面临时文件，避免堆积
-  const mediaToClean: string[] = [];
+  // 分段时原始文件也要清：segments 是从原始文件切割出来的副本
+  const mediaToClean: string[] = segments ? [videoPath, ...segments] : [videoPath];
   try {
     if (segments) {
-      // 分段发送时，原始文件已不再需要，必须同步清理，否则依赖 qBittorrent deleteFiles 删除可能失败导致残留
-      mediaToClean.push(videoPath);
       const videoInfos = [];
       for (const path of segments) {
         const videoInfo = await extractVideoMetadata(path);
         videoInfos.push(videoInfo);
-        mediaToClean.push(path, videoInfo.coverPath);
+        mediaToClean.push(videoInfo.coverPath);
       }
       const animeMessages = await sendMessageAlbum(
         client,
@@ -645,7 +645,7 @@ export async function sendMegToCache(
       return animeMessages;
     }
     const videoInfo = await extractVideoMetadata(videoPath);
-    mediaToClean.push(videoPath, videoInfo.coverPath);
+    mediaToClean.push(videoInfo.coverPath);
     const animeMessage = await sendMessage(
       client,
       Number(env.data.ADMIN_GROUP_ID),

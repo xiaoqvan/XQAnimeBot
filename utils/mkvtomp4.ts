@@ -7,13 +7,18 @@ import { spawn } from "child_process";
  *
  * @param cmd 要执行的命令（如 ffmpeg / ffprobe）
  * @param args 命令参数数组
+ * @param onStderr - 可选，实时接收 stderr 片段（用于解析 ffmpeg 进度）
  * @returns Promise<void> 命令成功完成时 resolve，失败时 reject
  */
-function run(cmd: string, args: string[]) {
+function run(cmd: string, args: string[], onStderr?: (chunk: string) => void) {
   return new Promise<void>((resolve, reject) => {
     const p = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
-    p.stderr?.on("data", (d) => (stderr += d.toString()));
+    p.stderr?.on("data", (d) => {
+      const s = d.toString();
+      stderr += s;
+      onStderr?.(s);
+    });
     p.on("error", (err) => reject(new Error(`${cmd} 启动失败: ${err.message}`)));
     p.on("close", (code) => {
       if (code === 0) {
@@ -24,6 +29,69 @@ function run(cmd: string, args: string[]) {
       }
     });
   });
+}
+
+/** 将 ffmpeg 的 HH:MM:SS.ms 时间码转为秒 */
+function parseTimecodeToSeconds(tc: string): number {
+  const m = tc.match(/^(\d+):(\d+):(\d+(?:\.\d+)?)$/);
+  if (!m) return 0;
+  return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+/**
+ * 读取视频总时长（秒），失败返回 0
+ */
+async function probeDurationSeconds(file: string): Promise<number> {
+  return new Promise((resolve) => {
+    const p = spawn(
+      "ffprobe",
+      [
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        file,
+      ],
+      { stdio: ["ignore", "pipe", "ignore"] }
+    );
+    let out = "";
+    p.stdout?.on("data", (d) => (out += d.toString()));
+    p.on("close", () => {
+      const n = parseFloat(out.trim());
+      resolve(Number.isFinite(n) && n > 0 ? n : 0);
+    });
+    p.on("error", () => resolve(0));
+  });
+}
+
+/**
+ * 解析 ffmpeg stderr 进度（time=HH:MM:SS.ms），换算为百分比回调。
+ * 只保留最近缓冲，避免长视频 stderr 累积。
+ */
+function createFfmpegProgressReporter(
+  totalDurationSec: number,
+  onProgress?: (percent: number) => void
+): (chunk: string) => void {
+  let buf = "";
+  let lastReported = -1;
+  return (chunk: string) => {
+    if (!onProgress || totalDurationSec <= 0) return;
+    buf += chunk;
+    if (buf.length > 4000) buf = buf.slice(-4000);
+
+    // ffmpeg 进度行示例：frame=  123 fps= 45 q=28.0 size=... time=00:01:23.45 bitrate=... speed=1.2x
+    const matches = buf.match(/time=(\d+:\d+:\d+(?:\.\d+)?)/g);
+    if (!matches?.length) return;
+    const last = matches[matches.length - 1]!.slice("time=".length);
+    const sec = parseTimecodeToSeconds(last);
+    if (sec <= 0) return;
+
+    const raw = Math.max(0, Math.min(99.9, (sec / totalDurationSec) * 100));
+    const percent = Math.round(raw * 10) / 10;
+    // 变化不足 0.5% 不回调，避免刷爆 progressMap
+    if (lastReported >= 0 && Math.abs(percent - lastReported) < 0.5) return;
+    lastReported = percent;
+    onProgress(percent);
+  };
 }
 
 /**
@@ -37,9 +105,13 @@ function run(cmd: string, args: string[]) {
  * 启用缓存（基于文件名 + mtime + size）
  *
  * @param mkv MKV 文件路径
+ * @param onProgress - 可选，转码进度百分比回调（0-100）
  * @returns 生成的 MP4 文件路径
  */
-export async function mkvToMp4(mkv: string): Promise<string> {
+export async function mkvToMp4(
+  mkv: string,
+  onProgress?: (percent: number) => void
+): Promise<string> {
   await ensureFFmpeg();
 
   const stat = await fs.stat(mkv);
@@ -56,60 +128,104 @@ export async function mkvToMp4(mkv: string): Promise<string> {
 
   try {
     await fs.access(outPath);
+    onProgress?.(100);
     return outPath;
   } catch { }
+
+  const totalDurationSec = await probeDurationSeconds(mkv);
+  const reportProgress = createFfmpegProgressReporter(totalDurationSec, onProgress);
+  onProgress?.(0);
 
   const subtitleIndex = await findSimplifiedChineseSubtitleIndex(mkv);
   const hasSub = subtitleIndex !== null || (await hasAnySubtitles(mkv));
 
-  if (hasSub) {
-    // 先将字幕流提取为独立 .ass 文件，避免 subtitles 滤镜重新解析原文件时
-    const subStreamIndex = subtitleIndex ?? 0;
-    const subPath = path.join(outDir, `${base}_sub_${hash}.ass`);
-    let subExtracted = false;
-
-    try {
-      await run("ffmpeg", [
-        "-y",
-        "-i",
-        mkv,
-        "-map",
-        `0:s:${subStreamIndex}`,
-        subPath,
-      ]);
-      subExtracted = true;
-    } catch {
-      // 字幕提取失败，降级为无字幕转码
-    }
-
-    if (subExtracted) {
-      const safeSubPath = subPath
-        .replace(/\\/g, "\\\\")
-        .replace(/:/g, "\\:")
-        .replace(/'/g, "\\'");
+  try {
+    if (hasSub) {
+      // 先将字幕流提取为独立 .ass 文件，避免 subtitles 滤镜重新解析原文件时
+      const subStreamIndex = subtitleIndex ?? 0;
+      const subPath = path.join(outDir, `${base}_sub_${hash}.ass`);
+      let subExtracted = false;
 
       try {
         await run("ffmpeg", [
           "-y",
           "-i",
           mkv,
-          "-vf",
-          `subtitles='${safeSubPath}'`,
+          "-map",
+          `0:s:${subStreamIndex}`,
+          subPath,
+        ]);
+        subExtracted = true;
+      } catch {
+        // 字幕提取失败，降级为无字幕转码
+      }
+
+      if (subExtracted) {
+        const safeSubPath = subPath
+          .replace(/\\/g, "\\\\")
+          .replace(/:/g, "\\:")
+          .replace(/'/g, "\\'");
+
+        try {
+          await run("ffmpeg", [
+            "-y",
+            "-i",
+            mkv,
+            "-vf",
+            `subtitles='${safeSubPath}'`,
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "20",
+            "-c:a",
+            "copy",
+            outPath,
+          ], reportProgress);
+        } finally {
+          await fs.unlink(subPath).catch(() => { });
+        }
+      } else {
+        // 降级：无字幕兼容性转码
+        await run("ffmpeg", [
+          "-y",
+          "-err_detect",
+          "ignore_err",
+          "-fflags",
+          "+genpts",
+          "-i",
+          mkv,
           "-c:v",
           "libx264",
           "-preset",
-          "fast",
+          "veryfast",
+          "-profile:v",
+          "high",
+          "-level",
+          "4.1",
+          "-pix_fmt",
+          "yuv420p",
+          "-movflags",
+          "+faststart",
           "-crf",
-          "20",
+          "23",
           "-c:a",
-          "copy",
+          "aac",
+          "-b:a",
+          "192k",
+          "-ar",
+          "48000",
+          "-ac",
+          "2",
+          "-map_metadata",
+          "-1",
+          "-map_chapters",
+          "-1",
           outPath,
-        ]);
-      } finally {
-        await fs.unlink(subPath).catch(() => { });
+        ], reportProgress);
       }
     } else {
-      // 降级：无字幕兼容性转码
       await run("ffmpeg", [
         "-y",
         "-err_detect",
@@ -145,48 +261,16 @@ export async function mkvToMp4(mkv: string): Promise<string> {
         "-map_chapters",
         "-1",
         outPath,
-      ]);
+      ], reportProgress);
     }
-  } else {
-    await run("ffmpeg", [
-      "-y",
-      "-err_detect",
-      "ignore_err",
-      "-fflags",
-      "+genpts",
-      "-i",
-      mkv,
-      "-c:v",
-      "libx264",
-      "-preset",
-      "veryfast",
-      "-profile:v",
-      "high",
-      "-level",
-      "4.1",
-      "-pix_fmt",
-      "yuv420p",
-      "-movflags",
-      "+faststart",
-      "-crf",
-      "23",
-      "-c:a",
-      "aac",
-      "-b:a",
-      "192k",
-      "-ar",
-      "48000",
-      "-ac",
-      "2",
-      "-map_metadata",
-      "-1",
-      "-map_chapters",
-      "-1",
-      outPath,
-    ]);
-  }
 
-  return outPath;
+    onProgress?.(100);
+    return outPath;
+  } catch (err) {
+    // 转码失败：清掉半成品，避免 cache 目录堆积
+    await fs.unlink(outPath).catch(() => { });
+    throw err;
+  }
 }
 
 

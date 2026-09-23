@@ -4,8 +4,7 @@ import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
 import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
 import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
 import { checkTorrentFormat } from "../utils/checkTorrentFormat.ts";
-import { downloadAndValidateTorrent, removeTorrentAndData } from "../qBittorrent/download.ts";
-import { getQBClient } from "../qBittorrent/index.ts";
+import { downloadAndValidateTorrent } from "../qBittorrent/download.ts";
 import type { AnimeProcessorManager } from "./AnimeProcessorManager.ts";
 import type { RssAnimeItem, animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
@@ -67,28 +66,25 @@ export async function handleRssAnimeItem(
 
         // 格式预检失败（超时等），回退到下载完成后判断
         if (format === "unknown") {
-            manager.updateProgress(item.title, "格式预检超时，下载后判断");
-            const onStage = (stage: string) =>
-                manager.updateProgress(item.title, stage, { animeName: newitem.names[0] });
+            manager.updateProgress(item.title, "格式预检失败，下载后判断");
+            const onStage = (stage: string, progressPercent?: number, progressLabel?: string) =>
+                manager.updateProgress(item.title, stage, {
+                    animeName: newitem.names[0],
+                    ...(progressPercent !== undefined ? { progressPercent } : {}),
+                    ...(progressLabel !== undefined ? { progressLabel } : {}),
+                });
             const torrent = await downloadAndValidateTorrent(newitem, manager, onStage, true);
             if (!torrent) return;
 
             if (torrent.isMkv) {
-                // MKV：这里已经下载完成并暂停了种子。
-                // 若直接重新入队，MKV worker 会再次 downloadAndReturnPath 命中同一种子，
-                // 而该种子处于暂停状态、不会进入 seeding 状态，导致等待死循环，
-                // 最终种子与视频都无法清理。
-                // 因此先删除已暂停的种子（保留文件，避免重复下载 MKV），
-                // MKV worker 重新添加后会自动 recheck 已存在的文件并继续烧录流程。
-                const QBclientForMkv = await getQBClient();
-                await QBclientForMkv.deleteTorrent(torrent.hash, false).catch(() => { });
+                // MKV：已下载完成（种子处于 pausedUP/stoppedUP，均视为完成态）。
+                // 不要 delete+re-add：既会留下磁盘文件无人清理，又可能因状态判断踩坑。
+                // 直接入 MKV 队列，后续 downloadAndReturnPath 会复用已有种子。
                 manager.updateProgress(item.title, "下载完成（MKV），路由到MKV队列");
                 await manager.enqueueMkv(client, newitem);
                 return;
             }
-            // 非 MKV：删除种子（保留文件），走正常主线程流程
-            const QBclient = await getQBClient();
-            await QBclient.deleteTorrent(torrent.hash, false).catch(() => { });
+            // 非 MKV：保留种子与文件，主流程 downloadAndReturnPath 会复用已有种子
         }
     }
 

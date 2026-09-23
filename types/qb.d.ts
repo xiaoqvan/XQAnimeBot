@@ -240,6 +240,28 @@ export interface TorrentProperties {
 }
 
 /**
+ * Torrent 内文件信息（/api/v2/torrents/files）
+ */
+export interface TorrentFile {
+    /** 文件索引 */
+    index: number;
+    /** 文件路径（含目录） */
+    name: string;
+    /** 文件大小（字节） */
+    size: number;
+    /** 下载进度（0-1） */
+    progress: number;
+    /** 优先级 */
+    priority: number;
+    /** 是否做种 */
+    is_seed?: boolean;
+    /** 可用性 */
+    availability?: number;
+    /** 分块范围 */
+    piece_range?: number[];
+}
+
+/**
  * 传输信息接口
  */
 export interface TransferInfo {

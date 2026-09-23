@@ -1,7 +1,21 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { onActivated, onMounted, ref } from "vue";
+import { onBeforeRouteLeave, useRouter } from "vue-router";
 import { api, readCache, type AnimeItem, type AnimePage, type SeasonItem } from "../api/client.ts";
+
+// 滚动位置记忆：详情页返回后恢复到离开时的滚动位置
+const SCROLL_KEY = "anime-list-scroll";
+function saveScroll() {
+    const el = document.querySelector<HTMLElement>(".content") ?? document.documentElement;
+    sessionStorage.setItem(SCROLL_KEY, String(el.scrollTop ?? 0));
+}
+function restoreScroll() {
+    const saved = Number(sessionStorage.getItem(SCROLL_KEY) ?? 0);
+    const el = document.querySelector<HTMLElement>(".content") ?? document.documentElement;
+    requestAnimationFrame(() => {
+        el.scrollTop = saved;
+    });
+}
 
 const router = useRouter();
 const keyword = ref("");
@@ -119,27 +133,28 @@ async function addAnime() {
 }
 
 function openDetail(id: number) {
+    saveScroll();
     router.push(`/anime/${id}`);
 }
 
-async function removeAnime(item: AnimeItem, event: Event) {
-    event.stopPropagation();
-    const name = item.name_cn || item.name;
-    if (!confirm(`确定删除番剧「${name}」（ID ${item.id}）？\n将同时删除其章节、资源与待审核记录（BT 去重记录保留）。`)) {
-        return;
-    }
-    try {
-        await api.deleteAnime(item.id);
-        alert(`已删除「${name}」`);
-        loadPage(page.value);
-    } catch (e) {
-        alert((e as Error).message);
-    }
-}
-
+// 首次进入：加载分类与第一页
 onMounted(() => {
     loadSeasons();
     loadPage(1);
+});
+
+// keep-alive 重新激活（如从详情页返回）：若列表缓存已被清除（例如在详情页删除过番剧），
+// 则按当前保存的页码/分类重新拉取；否则保留已有状态与滚动位置，实现"记忆翻页"。
+onActivated(() => {
+    const cacheKey = `anime:${activeSeason.value}:${page.value}:${pageSize.value}`;
+    if (!readCache<AnimePage>(cacheKey)) {
+        loadPage(page.value);
+    }
+    restoreScroll();
+});
+
+onBeforeRouteLeave(() => {
+    saveScroll();
 });
 </script>
 
@@ -196,9 +211,6 @@ onMounted(() => {
                             <span class="chip chip-score">⭐ {{ item.score ?? "—" }}</span>
                             <span class="chip">{{ item.episode ?? "?" }} 集</span>
                         </div>
-                        <button class="delete-btn" title="删除番剧" @click="removeAnime(item, $event)">
-                            🗑
-                        </button>
                     </div>
                 </div>
             </div>
@@ -378,24 +390,7 @@ onMounted(() => {
 }
 
 .body {
-    position: relative;
     padding: 12px 13px 14px;
-}
-
-.delete-btn {
-    position: absolute;
-    top: 8px;
-    right: 8px;
-    border: none;
-    background: rgba(244, 63, 94, 0.12);
-    color: var(--red);
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
-    cursor: pointer;
-    font-size: 13px;
-    line-height: 1;
-    transition: background 0.15s;
 }
 
 .delete-btn:hover {

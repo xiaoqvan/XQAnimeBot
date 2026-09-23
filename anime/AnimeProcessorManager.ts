@@ -17,6 +17,10 @@ export interface ProgressInfo {
     stage: string;
     /** qBittorrent 种子 infoHash（进入下载阶段后填充，用于查询实时状态） */
     torrentHash?: string;
+    /** 细粒度进度百分比（0-100），如转码进度；阶段切换后会被清空 */
+    progressPercent?: number;
+    /** 细粒度进度名称，如 "转码"、"分段" */
+    progressLabel?: string;
     /** 任务开始处理的时间 */
     startTime: Date;
     /** 最后一次阶段更新的时间 */
@@ -239,22 +243,41 @@ export class AnimeProcessorManager {
      * 若任务不在活跃 Map 中（已完成或未开始），则调用无效
      * @param title - BT 种子标题（任务唯一标识）
      * @param stage - 新的阶段描述文本
-     * @param extra - 可选的额外字段：animeName 或 torrentHash
+     * @param extra - 可选的额外字段：animeName / torrentHash / progressPercent / progressLabel
      */
     updateProgress(
         title: string,
         stage: string,
-        extra?: Partial<Pick<ProgressInfo, "animeName" | "torrentHash">>
+        extra?: Partial<
+            Pick<ProgressInfo, "animeName" | "torrentHash" | "progressPercent" | "progressLabel">
+        >
     ): void {
         const current = this.progressMap.get(title);
-        if (current) {
-            this.progressMap.set(title, {
-                ...current,
-                ...extra,
-                stage,
-                updatedAt: new Date(),
-            });
-        }
+        if (!current) return;
+
+        const stageChanged = current.stage !== stage;
+        // 阶段切换且未携带新百分比时清空，避免上一阶段的数值残留
+        const nextPercent =
+            extra && "progressPercent" in extra
+                ? extra.progressPercent
+                : stageChanged
+                    ? undefined
+                    : current.progressPercent;
+        const nextLabel =
+            extra && "progressLabel" in extra
+                ? extra.progressLabel
+                : stageChanged
+                    ? undefined
+                    : current.progressLabel;
+
+        this.progressMap.set(title, {
+            ...current,
+            ...extra,
+            progressPercent: nextPercent,
+            progressLabel: nextLabel,
+            stage,
+            updatedAt: new Date(),
+        });
     }
 
     /**

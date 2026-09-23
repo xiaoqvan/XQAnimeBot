@@ -63,6 +63,15 @@ function formatCountdown(ms: number): string {
 }
 
 /**
+ * 生成简单的文本进度条，如 ████████░░░░
+ */
+function formatBar(percent: number, width = 12): string {
+    const p = Math.max(0, Math.min(100, percent));
+    const filled = Math.round((p / 100) * width);
+    return "█".repeat(filled) + "░".repeat(width - filled);
+}
+
+/**
  * 处理 `/progress` 命令，向管理员展示当前所有活跃的动漫下载/处理进度
  *
  * 显示内容包括：
@@ -137,6 +146,11 @@ export default async function progress(
             text += `**${index + 1}.** ${displayName}\n`;
             text += `     🎬 \`${shortTitle}\`\n`;
             text += `     📍 阶段: \`${item.stage}\`\n`;
+            if (typeof item.progressPercent === "number") {
+                const label = item.progressLabel || "进度";
+                const pct = item.progressPercent;
+                text += `     📊 ${label}: **${pct.toFixed(0)}%** ${formatBar(pct)}\n`;
+            }
             text += `     ⏱️ 耗时: ${formatDuration(item.startTime)}\n`;
 
             if (item.torrentHash) {

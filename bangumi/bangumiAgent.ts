@@ -44,18 +44,76 @@ export type MatchResult = {
     reason: string;
 };
 
-// ─── 内部类型 ────────────────────────────────────────────────────────────────
-
-/** OpenAI Chat Completion Message 的联合类型 */
-type ChatMessage =
-    | { role: "system"; content: string }
-    | { role: "user"; content: string }
-    | { role: "assistant"; content: string | null; tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] }
-    | { role: "tool"; tool_call_id: string; content: string };
+// ─── Responses API 输出类型（使用 SDK 原生类型）──────────────────────────────
 
 // ─── 常量 ────────────────────────────────────────────────────────────────────
 
-const MODEL = "deepseek-v4-flash";
+const MODEL = "deepseek-flash";
+
+// ─── Responses API 工具定义 ─────────────────────────────────────────────────
+
+const TOOL_DEFINITIONS: OpenAI.Responses.FunctionTool[] = [
+    {
+        type: "function",
+        name: "searchAnimeCandidates",
+        strict: false,
+        description:
+            "使用关键词搜索 Bangumi 番剧候选列表。返回 AnimeCandidate[]，包含 id、名称、中文名、放送日期、集数范围和简介。在搜索别名或模糊名称时调用此工具。",
+        parameters: {
+            type: "object",
+            properties: {
+                keyword: {
+                    type: "string",
+                    description: "搜索关键词，可以是番剧原名、中文名、别名等",
+                },
+                limit: {
+                    type: "number",
+                    description: "返回结果数量上限（1-50），默认 10",
+                    default: 10,
+                },
+            },
+            required: ["keyword"],
+        },
+    },
+    {
+        type: "function",
+        name: "getRelatedSubjects",
+        strict: false,
+        description:
+            "获取指定 Bangumi 条目的关联作品列表（如前传、续集、番外篇等）。仅返回 type=2（动画）的关联条目。当需要区分多季番剧或查找关联作品时调用此工具。",
+        parameters: {
+            type: "object",
+            properties: {
+                subjectId: {
+                    type: "number",
+                    description: "Bangumi 条目 ID",
+                },
+            },
+            required: ["subjectId"],
+        },
+    },
+    {
+        type: "function",
+        name: "getEpisodeDetail",
+        strict: false,
+        description:
+            "获取指定 Bangumi 条目中某集的具体详情，包括章节 ID（id）、集数编号（sort）和放送日期。当确定了 subjectId 并且输入包含集数信息时，调用此工具获取精确的章节 ID。",
+        parameters: {
+            type: "object",
+            properties: {
+                subjectId: {
+                    type: "number",
+                    description: "Bangumi 条目 ID",
+                },
+                episodeSort: {
+                    type: "number",
+                    description: "集数编号，如第 5 集则传入 5",
+                },
+            },
+            required: ["subjectId", "episodeSort"],
+        },
+    },
+];
 
 // ─── 客户端（懒加载）────────────────────────────────────────────────────────
 
@@ -71,37 +129,81 @@ function getClient(): OpenAI {
         baseURL: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
     });
 
-    // 包装底层 completions.create，自动记录每次 AI 调用（供 Web 展示）
-    const completions = client.chat.completions as unknown as {
-        create: (...args: any[]) => any;
-    };
-    const originalCreate = completions.create.bind(completions);
+    // 包装 responses.create，自动记录每次 AI 调用（供 Web 展示）
+    const originalCreate = client.responses.create.bind(client.responses);
     const scene = activeAiScene;
-    completions.create = async (...args: any[]) => {
+    client.responses.create = function wrappedCreate(...args: Parameters<typeof originalCreate>) {
         const start = Date.now();
-        let output: string | undefined;
-        let ok = false;
-        try {
-            const result = await originalCreate(...args);
-            ok = true;
-            output = result?.choices?.[0]?.message?.content ?? "";
-            return result;
-        } finally {
-            const req = (args[0] ?? {}) as { messages?: Array<{ role: string; content: unknown }> };
-            const lastUserMsg = [...(req.messages ?? [])].reverse().find((m) => m.role === "user");
-            const input = typeof lastUserMsg?.content === "string" ? lastUserMsg.content : "";
-            void recordAiCall({
-                scene,
-                input: input || "(AI 调用)",
-                output: ok ? output ?? undefined : undefined,
-                success: ok,
-                model: (args[0] as { model?: string } | undefined)?.model,
-                durationMs: Date.now() - start,
-            });
-        }
-    };
+        const firstArg = args[0];
+        const callModel = firstArg && typeof firstArg === "object" ? firstArg.model : undefined;
+
+        return originalCreate(...args).then(
+            (result) => {
+                const outputText = "output" in result ? extractOutputText(result.output) : "";
+                void recordAiCall({
+                    scene,
+                    input: extractInputTextFromRequest(firstArg && typeof firstArg === "object" ? firstArg.input : undefined) || "(AI 调用)",
+                    output: outputText || undefined,
+                    success: true,
+                    model: callModel,
+                    durationMs: Date.now() - start,
+                });
+                return result;
+            },
+            (error: unknown) => {
+                void recordAiCall({
+                    scene,
+                    input: extractInputTextFromRequest(firstArg && typeof firstArg === "object" ? firstArg.input : undefined) || "(AI 调用)",
+                    output: undefined,
+                    success: false,
+                    model: callModel,
+                    durationMs: Date.now() - start,
+                });
+                throw error;
+            },
+        );
+    } as typeof client.responses.create;
 
     return client;
+}
+
+// ─── Responses API 辅助函数 ─────────────────────────────────────────────────
+
+/** 从 output 数组中提取所有文本内容 */
+function extractOutputText(output: OpenAI.Responses.ResponseOutputItem[]): string {
+    return output
+        .filter((item): item is OpenAI.Responses.ResponseOutputMessage => item.type === "message")
+        .flatMap((item) => item.content)
+        .filter((c): c is OpenAI.Responses.ResponseOutputText => c.type === "output_text")
+        .map((c) => c.text)
+        .join("");
+}
+
+/** 从 output 数组中提取 function_call 项 */
+function extractFunctionCalls(output: OpenAI.Responses.ResponseOutputItem[]): OpenAI.Responses.ResponseFunctionToolCall[] {
+    return output.filter(
+        (item): item is OpenAI.Responses.ResponseFunctionToolCall => item.type === "function_call",
+    );
+}
+
+/** 从请求 input 中提取用户文本 */
+function extractInputTextFromRequest(
+    input: string | OpenAI.Responses.ResponseInputItem[] | undefined,
+): string {
+    if (typeof input === "string") {
+        return input;
+    }
+    if (Array.isArray(input)) {
+        const lastUser = [...input].reverse().find(
+            (item): item is OpenAI.Responses.EasyInputMessage => item.type === "message",
+        );
+        if (lastUser) {
+            return typeof lastUser.content === "string"
+                ? lastUser.content
+                : lastUser.content.filter((c) => c.type === "input_text").map((c) => c.text).join("");
+        }
+    }
+    return "";
 }
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
@@ -195,26 +297,23 @@ confidence 必须是 0~1 之间的小数（如 0.97），不是 0~100。
 // ─── 工具执行器 ──────────────────────────────────────────────────────────────
 
 /**
- * 执行单个工具调用并返回结果字符串。
+ * 执行单个 function_call 并返回结果字符串。
  * 使用 zod 严格校验参数，捕获所有异常。
  */
-async function executeToolCall(
-    toolCall: OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall,
+async function executeFunctionCall(
+    fc: OpenAI.Responses.ResponseFunctionToolCall,
     searchedKeywords: Set<string>,
     exploredSubjectIds: Set<number>,
 ): Promise<string> {
-    const name = toolCall.function.name;
     let args: Record<string, unknown>;
-
-    // 安全解析参数
     try {
-        args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+        args = JSON.parse(fc.arguments);
     } catch {
-        return JSON.stringify({ error: `无法解析工具参数 JSON: ${toolCall.function.arguments}` });
+        return JSON.stringify({ error: `无法解析工具参数 JSON: ${fc.arguments}` });
     }
 
     try {
-        switch (name) {
+        switch (fc.name) {
             case "searchAnimeCandidates": {
                 const parsed = SearchAnimeCandidatesSchema.parse(args);
 
@@ -261,7 +360,7 @@ async function executeToolCall(
             }
 
             default:
-                return JSON.stringify({ error: `未知工具: ${name}` });
+                return JSON.stringify({ error: `未知工具: ${fc.name}` });
         }
     } catch (error: unknown) {
         if (error instanceof z.ZodError) {
@@ -336,7 +435,7 @@ function safeParseMatchResult(raw: string): MatchResult {
 
     // 尝试标准 JSON 解析
     try {
-        const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+        const parsed: Record<string, unknown> = JSON.parse(jsonStr);
         const result = FinalOutputSchema.parse(parsed);
         return result;
     } catch {
@@ -682,9 +781,8 @@ export async function aiEpisodeSearch(
 
     const userPrompt = candidateLines.join("\n");
 
-    const messages: ChatMessage[] = [
-        { role: "system", content: AI_EPISODE_SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
+    const inputItems: OpenAI.Responses.ResponseInputItem[] = [
+        { role: "user", content: userPrompt, type: "message" },
     ];
 
     const MAX_ITERATIONS = 8;
@@ -700,101 +798,26 @@ export async function aiEpisodeSearch(
 
         let response;
         try {
-            response = await getClient().chat.completions.create({
+            response = await getClient().responses.create({
                 model: MODEL,
-                messages,
-                tools: [
-                    {
-                        type: "function",
-                        function: {
-                            name: "searchAnimeCandidates",
-                            description:
-                                "使用关键词搜索 Bangumi 番剧候选列表。返回 AnimeCandidate[]，包含 id、名称、中文名、放送日期、集数范围和简介。在需要从当前候选之外查找更多番剧信息时调用此工具。",
-                            parameters: {
-                                type: "object",
-                                properties: {
-                                    keyword: {
-                                        type: "string",
-                                        description: "搜索关键词，可以是番剧原名、中文名、别名等",
-                                    },
-                                    limit: {
-                                        type: "number",
-                                        description: "返回结果数量上限（1-50），默认 10",
-                                        default: 10,
-                                    },
-                                },
-                                required: ["keyword"],
-                            },
-                        },
-                    },
-                    {
-                        type: "function",
-                        function: {
-                            name: "getRelatedSubjects",
-                            description:
-                                "获取指定 Bangumi 条目的关联作品列表（如前传、续集、番外篇等）。仅返回 type=2（动画）的关联条目。当需要查找关联作品的集数信息时调用此工具。",
-                            parameters: {
-                                type: "object",
-                                properties: {
-                                    subjectId: {
-                                        type: "number",
-                                        description: "Bangumi 条目 ID",
-                                    },
-                                },
-                                required: ["subjectId"],
-                            },
-                        },
-                    },
-                    {
-                        type: "function",
-                        function: {
-                            name: "getEpisodeDetail",
-                            description:
-                                "获取指定 Bangumi 条目中某集的具体详情，包括章节 ID（id）、集数编号（sort）和放送日期。当确定了条目和集数编号时，调用此工具验证该集是否存在并获取精确的章节 ID。",
-                            parameters: {
-                                type: "object",
-                                properties: {
-                                    subjectId: {
-                                        type: "number",
-                                        description: "Bangumi 条目 ID",
-                                    },
-                                    episodeSort: {
-                                        type: "number",
-                                        description: "集数编号，如第 5 集则传入 5",
-                                    },
-                                },
-                                required: ["subjectId", "episodeSort"],
-                            },
-                        },
-                    },
-                ],
-                tool_choice: "auto" as const,
+                instructions: AI_EPISODE_SYSTEM_PROMPT,
+                input: inputItems,
+                tools: TOOL_DEFINITIONS,
                 temperature: 0.1,
             });
         } catch {
             return null;
         }
 
-        const choice = response.choices[0];
-        if (!choice) {
-            return null;
-        }
+        const output = response.output;
+        const functionCalls = extractFunctionCalls(output);
 
-        const message = choice.message;
-        const toolCalls = message.tool_calls;
-        const content = message.content;
-
-        // 只处理 type === 'function' 的 tool_calls
-        const functionToolCalls = (toolCalls ?? []).filter(
-            (tc): tc is OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall =>
-                tc.type === "function",
-        );
-
-        if (functionToolCalls.length === 0) {
+        if (functionCalls.length === 0) {
             // 没有工具调用，视为最终回答，尝试解析 JSON
+            const text = extractOutputText(output);
             try {
-                const jsonStr = extractJsonFromText(content ?? "");
-                const parsed = JSON.parse(jsonStr) as Record<string, unknown>;
+                const jsonStr = extractJsonFromText(text);
+                const parsed: Record<string, unknown> = JSON.parse(jsonStr);
                 const episodeSort = parsed.episodeSort;
                 const episodeId = parsed.episodeId;
                 if (
@@ -809,133 +832,112 @@ export async function aiEpisodeSearch(
             return null;
         }
 
-        // 记录助手消息
-        messages.push({
-            role: "assistant",
-            content: message.content,
-            tool_calls: toolCalls,
-        });
+        // 将 assistant 的 function_call 追加到 input
+        for (const fc of functionCalls) {
+            inputItems.push({
+                type: "function_call",
+                call_id: fc.call_id,
+                name: fc.name,
+                arguments: fc.arguments,
+            });
+        }
 
-        // 执行工具调用
-        for (const toolCall of functionToolCalls) {
-            const name = toolCall.function.name;
-            let args: Record<string, unknown>;
+        // 执行工具调用并追加 function_call_output
+        for (const fc of functionCalls) {
+            let result: string;
+            let argsParsed: Record<string, unknown>;
             try {
-                args = JSON.parse(toolCall.function.arguments) as Record<string, unknown>;
+                argsParsed = JSON.parse(fc.arguments);
             } catch {
+                result = JSON.stringify({ error: `无法解析工具参数 JSON: ${fc.arguments}` });
+                inputItems.push({
+                    type: "function_call_output",
+                    call_id: fc.call_id,
+                    output: result,
+                });
                 continue;
             }
 
-            switch (name) {
+            switch (fc.name) {
                 case "searchAnimeCandidates": {
                     try {
-                        const parsed = SearchAnimeCandidatesSchema.parse(args);
+                        const parsed = SearchAnimeCandidatesSchema.parse(argsParsed);
                         const normalizedKeyword = parsed.keyword.trim().toLowerCase();
                         if (searchedKeywords.has(normalizedKeyword)) {
-                            messages.push({
-                                role: "tool",
-                                tool_call_id: toolCall.id,
-                                content: JSON.stringify({
-                                    _notice: `关键词 "${parsed.keyword}" 已搜索过，跳过重复调用`,
-                                    data: [],
-                                }),
+                            result = JSON.stringify({
+                                _notice: `关键词 "${parsed.keyword}" 已搜索过，跳过重复调用`,
+                                data: [],
                             });
-                            continue;
+                        } else {
+                            searchedKeywords.add(normalizedKeyword);
+                            const searchResults = await searchAnimeCandidates(parsed.keyword, parsed.limit);
+                            result = JSON.stringify(searchResults);
                         }
-                        searchedKeywords.add(normalizedKeyword);
-                        const results = await searchAnimeCandidates(parsed.keyword, parsed.limit);
-                        messages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            content: JSON.stringify(results),
-                        });
                     } catch {
-                        messages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            content: JSON.stringify({ error: "参数校验或执行失败" }),
-                        });
+                        result = JSON.stringify({ error: "参数校验或执行失败" });
                     }
                     break;
                 }
 
                 case "getRelatedSubjects": {
                     try {
-                        const parsed = GetRelatedSubjectsSchema.parse(args);
+                        const parsed = GetRelatedSubjectsSchema.parse(argsParsed);
                         if (exploredSubjectIds.has(parsed.subjectId)) {
-                            messages.push({
-                                role: "tool",
-                                tool_call_id: toolCall.id,
-                                content: JSON.stringify({
-                                    _notice: `条目 ${parsed.subjectId} 的关联作品已查过，跳过重复调用`,
-                                    data: [],
-                                }),
+                            result = JSON.stringify({
+                                _notice: `条目 ${parsed.subjectId} 的关联作品已查过，跳过重复调用`,
+                                data: [],
                             });
-                            continue;
+                        } else {
+                            exploredSubjectIds.add(parsed.subjectId);
+                            const relatedResults = await getRelatedSubjects(parsed.subjectId);
+                            result = JSON.stringify(relatedResults);
                         }
-                        exploredSubjectIds.add(parsed.subjectId);
-                        const results = await getRelatedSubjects(parsed.subjectId);
-                        messages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            content: JSON.stringify(results),
-                        });
                     } catch {
-                        messages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            content: JSON.stringify({ error: "参数校验或执行失败" }),
-                        });
+                        result = JSON.stringify({ error: "参数校验或执行失败" });
                     }
                     break;
                 }
 
                 case "getEpisodeDetail": {
-                    const sort = args.episodeSort as number;
+                    const sort = argsParsed.episodeSort;
 
                     // 去重：相同集数编号不重复查询
-                    if (exploredEpisodeSorts.has(sort)) {
-                        messages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            content: JSON.stringify({
-                                _notice: `集数 ${sort} 已查过，跳过重复调用`,
-                                data: null,
-                            }),
+                    if (typeof sort === "number" && exploredEpisodeSorts.has(sort)) {
+                        result = JSON.stringify({
+                            _notice: `集数 ${sort} 已查过，跳过重复调用`,
+                            data: null,
                         });
-                        continue;
-                    }
-                    exploredEpisodeSorts.add(sort);
-
-                    try {
-                        const parsed = GetEpisodeDetailSchema.parse(args);
-                        const result = await getEpisodeDetail(parsed.subjectId, parsed.episodeSort);
-                        messages.push({
-                            role: "tool",
-                            tool_call_id: toolCall.id,
-                            content: JSON.stringify(result),
-                        });
-                    } catch (error: unknown) {
-                        if (error instanceof z.ZodError) {
-                            messages.push({
-                                role: "tool",
-                                tool_call_id: toolCall.id,
-                                content: JSON.stringify({
+                    } else {
+                        if (typeof sort === "number") {
+                            exploredEpisodeSorts.add(sort);
+                        }
+                        try {
+                            const parsed = GetEpisodeDetailSchema.parse(argsParsed);
+                            const epResult = await getEpisodeDetail(parsed.subjectId, parsed.episodeSort);
+                            result = JSON.stringify(epResult);
+                        } catch (error: unknown) {
+                            if (error instanceof z.ZodError) {
+                                result = JSON.stringify({
                                     error: `参数校验失败: ${error.message}`,
                                     issues: error.issues,
-                                }),
-                            });
-                        } else {
-                            messages.push({
-                                role: "tool",
-                                tool_call_id: toolCall.id,
-                                content: JSON.stringify({ error: "工具执行异常" }),
-                            });
+                                });
+                            } else {
+                                result = JSON.stringify({ error: "工具执行异常" });
+                            }
                         }
                     }
                     break;
                 }
+
+                default:
+                    result = JSON.stringify({ error: `未知工具: ${fc.name}` });
             }
+
+            inputItems.push({
+                type: "function_call_output",
+                call_id: fc.call_id,
+                output: result,
+            });
         }
     }
 
@@ -957,10 +959,8 @@ async function llmDecision(
     setActiveAiScene("bangumi_match");
     const userPrompt = buildLLMPrompt(anime, candidates);
 
-    // messages 从 system 开始，后续逐步追加 user / assistant / tool
-    const messages: ChatMessage[] = [
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userPrompt },
+    const inputItems: OpenAI.Responses.ResponseInputItem[] = [
+        { role: "user", content: userPrompt, type: "message" },
     ];
 
     const processLog: string[] = [];
@@ -981,75 +981,11 @@ async function llmDecision(
 
         let response;
         try {
-            response = await getClient().chat.completions.create({
+            response = await getClient().responses.create({
                 model: MODEL,
-                messages,
-                tools: [
-                    {
-                        type: "function",
-                        function: {
-                            name: "searchAnimeCandidates",
-                            description:
-                                "使用关键词搜索 Bangumi 番剧候选列表。返回 AnimeCandidate[]，包含 id、名称、中文名、放送日期、集数范围和简介。在搜索别名或模糊名称时调用此工具。",
-                            parameters: {
-                                type: "object",
-                                properties: {
-                                    keyword: {
-                                        type: "string",
-                                        description: "搜索关键词，可以是番剧原名、中文名、别名等",
-                                    },
-                                    limit: {
-                                        type: "number",
-                                        description: "返回结果数量上限（1-50），默认 10",
-                                        default: 10,
-                                    },
-                                },
-                                required: ["keyword"],
-                            },
-                        },
-                    },
-                    {
-                        type: "function",
-                        function: {
-                            name: "getRelatedSubjects",
-                            description:
-                                "获取指定 Bangumi 条目的关联作品列表（如前传、续集、番外篇等）。仅返回 type=2（动画）的关联条目。当需要区分多季番剧或查找关联作品时调用此工具。",
-                            parameters: {
-                                type: "object",
-                                properties: {
-                                    subjectId: {
-                                        type: "number",
-                                        description: "Bangumi 条目 ID",
-                                    },
-                                },
-                                required: ["subjectId"],
-                            },
-                        },
-                    },
-                    {
-                        type: "function",
-                        function: {
-                            name: "getEpisodeDetail",
-                            description:
-                                "获取指定 Bangumi 条目中某集的具体详情，包括章节 ID（id）、集数编号（sort）和放送日期。当确定了 subjectId 并且输入包含集数信息时，调用此工具获取精确的章节 ID。",
-                            parameters: {
-                                type: "object",
-                                properties: {
-                                    subjectId: {
-                                        type: "number",
-                                        description: "Bangumi 条目 ID",
-                                    },
-                                    episodeSort: {
-                                        type: "number",
-                                        description: "集数编号，如第 5 集则传入 5",
-                                    },
-                                },
-                                required: ["subjectId", "episodeSort"],
-                            },
-                        },
-                    },
-                ],
-                tool_choice: "auto" as const,
+                instructions: SYSTEM_PROMPT,
+                input: inputItems,
+                tools: TOOL_DEFINITIONS,
                 temperature: 0.1,
             });
         } catch (error: unknown) {
@@ -1065,60 +1001,51 @@ async function llmDecision(
             };
         }
 
-        const choice = response.choices[0];
-        if (!choice) {
-            return { confidence: 0, reason: "LLM 未返回任何结果" };
-        }
+        const output = response.output;
+        const functionCalls = extractFunctionCalls(output);
 
-        const message = choice.message;
-        const toolCalls = message.tool_calls;
-        const content = message.content;
-
-        // 只处理 type === 'function' 的 tool_calls（过滤掉 custom tool）
-        const functionToolCalls = (toolCalls ?? []).filter(
-            (tc): tc is OpenAI.Chat.Completions.ChatCompletionMessageFunctionToolCall =>
-                tc.type === "function",
-        );
-
-        if (functionToolCalls.length === 0) {
+        if (functionCalls.length === 0) {
             // 没有可执行的 function tool，视为最终回答
-            finalRaw = content ?? "";
+            finalRaw = extractOutputText(output);
             processLog.push(`第 ${iteration} 轮迭代: LLM 给出最终决策`);
             break;
         }
 
-        // 记录助手消息（保持与 OpenAI SDK 返回的类型一致）
-        messages.push({
-            role: "assistant",
-            content: message.content,
-            tool_calls: toolCalls,
-        });
+        // 将 assistant 的 function_call 追加到 input
+        for (const fc of functionCalls) {
+            inputItems.push({
+                type: "function_call",
+                call_id: fc.call_id,
+                name: fc.name,
+                arguments: fc.arguments,
+            });
+        }
 
         // 执行所有工具调用（传入去重集合防止无限循环）
-        for (const toolCall of functionToolCalls) {
-            const result = await executeToolCall(toolCall, searchedKeywords, exploredSubjectIds);
+        for (const fc of functionCalls) {
+            const result = await executeFunctionCall(fc, searchedKeywords, exploredSubjectIds);
 
-            messages.push({
-                role: "tool",
-                tool_call_id: toolCall.id,
-                content: result,
+            inputItems.push({
+                type: "function_call_output",
+                call_id: fc.call_id,
+                output: result,
             });
         }
 
         // 记录本轮迭代的工具调用
-        const toolNames = functionToolCalls.map(tc => tc.function.name);
-        processLog.push(`第 ${iteration} 轮迭代: 调用工具 [${toolNames.join(', ')}]`);
+        const toolNames = functionCalls.map((fc) => fc.name);
+        processLog.push(`第 ${iteration} 轮迭代: 调用工具 [${toolNames.join(", ")}]`);
     }
 
     if (iteration >= MAX_ITERATIONS) {
         return {
             confidence: 0,
-            reason: `LLM 工具调用达到最大迭代次数，未能得出结果\n\n迭代流程:\n${processLog.join('\n')}`,
+            reason: `LLM 工具调用达到最大迭代次数，未能得出结果\n\n迭代流程:\n${processLog.join("\n")}`,
         };
     }
 
     const result = safeParseMatchResult(finalRaw);
-    result.reason += `\n\n迭代流程:\n${processLog.join('\n')}`;
+    result.reason += `\n\n迭代流程:\n${processLog.join("\n")}`;
     return result;
 }
 

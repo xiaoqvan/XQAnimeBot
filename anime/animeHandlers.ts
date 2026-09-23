@@ -1,4 +1,3 @@
-import { promises as fs } from "fs";
 import logger from "@log/index.ts";
 import parseTorrent from "parse-torrent";
 import { animeinfo } from "../bangumi/get.ts";
@@ -176,8 +175,12 @@ async function handleNewAnimeWithConfidentMatch(
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
 
-    const onStage = (stage: string) =>
-        manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
+    const onStage = (stage: string, progressPercent?: number, progressLabel?: string) =>
+        manager.updateProgress(item.title, stage, {
+            animeName: anime.name_cn || anime.name,
+            ...(progressPercent !== undefined ? { progressPercent } : {}),
+            ...(progressLabel !== undefined ? { progressLabel } : {}),
+        });
     const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) return;
 
@@ -297,12 +300,11 @@ async function handleNewAnimeWithConfidentMatch(
             matchResult, pendingReviewId, true, // isPostSend: 先发后审模式
         );
     } finally {
-        // 无论成功失败都清理 qBittorrent 种子及其数据
-        await removeTorrentAndData(torrent.hash);
-        // 保底：显式删除 content_path 处的文件，防止 qBittorrent deleteFiles 失效导致残留
-        if (torrent.content_path) {
-            await fs.unlink(torrent.content_path).catch(() => { });
-        }
+        // 无论成功失败都清理 qBittorrent 种子及其数据 + 本地视频/分段
+        await removeTorrentAndData(torrent.hash, [
+            torrent.content_path,
+            ...(torrent.segments ?? []),
+        ]);
     }
 }
 
@@ -359,8 +361,12 @@ async function handleNewAnimeFallback(
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
 
-    const onStage = (stage: string) =>
-        manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
+    const onStage = (stage: string, progressPercent?: number, progressLabel?: string) =>
+        manager.updateProgress(item.title, stage, {
+            animeName: anime.name_cn || anime.name,
+            ...(progressPercent !== undefined ? { progressPercent } : {}),
+            ...(progressLabel !== undefined ? { progressLabel } : {}),
+        });
     const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) return;
 
@@ -428,12 +434,11 @@ async function handleNewAnimeFallback(
             matchResult,
         );
     } finally {
-        // 无论成功失败都清理 qBittorrent 种子及其数据
-        await removeTorrentAndData(torrent.hash);
-        // 保底：显式删除 content_path 处的文件，防止 qBittorrent deleteFiles 失效导致残留
-        if (torrent.content_path) {
-            await fs.unlink(torrent.content_path).catch(() => { });
-        }
+        // 无论成功失败都清理 qBittorrent 种子及其数据 + 本地视频/分段
+        await removeTorrentAndData(torrent.hash, [
+            torrent.content_path,
+            ...(torrent.segments ?? []),
+        ]);
     }
 }
 
@@ -466,8 +471,12 @@ export async function handleExistingAnime(
         ...(magnetHash ? { torrentHash: magnetHash } : {}),
     });
 
-    const onStage = (stage: string) =>
-        manager.updateProgress(item.title, stage, { animeName: anime.name_cn || anime.name });
+    const onStage = (stage: string, progressPercent?: number, progressLabel?: string) =>
+        manager.updateProgress(item.title, stage, {
+            animeName: anime.name_cn || anime.name,
+            ...(progressPercent !== undefined ? { progressPercent } : {}),
+            ...(progressLabel !== undefined ? { progressLabel } : {}),
+        });
     const torrent = await downloadAndValidateTorrent(item, manager, onStage);
     if (!torrent) {
         logger.warn(`下载种子失败，跳过: ${item.title}`);
@@ -619,11 +628,10 @@ export async function handleExistingAnime(
         manager.updateProgress(item.title, "更新导航消息");
         await sendMegToNavAnime(client, anime.id);
     } finally {
-        // 无论成功失败都清理 qBittorrent 种子及其数据
-        await removeTorrentAndData(torrent.hash);
-        // 保底：显式删除 content_path 处的文件，防止 qBittorrent deleteFiles 失效导致残留
-        if (torrent.content_path) {
-            await fs.unlink(torrent.content_path).catch(() => { });
-        }
+        // 无论成功失败都清理 qBittorrent 种子及其数据 + 本地视频/分段
+        await removeTorrentAndData(torrent.hash, [
+            torrent.content_path,
+            ...(torrent.segments ?? []),
+        ]);
     }
 }

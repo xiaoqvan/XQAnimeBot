@@ -461,39 +461,51 @@ export async function nullAnime(
   const Torrent = await downloadAndValidateTorrent(item);
 
   if (!Torrent || !Torrent.content_path) {
+    if (Torrent?.hash) {
+      await removeTorrentAndData(Torrent.hash, [
+        Torrent.content_path,
+        ...(Torrent.segments ?? []),
+      ]);
+    }
     return;
   }
 
-  const cacheAnimeMeg = await sendMegToAnime(
-    client,
-    newAnime,
-    item,
-    Torrent.content_path,
-    newepid.id,
-  );
+  try {
+    const cacheAnimeMeg = await sendMegToAnime(
+      client,
+      newAnime,
+      item,
+      Torrent.content_path,
+      newepid.id,
+      Torrent.segments,
+    );
 
-  await removeTorrentAndData(Torrent.hash);
+    if (!cacheAnimeMeg) {
+      throw new Error("发送动漫消息失败");
+    }
 
-  if (!cacheAnimeMeg) {
-    throw new Error("发送动漫消息失败");
-  }
+    const cacheAnimeMessages = normalizeTdMessages(cacheAnimeMeg);
+    const primaryCacheAnimeMessage = cacheAnimeMessages[0];
+    if (!primaryCacheAnimeMessage) {
+      throw new Error("发送动漫消息失败: 无有效消息");
+    }
+    const result = await updateAnimeLinks(
+      client,
+      chat_id,
+      message_id,
+      newAnime,
+      newepid.id,
+      Cache_id
+    );
 
-  const cacheAnimeMessages = normalizeTdMessages(cacheAnimeMeg);
-  const primaryCacheAnimeMessage = cacheAnimeMessages[0];
-  if (!primaryCacheAnimeMessage) {
-    throw new Error("发送动漫消息失败: 无有效消息");
-  }
-  const result = await updateAnimeLinks(
-    client,
-    chat_id,
-    message_id,
-    newAnime,
-    newepid.id,
-    Cache_id
-  );
-
-  if (!result) {
-    return;
+    if (!result) {
+      return;
+    }
+  } finally {
+    await removeTorrentAndData(Torrent.hash, [
+      Torrent.content_path,
+      ...(Torrent.segments ?? []),
+    ]);
   }
 }
 

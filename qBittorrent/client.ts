@@ -4,6 +4,7 @@ import http from 'http';
 import https from 'https';
 import type {
     TorrentInfo,
+    TorrentFile,
     TorrentProperties,
     TransferInfo,
     GetTorrentsOptions,
@@ -386,6 +387,26 @@ export class QbittorrentClient {
     ): Promise<TorrentInfo | null> {
         const list = await this.getTorrents({ hashes: hash }, signal);
         return list.length > 0 ? list[0]! : null;
+    }
+
+    /**
+     * 获取 Torrent 内文件列表（需已拿到 metadata）
+     */
+    async getTorrentFiles(
+        hash: string,
+        signal?: AbortSignal
+    ): Promise<TorrentFile[]> {
+        const params = new URLSearchParams();
+        params.append('hash', hash);
+
+        return this.request<TorrentFile[]>(
+            {
+                method: 'GET',
+                url: '/api/v2/torrents/files',
+                params,
+            },
+            signal
+        );
     }
 
     /**

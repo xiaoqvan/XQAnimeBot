@@ -5,11 +5,17 @@ import logger from "@log/index.ts";
 import { updateTorrentStatus } from "../database/update.ts";
 import type { TorrentInfo } from "../types/qb.d.ts";
 
+// 已完成下载、文件可用的状态：
+// - uploading / stalledUP / forcedUP / queuedUP：做种中
+// - stoppedUP：qB 5.x 的“停止（做种完成）”
+// - pausedUP：qB 4.x 的“暂停（做种完成）”——漏掉它会导致暂停后等待死循环
 const seedingStates = [
   'stoppedUP',
+  'pausedUP',
   'stalledUP',
-  "forcedUP",
-  "uploading"
+  'forcedUP',
+  'queuedUP',
+  'uploading',
 ];
 
 /**
@@ -115,6 +121,11 @@ export async function downloadAndReturnPath(
     `\x1b[36m[QBclient][${torrent.hash}][${title}]\x1b[0m \x1b[32m元数据已获取，开始下载\x1b[0m`
   );
   await updateTorrentStatus(title, "下载中");
+
+  // 格式预检等场景会以暂停态加入种子；若尚未完成，这里必须恢复，否则会一直等 seeding 状态
+  if (torrent && !seedingStates.includes(torrent.state)) {
+    await QBclient.resumeTorrent(hash).catch(() => { });
+  }
 
   // 2. 等待下载完成
   while (torrent && (!seedingStates.includes(torrent.state))) {
