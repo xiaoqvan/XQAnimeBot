@@ -4,7 +4,13 @@ import { parseBtSource } from "./btParser.ts";
 import { animeProcessor } from "../anime/AnimeProcessorManager.ts";
 import { getAnimeById } from "../database/query.ts";
 import { getEpisodeById } from "../bangumi/get.ts";
+import {
+    upsertCheckpoint,
+    updateCheckpointStage,
+    finishCheckpoint,
+} from "../database/checkpoints.ts";
 import type { animeItem } from "../types/rss.d.ts";
+import type { WebTaskPayload } from "../types/taskCheckpoint.d.ts";
 
 export type TaskType = "addanime" | "addnewanime";
 export type TaskStatus = "queued" | "running" | "done" | "failed" | "canceled";
@@ -29,6 +35,11 @@ export interface BtTask {
 let taskSeq = 0;
 const tasks = new Map<number, BtTask>();
 
+/** Web 任务的稳定检查点 key（跨重启可定位同一入口） */
+function webCheckpointKey(type: TaskType, epid: number | string, url: string): string {
+    return `web:${type}:${epid}:${url}`;
+}
+
 /** 同步 progressMap 的 stage 到任务记录 */
 function applyProgress(task: BtTask): void {
     const progress = animeProcessor.getProgress().find((p) => p.title === task.title);
@@ -42,13 +53,15 @@ function applyProgress(task: BtTask): void {
 /**
  * 创建并启动一个 BT 任务（addanime / addnewanime）。
  * 返回任务 ID；任务在后台异步执行，进度经 animeProcessor 追踪。
+ * @param clientOverride - 可选：直接指定 Bot client（崩溃恢复时用，不依赖 Web 服务已启动）
  */
 export async function createTask(
     type: TaskType,
     epid: number | string,
-    url: string
+    url: string,
+    clientOverride?: Client
 ): Promise<number> {
-    const client = getBotClient();
+    const client = clientOverride ?? getBotClient();
     if (!client) {
         throw new Error("Bot client 未就绪，无法执行 BT 任务");
     }
@@ -69,6 +82,14 @@ export async function createTask(
     };
     tasks.set(id, task);
 
+    await upsertCheckpoint({
+        key: webCheckpointKey(type, epid, url),
+        kind: "web",
+        payload: { kind: "web", web: { type, epid, url } },
+        stage: "排队中",
+        status: "queued",
+    }).catch(() => { });
+
     // 后台执行，不阻塞请求
     void runTask(id, client)
         .catch((err) => {
@@ -78,18 +99,33 @@ export async function createTask(
                 t.error = (err as Error).message;
                 t.updatedAt = new Date().toISOString();
             }
+            void finishCheckpoint(
+                webCheckpointKey(type, epid, url),
+                "failed",
+                (err as Error).message
+            ).catch(() => { });
         });
 
     return id;
+}
+
+/**
+ * 崩溃恢复：按保存的 Web 任务入口重新创建并执行。
+ * 返回新任务 ID；若 Bot client 未就绪则抛错。
+ */
+export async function resumeWebTask(web: WebTaskPayload, client?: Client): Promise<number> {
+    return createTask(web.type, web.epid, web.url, client);
 }
 
 async function runTask(id: number, client: Client): Promise<void> {
     const task = tasks.get(id);
     if (!task) return;
 
+    const cpKey = webCheckpointKey(task.type, task.epid, task.url);
     task.status = "running";
     task.startTime = new Date().toISOString();
     task.updatedAt = task.startTime;
+    void updateCheckpointStage(cpKey, "解析 BT 来源").catch(() => { });
 
     let item: animeItem | null = null;
 
@@ -106,6 +142,7 @@ async function runTask(id: number, client: Client): Promise<void> {
     task.title = item.title;
     task.animeName = item.names?.[0] ?? item.title;
     tasks.set(id, task);
+    void updateCheckpointStage(cpKey, "解析完成").catch(() => { });
 
     // 2. 预置进度条目（以 BT title 为 key，供 handleExisting/handleNew 更新）
     //    这里不直接改 manager 私有 map，任务执行逻辑内部的 updateProgress 会写入。
@@ -125,6 +162,7 @@ async function runTask(id: number, client: Client): Promise<void> {
         t.updatedAt = new Date().toISOString();
         tasks.set(id, t);
     }
+    void finishCheckpoint(cpKey, "done", "已完成").catch(() => { });
 }
 
 async function runAddAnime(
@@ -145,7 +183,7 @@ async function runAddAnime(
 
     const { handleExistingAnime } = await import("../anime/animeHandlers.ts");
     // handleExistingAnime 内部会以 item.title 为 key 调 manager.updateProgress
-    await handleExistingAnime(client, item, anime as never, animeProcessor);
+    await handleExistingAnime(client, item, anime, animeProcessor);
     void id;
 }
 
@@ -187,6 +225,11 @@ export function cancelTask(id: number): boolean {
     t.stage = "已取消";
     t.updatedAt = new Date().toISOString();
     tasks.set(id, t);
+    void finishCheckpoint(
+        webCheckpointKey(t.type, t.epid, t.url),
+        "canceled",
+        "已取消"
+    ).catch(() => { });
     // 尝试从 animeProcessor 取消（若有对应活跃任务）
     if (t.title) {
         animeProcessor.cancelActiveByTitle(t.title);

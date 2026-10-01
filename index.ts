@@ -11,7 +11,6 @@ export default class AnimePlugin extends Plugin {
 
     this.onLoad = async () => {
       logger.info("[XiaoQvanAnime]加载 完成开始获取动漫信息");
-      anime(this.client).then();
 
       // 启动可选的管理 Web 界面（Fastify API + Vue3 前端，前后端分离）
       try {
@@ -21,6 +20,16 @@ export default class AnimePlugin extends Plugin {
       } catch (err) {
         logger.warn(err, "[XiaoQvanAnime]Web 管理界面启动失败，忽略（不影响 Bot 运行）");
       }
+
+      // 任务中继：恢复崩溃前未完成的下载/发送任务（qB 侧断点续传 + 重放 bot 管线）
+      try {
+        const { recoverInterruptedTasks } = await import("./anime/taskRecovery.ts");
+        await recoverInterruptedTasks(this.client);
+      } catch (err) {
+        logger.warn(err, "[XiaoQvanAnime]中断任务恢复失败，忽略（不影响 Bot 运行）");
+      }
+
+      anime(this.client).then();
     };
 
     // 卸载插件时关闭 Web 服务

@@ -92,16 +92,28 @@ async function getNextSequence(name: string): Promise<number> {
 interface TorrentData {
   title: string;
   magnetLink: string;
+  /** 磁力 infoHash（小写十六进制），用于跨标题变体去重 */
+  infoHash?: string;
   status: string;
   createdAt: Date;
   updatedAt: Date;
 }
 
+/** 从磁力链解析 infoHash，失败返回 undefined */
+function tryParseInfoHash(magnetLink: string): string | undefined {
+  try {
+    const match = magnetLink.match(/btih:([a-fA-F0-9]{40})/);
+    return match?.[1]?.toLowerCase();
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * 添加种子信息到数据库
- * @param torrentId - 种子ID
  * @param magnetLink - 磁力链接
  * @param status - 种子状态（下载中、下载完成、上传中、完成）
+ * @param title - 种子标题（内部统一 cleanTitle 后作为唯一键）
  * @returns 插入的文档ID
  * @throws 当参数无效或数据库操作失败时抛出异常
  */
@@ -131,32 +143,35 @@ export async function addTorrent(
     );
   }
 
+  // 键必须与 hasTorrentTitle 完全一致：一律 cleanTitle 后再查/写
+  const titleKey = cleanTitle(title);
+  const infoHash = tryParseInfoHash(magnetLink);
+
   const torrentData: TorrentData = {
-    title: cleanTitle(title),
+    title: titleKey,
     magnetLink,
+    ...(infoHash ? { infoHash } : {}),
     status,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
 
   try {
-    // 不要在这里重复创建索引
-    // await db.collection("torrents").createIndex({ title: 1 }, { unique: true });
-
-    // 使用 title 做为唯一标识，存在则更新，不存在则插入（upsert）
+    // 使用 cleanTitle 后的 title 做为唯一标识（filter 与 $setOnInsert 必须同键）
     const result = await db
       .collection<TorrentData>("torrents")
       .findOneAndUpdate(
-        { title },
+        { title: titleKey },
         {
           $set: {
             magnetLink: torrentData.magnetLink,
             status: torrentData.status,
             updatedAt: new Date(),
+            ...(infoHash ? { infoHash } : {}),
           },
           $setOnInsert: {
             createdAt: torrentData.createdAt,
-            title: torrentData.title,
+            title: titleKey,
           },
         },
         { upsert: true, returnDocument: "after" }
@@ -168,7 +183,7 @@ export async function addTorrent(
     }
 
     // 万一上面没有返回文档，再做一次查询读取 _id
-    const doc = await db.collection<TorrentData>("torrents").findOne({ title });
+    const doc = await db.collection<TorrentData>("torrents").findOne({ title: titleKey });
     if (!doc?._id) {
       throw new Error("无法获取插入文档的 ID");
     }

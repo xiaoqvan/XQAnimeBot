@@ -114,6 +114,7 @@ export async function getAnimeBlacklist(): Promise<string[] | undefined> {
 
 /**
  * 检查数据库中是否存在指定标题的种子
+ * 查询键必须与 addTorrent 写入键一致（cleanTitle 后），否则会永远查不到导致重复下载
  * @param title - 种子标题
  * @returns 如果找到种子返回true，否则返回false
  * @throws 当标题为空或数据库查询失败时抛出异常
@@ -123,11 +124,30 @@ export async function hasTorrentTitle(title: string): Promise<boolean> {
     throw new Error("种子标题是必需的参数");
   }
 
+  const { cleanTitle } = await import("../anime/rss/index.ts");
+  const titleKey = cleanTitle(title);
+
   const torrent = await db.collection("torrents").findOne({
-    title: title,
+    title: titleKey,
   });
 
   return !!torrent; // 如果找到种子就返回true，否则false
+}
+
+/**
+ * 检查数据库中是否存在指定磁力 infoHash 的种子（跨标题变体去重）
+ * @param magnetLink - 磁力链接
+ * @returns 如果找到返回 true
+ */
+export async function hasTorrentByMagnet(magnetLink: string): Promise<boolean> {
+  if (!magnetLink) return false;
+
+  const match = magnetLink.match(/btih:([a-fA-F0-9]{40})/);
+  const infoHash = match?.[1]?.toLowerCase();
+  if (!infoHash) return false;
+
+  const torrent = await db.collection("torrents").findOne({ infoHash });
+  return !!torrent;
 }
 
 /**

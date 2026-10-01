@@ -1,5 +1,6 @@
 import logger from "@log/index.ts";
-import { hasTorrentTitle, hasAnimeSend } from "../database/query.ts";
+import { hasTorrentTitle, hasAnimeSend, hasTorrentByMagnet } from "../database/query.ts";
+import { addTorrent } from "../database/create.ts";
 import { extractEpisodeByAI, parseInfo } from "../utils/animeParser.ts";
 import { fetchBangumiTags, fetchBangumiTeam, fetchBangumiTorrent } from "./get.ts";
 import { handleNewAnime, handleExistingAnime } from "./animeHandlers.ts";
@@ -11,21 +12,31 @@ import type { Client } from "tdl";
 
 /**
  * 处理单个 RSS 动漫条目的完整入口流程：
- * 检查重复 → 提取字幕组 → 按平台解析详情 → 调用 {@link animeDownload} 分发
+ * 检查重复 → 尽早写入去重记录 → 提取字幕组 → 按平台解析详情 → 调用 {@link animeDownload} 分发
  *
  * @param client - TDLib 客户端实例
  * @param item - 来自 RSS 源的原始动漫条目
  * @param manager - 并发处理管理器，用于全程更新进度阶段
+ * @param opts.resume - 崩溃恢复重放时为 true：跳过 torrents 去重（否则重启后会被已写入的记录挡住）
  */
 export async function handleRssAnimeItem(
     client: Client,
     item: RssAnimeItem,
-    manager: AnimeProcessorManager
+    manager: AnimeProcessorManager,
+    opts?: { resume?: boolean }
 ): Promise<void> {
     manager.updateProgress(item.title, "检查种子缓存");
 
-    const torrentExists = await hasTorrentTitle(item.title);
-    if (torrentExists) return;
+    if (!opts?.resume) {
+        const torrentExists = await hasTorrentTitle(item.title);
+        if (torrentExists) return;
+        // 标题变体兜底：同一磁力不同标题也视为已处理
+        const magnetOrTorrent = item.type === "bangumi" ? item.torrent : item.magnet;
+        if (magnetOrTorrent && magnetOrTorrent.startsWith("magnet:")) {
+            const byHash = await hasTorrentByMagnet(magnetOrTorrent);
+            if (byHash) return;
+        }
+    }
 
     // 从标题开头提取字幕组名称（支持 [SubGroup] 和 【SubGroup】 两种格式）
     const match = item.title.match(/^(?:\[([^\]]+)]|【([^】]+)】)/);
@@ -52,6 +63,15 @@ export async function handleRssAnimeItem(
     }
 
     if (!newitem) return;
+
+    // 解析成功后立刻写入去重记录，堵住 AI 解析之后、下载/LLM 匹配/MKV 队列之前的重复入队窗口
+    if (!opts?.resume && newitem.magnet) {
+        try {
+            await addTorrent(newitem.magnet, "等待下载", newitem.title);
+        } catch (err) {
+            logger.warn(err, `写入种子去重记录失败，继续处理: ${newitem.title}`);
+        }
+    }
 
     // 预检查种子格式：若为 MKV（需烧录字幕），路由到独立的 MKV 处理队列
     // 避免 MKV 下载+转码过程中长时间占用普通 worker 槽位

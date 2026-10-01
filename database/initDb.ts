@@ -43,6 +43,23 @@ async function initdb() {
     throw err;
   }
 
+  // 为 task_checkpoints（任务中继/崩溃恢复）创建 key 唯一索引
+  try {
+    const checkpoints = db.collection("task_checkpoints");
+    await checkpoints.createIndex(
+      { key: 1 },
+      { unique: true, name: "task_checkpoint_key_idx" }
+    );
+    await checkpoints.createIndex(
+      { status: 1, attempt: 1 },
+      { name: "task_checkpoint_status_attempt_idx" }
+    );
+    logger.info("task_checkpoints 集合索引创建成功");
+  } catch (err) {
+    logger.error(err, "为 task_checkpoints 创建索引时出错");
+    throw err;
+  }
+
   // 为 anime 集合创建搜索索引
   try {
     const anime = db.collection("anime");

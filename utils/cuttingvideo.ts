@@ -1,5 +1,5 @@
 import logger from "@log/index.ts"
-import { spawn } from "node:child_process"
+import { runBound } from "./processTree.ts"
 import { stat, rm, mkdir, readdir } from "node:fs/promises"
 import { resolve, join } from "node:path"
 
@@ -20,31 +20,13 @@ interface SplitOptions {
 }
 
 /**
- * 运行命令行程序并返回输出
+ * 运行命令行程序并返回输出（子进程绑定进程树，父进程死亡时一并回收）
  * @param cmd - 要执行的命令
  * @param args - 命令参数数组
  * @returns Promise，包含stdout和stderr的对象
  */
 function run(cmd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-    return new Promise((resolvePromise, reject) => {
-        const child = spawn(cmd, args)
-
-        let stdout = ""
-        let stderr = ""
-
-        child.stdout.on("data", (d) => (stdout += d.toString()))
-        child.stderr.on("data", (d) => (stderr += d.toString()))
-
-        child.on("error", reject)
-
-        child.on("close", (code) => {
-            if (code === 0) {
-                resolvePromise({ stdout, stderr })
-            } else {
-                reject(new Error(stderr || `Process exited with code ${code}`))
-            }
-        })
-    })
+    return runBound(cmd, args, { captureStdout: true })
 }
 
 /**

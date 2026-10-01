@@ -1,7 +1,12 @@
 import logger from "@log/index.ts";
 import { ErrorHandler } from "../utils/ErrorHandler.ts";
 import { handleRssAnimeItem, animeDownload } from "./rssItemHandler.ts";
-import { hasTorrentTitle } from "../database/query.ts";
+import { hasTorrentTitle, hasTorrentByMagnet } from "../database/query.ts";
+import {
+    upsertCheckpoint,
+    updateCheckpointStage,
+    finishCheckpoint,
+} from "../database/checkpoints.ts";
 import type { RssAnimeItem, animeItem } from "../types/rss.d.ts";
 import type { Client } from "tdl";
 
@@ -41,6 +46,8 @@ export interface CancelResult {
 interface QueueItem {
     client: Client;
     item: RssAnimeItem;
+    /** 崩溃恢复重放标记：为 true 时跳过 torrents 去重，避免恢复被已写入的记录挡住 */
+    resume?: boolean;
 }
 
 /**
@@ -81,7 +88,7 @@ export class AnimeProcessorManager {
     private readonly conversionWaiters: Array<() => void> = [];
 
     /** MKV 队列条目 */
-    private readonly mkvQueue: { client: Client; item: animeItem }[] = [];
+    private readonly mkvQueue: { client: Client; item: animeItem; resume?: boolean }[] = [];
 
     /** 当前正在运行的 MKV worker 数量 */
     private mkvActiveCount = 0;
@@ -91,6 +98,9 @@ export class AnimeProcessorManager {
 
     /** 记录已经被“强制释放槽位”的任务标题，避免 finally 重复扣减 activeCount */
     private readonly forceReleasedTitles: Set<string> = new Set();
+
+    /** 已移交给 MKV 队列的标题：RSS worker 的 finally 不得清掉 MKV worker 的 progressMap */
+    private readonly mkvOwnedTitles: Set<string> = new Set();
 
     /**
      * 创建管理器实例
@@ -104,9 +114,18 @@ export class AnimeProcessorManager {
      * 将已解析的 MKV 条目加入 MKV 专用队列（独立于普通 worker 池），
      * 不会占用普通 worker 的并发槽位。
      * MKV 项会在单独的槽位中完成下载 → 烧录 → 发送。
+     * @param resume - 崩溃恢复重放标记，跳过去重检查
      */
-    async enqueueMkv(client: Client, item: animeItem): Promise<void> {
-        this.mkvQueue.push({ client, item });
+    async enqueueMkv(client: Client, item: animeItem, resume = false): Promise<void> {
+        this.mkvQueue.push({ client, item, resume });
+        this.mkvOwnedTitles.add(item.title);
+        await upsertCheckpoint({
+            key: item.title,
+            kind: "mkv",
+            payload: { kind: "mkv", item },
+            stage: "排队中（MKV队列）",
+            status: "queued",
+        }).catch(() => { });
         this.trySpawnMkvWorkers();
     }
 
@@ -114,29 +133,63 @@ export class AnimeProcessorManager {
      * 将 RSS 条目批量加入队列（入队前先按种子标题做数据库去重过滤），并立即尝试启动新 worker 填满空闲槽位
      * @param client - TDLib 客户端实例
      * @param items - 需要处理的 RSS 动漫条目列表
+     * @param opts.resume - 崩溃恢复重放：跳过 torrents 去重（否则会被已写入的记录过滤掉）
      * @returns 入队统计：added 为成功入队数量，filtered 为被 hasTorrentTitle 过滤掉的数量
      */
     async enqueue(
         client: Client,
-        items: RssAnimeItem[]
+        items: RssAnimeItem[],
+        opts?: { resume?: boolean }
     ): Promise<{ added: number; filtered: number }> {
         let added = 0;
         let filtered = 0;
+        const resume = opts?.resume === true;
+        // 同批次内按标题去重：progressMap 要等 spawnWorker 才写入，循环阶段必须自己挡
+        const batchTitles = new Set<string>();
 
         for (const item of items) {
-            try {
-                const exists = await hasTorrentTitle(item.title);
-                if (exists) {
-                    filtered++;
-                    continue;
-                }
-            } catch (error) {
-                // 查询失败时不阻塞主流程，保守策略为继续入队
-                logger.warn(error, `[AnimeProcessor] 入队前去重查询失败，继续入队: ${item.title}`);
+            // 正在处理中的同名任务不重复入队
+            if (this.progressMap.has(item.title)) {
+                filtered++;
+                continue;
+            }
+            if (batchTitles.has(item.title)) {
+                filtered++;
+                continue;
             }
 
-            this.queue.push({ client, item });
+            if (!resume) {
+                try {
+                    const exists = await hasTorrentTitle(item.title);
+                    if (exists) {
+                        filtered++;
+                        continue;
+                    }
+                    const magnetLink = item.type === "bangumi" ? item.torrent : item.magnet;
+                    if (magnetLink && magnetLink.startsWith("magnet:")) {
+                        if (await hasTorrentByMagnet(magnetLink)) {
+                            filtered++;
+                            continue;
+                        }
+                    }
+                } catch (error) {
+                    // 查询失败时不阻塞主流程，保守策略为继续入队
+                    logger.warn(error, `[AnimeProcessor] 入队前去重查询失败，继续入队: ${item.title}`);
+                }
+            }
+
+            batchTitles.add(item.title);
+
+            this.queue.push({ client, item, resume });
             added++;
+            // 先落盘检查点再启动 worker，崩溃后可据此恢复
+            await upsertCheckpoint({
+                key: item.title,
+                kind: "rss",
+                payload: { kind: "rss", item },
+                stage: "排队中",
+                status: "queued",
+            }).catch(() => { });
         }
 
         this.trySpawnWorkers();
@@ -203,6 +256,7 @@ export class AnimeProcessorManager {
             this.forceReleasedTitles.add(title);
             this.activeCount = Math.max(0, this.activeCount - 1);
         }
+        void finishCheckpoint(title, "canceled", "已取消").catch(() => { });
         // 立即尝试补位，避免因为堵塞任务占槽而停滞
         this.trySpawnWorkers();
 
@@ -278,6 +332,7 @@ export class AnimeProcessorManager {
             stage,
             updatedAt: new Date(),
         });
+        void updateCheckpointStage(title, stage, extra?.torrentHash).catch(() => { });
     }
 
     /**
@@ -287,7 +342,7 @@ export class AnimeProcessorManager {
     private trySpawnWorkers(): void {
         while (this.activeCount < this.maxConcurrency && this.queue.length > 0) {
             const next = this.queue.shift()!;
-            this.spawnWorker(next.client, next.item);
+            this.spawnWorker(next.client, next.item, next.resume);
         }
     }
 
@@ -313,11 +368,16 @@ export class AnimeProcessorManager {
             startTime: new Date(),
             updatedAt: new Date(),
         });
+        void updateCheckpointStage(item.title, "初始化（MKV队列）").catch(() => { });
 
         // 注意：intentionally 不 await，让 worker 独立运行不阻塞调用方
         animeDownload(client, item, this)
+            .then(() => {
+                void finishCheckpoint(item.title, "done", "已完成").catch(() => { });
+            })
             .catch((error: unknown) => {
                 logger.error(error, `[AnimeProcessor] MKV处理出错: ${item.title}`);
+                void finishCheckpoint(item.title, "failed", "处理出错").catch(() => { });
                 ErrorHandler(
                     client,
                     new Error(`MKV处理出错: ${item.title}\n${String(error)}`)
@@ -325,6 +385,7 @@ export class AnimeProcessorManager {
             })
             .finally(() => {
                 this.mkvActiveCount = Math.max(0, this.mkvActiveCount - 1);
+                this.mkvOwnedTitles.delete(item.title);
                 this.progressMap.delete(item.title);
                 this.trySpawnMkvWorkers();
             });
@@ -335,8 +396,9 @@ export class AnimeProcessorManager {
      * Worker 完成（无论成功/失败）后自动尝试从队列补充下一个任务
      * @param client - TDLib 客户端实例
      * @param item - 待处理的 RSS 条目
+     * @param resume - 崩溃恢复重放标记，跳过 torrents 去重
      */
-    private spawnWorker(client: Client, item: RssAnimeItem): void {
+    private spawnWorker(client: Client, item: RssAnimeItem, resume = false): void {
         this.activeCount++;
         this.progressMap.set(item.title, {
             title: item.title,
@@ -344,11 +406,21 @@ export class AnimeProcessorManager {
             startTime: new Date(),
             updatedAt: new Date(),
         });
+        void updateCheckpointStage(item.title, "初始化").catch(() => { });
 
         // 注意：intentionally 不 await，让 worker 独立运行不阻塞调用方
-        handleRssAnimeItem(client, item, this)
+        handleRssAnimeItem(client, item, this, { resume })
+            .then(() => {
+                // 已移交 MKV 队列：checkpoint 归 MKV worker 管，这里不能标 done
+                if (!this.mkvOwnedTitles.has(item.title)) {
+                    void finishCheckpoint(item.title, "done", "已完成").catch(() => { });
+                }
+            })
             .catch((error: unknown) => {
                 logger.error(error, `[AnimeProcessor] 处理动漫项出错: ${item.title}`);
+                if (!this.mkvOwnedTitles.has(item.title)) {
+                    void finishCheckpoint(item.title, "failed", "处理出错").catch(() => { });
+                }
                 ErrorHandler(
                     client,
                     new Error(`处理动漫项出错: ${item.title}\n${String(error)}`)
@@ -356,9 +428,13 @@ export class AnimeProcessorManager {
             })
             .finally(() => {
                 const wasForceReleased = this.forceReleasedTitles.delete(item.title);
+                // 移交 MKV 后 progressMap 归 MKV worker，RSS worker 不得删除
+                const ownedByMkv = this.mkvOwnedTitles.has(item.title);
                 if (!wasForceReleased) {
                     this.activeCount = Math.max(0, this.activeCount - 1);
-                    this.progressMap.delete(item.title);
+                    if (!ownedByMkv) {
+                        this.progressMap.delete(item.title);
+                    }
                 }
                 // Worker 退出后立即尝试补充新任务，保持槽位始终满载
                 this.trySpawnWorkers();

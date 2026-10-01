@@ -1,34 +1,17 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { spawn } from "child_process";
+import { runBound } from "./processTree.ts";
 
 /**
- * 执行外部命令（异步，不阻塞事件循环）
+ * 执行外部命令（异步，不阻塞事件循环；子进程绑定进程树）
  *
  * @param cmd 要执行的命令（如 ffmpeg / ffprobe）
  * @param args 命令参数数组
  * @param onStderr - 可选，实时接收 stderr 片段（用于解析 ffmpeg 进度）
  * @returns Promise<void> 命令成功完成时 resolve，失败时 reject
  */
-function run(cmd: string, args: string[], onStderr?: (chunk: string) => void) {
-  return new Promise<void>((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ["ignore", "ignore", "pipe"] });
-    let stderr = "";
-    p.stderr?.on("data", (d) => {
-      const s = d.toString();
-      stderr += s;
-      onStderr?.(s);
-    });
-    p.on("error", (err) => reject(new Error(`${cmd} 启动失败: ${err.message}`)));
-    p.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        const detail = stderr.trim() ? `\nstderr: ${stderr.trim()}` : "";
-        reject(new Error(`${cmd} exited with ${code}${detail}`));
-      }
-    });
-  });
+async function run(cmd: string, args: string[], onStderr?: (chunk: string) => void) {
+  await runBound(cmd, args, { onStderr });
 }
 
 /** 将 ffmpeg 的 HH:MM:SS.ms 时间码转为秒 */
@@ -42,8 +25,8 @@ function parseTimecodeToSeconds(tc: string): number {
  * 读取视频总时长（秒），失败返回 0
  */
 async function probeDurationSeconds(file: string): Promise<number> {
-  return new Promise((resolve) => {
-    const p = spawn(
+  try {
+    const { stdout } = await runBound(
       "ffprobe",
       [
         "-v", "error",
@@ -51,16 +34,13 @@ async function probeDurationSeconds(file: string): Promise<number> {
         "-of", "default=noprint_wrappers=1:nokey=1",
         file,
       ],
-      { stdio: ["ignore", "pipe", "ignore"] }
+      { captureStdout: true }
     );
-    let out = "";
-    p.stdout?.on("data", (d) => (out += d.toString()));
-    p.on("close", () => {
-      const n = parseFloat(out.trim());
-      resolve(Number.isFinite(n) && n > 0 ? n : 0);
-    });
-    p.on("error", () => resolve(0));
-  });
+    const n = parseFloat(stdout.trim());
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch {
+    return 0;
+  }
 }
 
 /**
@@ -302,25 +282,26 @@ async function ensureFFmpeg() {
  * @param file MKV 文件路径
  */
 async function hasAnySubtitles(file: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const p = spawn("ffprobe", [
-      "-v",
-      "error",
-      "-select_streams",
-      "s",
-      "-show_entries",
-      "stream=index",
-      "-of",
-      "csv=p=0",
-      file,
-    ]);
-
-    let out = "";
-    p.stdout?.on("data", (d) => (out += d));
-
-    p.on("close", () => resolve(out.trim().length > 0));
-    p.on("error", () => resolve(false));
-  });
+  try {
+    const { stdout } = await runBound(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "s",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+        file,
+      ],
+      { captureStdout: true }
+    );
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -336,49 +317,40 @@ async function hasAnySubtitles(file: string): Promise<boolean> {
 async function findSimplifiedChineseSubtitleIndex(
   file: string
 ): Promise<number | null> {
-  return new Promise((resolve) => {
-    const p = spawn("ffprobe", [
-      "-v",
-      "error",
-      "-select_streams",
-      "s",
-      "-show_entries",
-      "stream=index:stream_tags=language,title",
-      "-of",
-      "json",
-      file,
-    ]);
+  try {
+    const { stdout } = await runBound(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "s",
+        "-show_entries",
+        "stream=index:stream_tags=language,title",
+        "-of",
+        "json",
+        file,
+      ],
+      { captureStdout: true }
+    );
+    const data = JSON.parse(stdout);
+    const streams = data.streams ?? [];
 
-    let out = "";
-    p.stdout?.on("data", (d) => (out += d));
+    for (let i = 0; i < streams.length; i++) {
+      const s = streams[i];
+      const lang = (s.tags?.language || "").toLowerCase();
+      const title = (s.tags?.title || "").toLowerCase();
 
-    p.on("close", () => {
-      try {
-        const data = JSON.parse(out);
-        const streams = data.streams ?? [];
+      const isZH =
+        ["chi", "zho", "chs", "zh-hans"].includes(lang) ||
+        title.includes("简体") ||
+        title.includes("chs") ||
+        title.includes("simplified");
 
-        for (let i = 0; i < streams.length; i++) {
-          const s = streams[i];
-          const lang = (s.tags?.language || "").toLowerCase();
-          const title = (s.tags?.title || "").toLowerCase();
-
-          const isZH =
-            ["chi", "zho", "chs", "zh-hans"].includes(lang) ||
-            title.includes("简体") ||
-            title.includes("chs") ||
-            title.includes("simplified");
-
-          if (isZH) {
-            return resolve(i);
-          }
-        }
-
-        resolve(null);
-      } catch {
-        resolve(null);
-      }
-    });
-
-    p.on("error", () => resolve(null));
-  });
+      if (isZH) return i;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
