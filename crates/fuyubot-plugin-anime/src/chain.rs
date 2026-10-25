@@ -60,6 +60,10 @@ pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
             let result = run(&worker, &item, anime_id, &task_hash);
             if let Err(error) = result {
                 log!(&worker.logger, Error, "下载链路失败（{title}）：{error}");
+                let _ = worker.store.checkpoint_finish(
+                    &checkpoint_key(&item),
+                    anime_core::models::CheckpointStatus::Failed,
+                );
             }
             release(&task_hash);
         });
@@ -76,6 +80,11 @@ pub fn active() -> usize {
         .lock()
         .unwrap_or_else(|error| error.into_inner())
         .len()
+}
+
+/// 检查点主键：清理后的标题。同一条种子重复入队时只会更新同一条记录。
+pub fn checkpoint_key(item: &AnimeItem) -> String {
+    anime_core::title::clean_title(&item.title)
 }
 
 fn acquire_slot() {
@@ -107,6 +116,16 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
         });
     }
     let config = &runtime.config;
+    // 检查点先落：进程崩在这里，重启后还能从「下载」这一步重放。
+    let key = checkpoint_key(item);
+    if let Err(error) = runtime.store.checkpoint_start(
+        &key,
+        anime_core::models::CheckpointKind::Rss,
+        "下载",
+        &serde_json::json!({ "kind": "rss", "item": item }),
+    ) {
+        log!(&runtime.logger, Warn, "写检查点失败（继续下载）：{error}");
+    }
     // 先记账再下载：中途崩了至少知道这条被接手过（TS 也是先写 torrents）。
     if let Err(error) = runtime
         .store
@@ -118,6 +137,7 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
     log!(&runtime.logger, Info, "已加种：{}（anime {anime_id}）", item.title);
 
     let torrent = wait_done(runtime, &qb, hash)?;
+    let _ = runtime.store.checkpoint_stage(&key, "转码");
     let base = torrent
         .get("content_path")
         .and_then(Value::as_str)
@@ -142,6 +162,7 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
     // 转码是**尽力而为**：任何一步失败都回退到原文件，不让「发不出去」成为结果。
     let (send_path, transcoded) = prepare_video(runtime, &video);
 
+    let _ = runtime.store.checkpoint_stage(&key, "发送");
     // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）。
     let target = Target::new(config.telegram.anime_channel, 0)
         .with_topic(config.telegram.anime_group_thread_id);
@@ -198,6 +219,9 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
             Err(error) => log!(&runtime.logger, Warn, "从 qB 删除种子失败：{error}"),
         }
     }
+    let _ = runtime
+        .store
+        .checkpoint_finish(&key, anime_core::models::CheckpointStatus::Done);
     log!(&runtime.logger, Info, "已发送：{}", item.title);
     Ok(())
 }

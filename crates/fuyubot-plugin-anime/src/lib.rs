@@ -87,6 +87,10 @@ impl Plugin for AnimePlugin {
                 .log(LogLevel::Warn, "订阅 updateNewCallbackQuery 失败，审核按钮不可用");
         }
 
+        // 恢复上次没跑完的任务（检查点）。放在轮询启动之后：恢复是补作业，
+        // 不该挡住插件进入就绪状态。
+        recover_tasks(Arc::clone(&runtime));
+
         self.subscription = Some(subscription);
         self.runtime = Some(runtime);
         self.poller = Some(poller);
@@ -113,6 +117,83 @@ impl Plugin for AnimePlugin {
 }
 
 define_plugin!(AnimePlugin, "xq.anime");
+
+/// 同一个任务最多重放几次。超过就判失败：崩溃—重启—再崩溃的死循环比丢一条种子更糟。
+const MAX_RESUME_ATTEMPTS: i32 = 3;
+
+/// 把 `task_checkpoints` 里没跑完的 rss 任务重新塞回下载队列。
+///
+/// 只认 kind=rss 的检查点：web/mkv 队列还没实现，恢复它们只会造出「假装在跑」的任务。
+/// 读库是同步调用，放线程里；失败只记日志——恢复不了不该让插件起不来。
+fn recover_tasks(runtime: Arc<Runtime>) {
+    let spawned = std::thread::Builder::new()
+        .name("xq-anime-recover".to_owned())
+        .spawn(move || {
+            use anime_core::models::{AnimeItem, CheckpointKind, CheckpointStatus};
+            use anime_core::store::Storage;
+
+            let checkpoints = match runtime.store.checkpoint_resumable() {
+                Ok(checkpoints) => checkpoints,
+                Err(error) => {
+                    runtime
+                        .host
+                        .log(LogLevel::Warn, &format!("读取检查点失败，跳过恢复：{error}"));
+                    return;
+                }
+            };
+            for checkpoint in checkpoints {
+                if checkpoint.kind != CheckpointKind::Rss {
+                    continue;
+                }
+                if checkpoint.attempt >= MAX_RESUME_ATTEMPTS {
+                    let _ = runtime
+                        .store
+                        .checkpoint_finish(&checkpoint.key, CheckpointStatus::Failed);
+                    runtime.host.log(
+                        LogLevel::Warn,
+                        &format!(
+                            "任务 {} 已重放 {} 次，放弃",
+                            checkpoint.key, checkpoint.attempt
+                        ),
+                    );
+                    continue;
+                }
+                let item = checkpoint
+                    .payload
+                    .get("item")
+                    .cloned()
+                    .and_then(|value| serde_json::from_value::<AnimeItem>(value).ok());
+                let Some(item) = item else {
+                    let _ = runtime
+                        .store
+                        .checkpoint_finish(&checkpoint.key, CheckpointStatus::Failed);
+                    runtime.host.log(
+                        LogLevel::Warn,
+                        &format!("检查点 {} 的 payload 还原失败，放弃", checkpoint.key),
+                    );
+                    continue;
+                };
+                if let Err(error) = runtime.store.checkpoint_bump_attempt(&checkpoint.key) {
+                    runtime
+                        .host
+                        .log(LogLevel::Warn, &format!("增加重放次数失败：{error}"));
+                }
+                runtime.host.log(
+                    LogLevel::Info,
+                    &format!(
+                        "恢复任务：{}（第 {} 次重放，阶段 {}）",
+                        checkpoint.key,
+                        checkpoint.attempt + 1,
+                        checkpoint.stage
+                    ),
+                );
+                chain::spawn(Arc::clone(&runtime), item, 0);
+            }
+        });
+    if spawned.is_err() {
+        // 线程起不来就是「不恢复」，插件照常启动。
+    }
+}
 
 #[cfg(test)]
 mod tests {

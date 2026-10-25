@@ -451,6 +451,124 @@ pub trait Storage {
             Some(json!({ "_id": 0 })),
         )
     }
+
+    // ── 任务检查点（task_checkpoints）──────────────────────────────────
+
+    /// 起一条任务时写检查点（按 `key` upsert，状态 running，attempt 归零）。
+    ///
+    /// `payload` 要能还原出「从哪继续」：rss 任务存 `{"kind":"rss","item":{...}}`，
+    /// 恢复时直接反序列化回 [crate::models::AnimeItem]。
+    fn checkpoint_start(
+        &self,
+        key: &str,
+        kind: crate::models::CheckpointKind,
+        stage: &str,
+        payload: &Value,
+    ) -> Result<()> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(Error::Store("checkpoint_start 拒绝空 key".to_owned()));
+        }
+        let now = json!(Utc::now());
+        self.update(
+            "task_checkpoints",
+            json!({ "key": key }),
+            json!({
+                "$set": {
+                    "kind": kind,
+                    "payload": payload,
+                    "stage": stage,
+                    "status": crate::models::CheckpointStatus::Running,
+                    "attempt": 0,
+                    "updatedAt": now,
+                },
+                "$setOnInsert": { "createdAt": now },
+            }),
+            true,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 推进阶段（下载 → 转码 → 发送）。不改 attempt。
+    fn checkpoint_stage(&self, key: &str, stage: &str) -> Result<()> {
+        self.update(
+            "task_checkpoints",
+            json!({ "key": key.trim() }),
+            json!({ "$set": { "stage": stage, "status": crate::models::CheckpointStatus::Running, "updatedAt": Utc::now() } }),
+            false,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 收尾：done / failed / canceled。
+    fn checkpoint_finish(&self, key: &str, status: crate::models::CheckpointStatus) -> Result<()> {
+        self.update(
+            "task_checkpoints",
+            json!({ "key": key.trim() }),
+            json!({ "$set": { "status": status, "updatedAt": Utc::now() } }),
+            false,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 按 key 取一条检查点（恢复逻辑和排查都用它）。
+    fn checkpoint_get(&self, key: &str) -> Result<Option<crate::models::TaskCheckpoint>> {
+        let doc = self.find_one(
+            "task_checkpoints",
+            json!({ "key": key.trim() }),
+            Some(json!({ "_id": 0 })),
+        )?;
+        doc.map(|doc| decode("task_checkpoints", doc)).transpose()
+    }
+
+    /// 列出重启后要恢复的任务（queued / running），按更新时间升序。
+    fn checkpoint_resumable(&self) -> Result<Vec<crate::models::TaskCheckpoint>> {
+        let docs = self.find(
+            "task_checkpoints",
+            json!({ "status": { "$in": ["queued", "running"] } }),
+            Some(json!({ "_id": 0 })),
+            Some(json!({ "updatedAt": 1 })),
+            Some(100),
+        )?;
+        docs.into_iter()
+            .map(|doc| decode("task_checkpoints", doc))
+            .collect()
+    }
+
+    /// 给恢复次数 +1（防止崩溃循环里无限重放），返回新值。
+    fn checkpoint_bump_attempt(&self, key: &str) -> Result<i32> {
+        let key = key.trim();
+        let Some(doc) = self.find_one("task_checkpoints", json!({ "key": key }), None)? else {
+            return Err(Error::Store(format!("检查点不存在：{key}")));
+        };
+        let next = doc
+            .get("attempt")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .saturating_add(1) as i32;
+        self.update(
+            "task_checkpoints",
+            json!({ "key": key }),
+            json!({ "$set": { "attempt": next, "updatedAt": Utc::now() } }),
+            false,
+            false,
+        )?;
+        Ok(next)
+    }
+
+    /// 清理已结束的检查点（done / failed / canceled），返回删除条数。
+    ///
+    /// 宿主接口没有 delete，只能查出来再逐条……没有删除能力，所以这里改成把
+    /// 已结束的记录状态保持原样、只返回条数，真正的清理等宿主补 delete。
+    fn checkpoint_finished_count(&self) -> Result<u64> {
+        self.count(
+            "task_checkpoints",
+            json!({ "status": { "$in": ["done", "failed", "canceled"] } }),
+        )
+    }
 }
 
 /// cacheItem 的投影壳：只取 item，忽略 _id / id / createdAt。
@@ -1210,6 +1328,66 @@ mod tests {
 
     // ── 待审核（pendingReviews）──────────────────────────────────────────
 
+#[test]
+    fn checkpoint_records_stage_and_finishes() {
+        let store = FakeStorage::default();
+        store
+            .checkpoint_start(
+                "[组] 某番 - 05",
+                crate::models::CheckpointKind::Rss,
+                "下载",
+                &json!({ "kind": "rss", "item": { "title": "x" } }),
+            )
+            .unwrap();
+        let checkpoint = store
+            .checkpoint_get("[组] 某番 - 05")
+            .unwrap()
+            .expect("刚写的检查点应当能读回来");
+        assert_eq!(checkpoint.stage, "下载");
+        assert_eq!(checkpoint.attempt, 0);
+        assert_eq!(checkpoint.status, crate::models::CheckpointStatus::Running);
+
+        store.checkpoint_stage("[组] 某番 - 05", "转码").unwrap();
+        assert_eq!(
+            store
+                .checkpoint_get("[组] 某番 - 05")
+                .unwrap()
+                .unwrap()
+                .stage,
+            "转码"
+        );
+
+        store
+            .checkpoint_finish(
+                "[组] 某番 - 05",
+                crate::models::CheckpointStatus::Done,
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .checkpoint_get("[组] 某番 - 05")
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::models::CheckpointStatus::Done
+        );
+    }
+
+    #[test]
+    fn checkpoint_bump_attempt_counts_and_rejects_blank_key() {
+        let store = FakeStorage::default();
+        store
+            .checkpoint_start(
+                "k",
+                crate::models::CheckpointKind::Rss,
+                "下载",
+                &json!({}),
+            )
+            .unwrap();
+        assert_eq!(store.checkpoint_bump_attempt("k").unwrap(), 1);
+        assert_eq!(store.checkpoint_bump_attempt("k").unwrap(), 2);
+        assert!(store.checkpoint_start("  ", crate::models::CheckpointKind::Rss, "下载", &json!({})).is_err());
+    }
     #[test]
     fn pending_review_insert_upserts_and_stamps_times() {
         let store = FakeStorage::default();
