@@ -23,6 +23,14 @@
 //! 条目 / 章节 / 搜索都是公开 JSON 接口，浏览器 UA 也能正常返回（实测 200），
 //! 因此继续复用 `rss::Http`，不另造一套连接池。
 //!
+//! ## 已知限制（都是 `rss::Http` 的接口决定的）
+//!
+//! - `Http` 不能改 UA：`BangumiConfig::user_agent` 目前只用于 OAuth 表单请求；
+//!   公开接口用 `Http` 固定的浏览器 UA。
+//! - `Http` 不能加 `Authorization` 头：公开接口本来就不用登录，所以不附
+//!   `access_token`。以后要做「用户收藏」这类带 token 的接口，要么先给
+//!   `rss::Http` 加 header 能力，要么在 `oauth` 里用同一套 ureq 方式发。
+//!
 //! ## 分页
 //!
 //! `/v0/episodes` 一次最多 100 条。这里按 `offset` 一直翻到拿完为止：
@@ -70,6 +78,7 @@ pub const SEARCH_LIMIT: u32 = 10;
 pub const SUBJECT_TYPE_ANIME: u32 = 2;
 
 /// 客户端。内部持有共享的 [`Http`]（连接池可复用），配置只读。
+#[derive(Clone)]
 pub struct BgmClient {
     config: BangumiConfig,
     http: Http,

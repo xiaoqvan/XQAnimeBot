@@ -32,6 +32,7 @@ use anime_core::title;
 
 use crate::chain;
 use crate::fetch;
+use crate::review;
 use crate::runtime::Runtime;
 
 /// 北京时间的时段切换点（整点）。
@@ -290,7 +291,8 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
         }
 
         // 行为对齐 TS（包含即命中）；要更保守就换 `MatchPolicy::default()`。
-        match decide_season_with(&item.names, &candidates, MatchPolicy::ts()) {
+        let decision = decide_season_with(&item.names, &candidates, MatchPolicy::ts());
+        match &decision {
             SeasonDecision::Matched(hit) => {
                 matched += 1;
                 // 番剧确定后再查这一部的章节：没确定是哪部番时查章节没有意义。
@@ -333,12 +335,14 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
             SeasonDecision::NeedsReview { best, .. } => {
                 log!(
                     logger,
-                    Debug,
+                    Info,
                     "待复核『{}』（{} 分）：{}",
                     best.matched_name,
                     best.score,
                     item.title
                 );
+                // 提示发给管理群，点按钮后走 callback.rs 那条路。
+                review::prompt(runtime, item, &decision);
             }
             SeasonDecision::New => {
                 new_anime += 1;

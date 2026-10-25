@@ -27,8 +27,8 @@ impl Images {
     pub fn best(&self) -> &str {
         [
             &self.large,
-            &self.common,
             &self.medium,
+            &self.common,
             &self.small,
             &self.grid,
         ]

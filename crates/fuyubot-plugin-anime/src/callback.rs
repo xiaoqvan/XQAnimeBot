@@ -116,6 +116,20 @@ pub fn parse(data: &str) -> Option<(ReviewAction, String)> {
     Some((action, key.to_owned()))
 }
 
+/// 审核键盘（类型化）：直接挂到 [SendMessageParams::reply_markup]，不用再解析 JSON。
+pub fn review_buttons(key: &str) -> Vec<Vec<ReplyButton>> {
+    vec![vec![
+        ReplyButton::callback(
+            ReviewAction::Approve.label(),
+            callback_data(ReviewAction::Approve, key),
+        ),
+        ReplyButton::callback(
+            ReviewAction::Reject.label(),
+            callback_data(ReviewAction::Reject, key),
+        ),
+    ]]
+}
+
 /// 审核按钮的内联键盘：**一行两个**（通过 / 驳回）。
 ///
 /// 布局与 TS `promptAdminConfirmAnime` 一致（`rows: [[正确, 错误]]`）——两个动作

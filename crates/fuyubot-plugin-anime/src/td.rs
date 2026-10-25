@@ -9,7 +9,7 @@
 
 use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
-use fuyubot_simplify::{InputFile, Media, SendMessageParams, Simplify, Text};
+use fuyubot_simplify::{InputFile, Media, ReplyButton, SendMessageParams, Simplify, Text};
 
 /// 一条消息的定位：发给哪个会话、回复哪条。
 #[derive(Debug, Clone, Copy)]
@@ -75,6 +75,18 @@ impl Td {
     ) -> bool {
         let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
         self.send(target, SendMessageParams::media(media))
+    }
+
+    /// 发文本 + 内联键盘（审核提示用）。
+    pub fn send_text_with_buttons(
+        &self,
+        target: Target,
+        text: impl Into<String>,
+        rows: Vec<Vec<ReplyButton>>,
+    ) -> bool {
+        let mut params = SendMessageParams::text(Text::plain(text));
+        params.reply_markup = rows;
+        self.send(target, params)
     }
 
     /// 底层出口：填好 `reply_to` 再交给 simplify。

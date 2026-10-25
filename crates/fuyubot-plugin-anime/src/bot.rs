@@ -8,6 +8,8 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use anime_core::bangumi::BgmClient;
+use anime_core::card::bangumi::BangumiCard;
 use anime_core::store::Storage;
 use fuyubot_simplify::Command;
 
@@ -80,6 +82,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_status,
     },
     CommandSpec {
+        name: "testbgimg",
+        summary: "用 Bangumi 条目 id 出一张番剧卡（调试出图）",
+        handler: cmd_testbgimg,
+    },
+    CommandSpec {
         name: "web",
         summary: "查看管理端地址（配置里没开就没有）",
         handler: cmd_web,
@@ -105,6 +112,56 @@ pub fn dispatch(runtime: &Arc<Runtime>, command: &Command) -> bool {
     true
 }
 
+/// `/testbgimg <subject_id>`：拉 Bangumi 条目 → 出图 → 发回当前会话。
+/// 网络 + 渲染都是慢操作，放线程里跑。
+fn cmd_testbgimg(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let Some(id) = command
+        .args
+        .split_whitespace()
+        .next()
+        .and_then(|raw| raw.parse::<u64>().ok())
+    else {
+        runtime
+            .td
+            .reply_text(target, "用法：/testbgimg <bangumi 条目 id>");
+        return;
+    };
+    let runtime = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        match build_and_render(&runtime, id) {
+            Ok((caption, path)) => {
+                let sent = runtime
+                    .td
+                    .send_photo(target, path.display().to_string(), caption.clone());
+                if !sent {
+                    runtime
+                        .td
+                        .reply_text(target, format!("图片已生成但发送失败：{}", path.display()));
+                }
+            }
+            Err(error) => {
+                runtime
+                    .td
+                    .reply_text(target, format!("出图失败：{error}"));
+            }
+        }
+    });
+}
+
+/// 拉条目 + 章节，转成卡片并渲染。返回（文案, 图片路径）。
+fn build_and_render(
+    runtime: &Runtime,
+    id: u64,
+) -> anime_core::Result<(String, std::path::PathBuf)> {
+    let client = BgmClient::new(runtime.config.bangumi.clone());
+    let subject = client.subject(id)?;
+    let episodes = client.episodes(id)?;
+    let card = crate::card::with_emoji(BangumiCard::from_subject(&subject, &episodes));
+    let caption = format!("{} / {}（{}）", card.name_cn, card.name, card.id);
+    let path = crate::card::render(runtime, &card)?;
+    Ok((caption, path))
+}
 /// `/about`：TS 里这是 `/start` 的一大段欢迎语；宿主已有内置 start 插件，
 /// 抢它的命令只会让用户收到两条回复，所以换个名字。
 fn cmd_about(runtime: &Arc<Runtime>, command: &Command) {

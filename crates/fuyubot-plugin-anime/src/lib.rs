@@ -16,11 +16,13 @@
 
 mod bot;
 mod callback;
+mod card;
 mod chain;
 mod fetch;
 mod media;
 mod poll;
 mod qb;
+mod review;
 mod runtime;
 mod store;
 mod td;

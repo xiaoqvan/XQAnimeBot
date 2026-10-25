@@ -26,8 +26,15 @@ pub struct Token {
 
 impl Token {
     /// 给 `Authorization` 头用的值，例如 `Bearer xxx`。
+    ///
+    /// 服务端没给 `token_type` 时退回裸 token，避免拼出前面带空格的怪值。
     pub fn bearer(&self) -> String {
-        format!("{} {}", self.token_type, self.access_token)
+        let token_type = self.token_type.trim();
+        if token_type.is_empty() {
+            self.access_token.clone()
+        } else {
+            format!("{token_type} {}", self.access_token)
+        }
     }
 }
 
@@ -144,5 +151,6 @@ mod tests {
         assert_eq!(token.expires_in, 0);
         assert!(token.token_type.is_empty());
         assert!(token.refresh_token.is_none());
+        assert_eq!(token.bearer(), "abc");
     }
 }
