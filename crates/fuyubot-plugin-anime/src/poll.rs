@@ -24,7 +24,9 @@ use std::time::Duration;
 use chrono::{DateTime, Timelike, Utc};
 
 use anime_core::log;
-use anime_core::matching::{AnimeCandidate, MatchPolicy, SeasonDecision, decide_season_with};
+use anime_core::matching::{
+    AnimeCandidate, MatchPolicy, SeasonDecision, decide_season_with, match_item_with, today_local,
+};
 use anime_core::store::Storage;
 use anime_core::title;
 
@@ -237,6 +239,8 @@ pub struct Round {
     pub matched: usize,
     /// 新条目里没命中任何番剧（按新番候选处理）的条数。
     pub new_anime: usize,
+    /// 命中番剧且集数也对齐（= 可以直接投放）的条数。
+    pub ready: usize,
 }
 
 /// 抓一轮：抓取 → 跨轮次去重 → 查库去重 → 匹配 → 记日志。
@@ -268,6 +272,7 @@ fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
 
     let mut matched = 0usize;
     let mut new_anime = 0usize;
+    let mut ready = 0usize;
     for item in &summary.items {
         if !fresh_titles.contains(&title::clean_title(&item.title)) {
             continue;
@@ -287,7 +292,40 @@ fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
         match decide_season_with(&item.names, &candidates, MatchPolicy::ts()) {
             SeasonDecision::Matched(hit) => {
                 matched += 1;
-                log!(logger, Info, "命中『{}』：{}", hit.matched_name, item.title);
+                // 番剧确定后再查这一部的章节：没确定是哪部番时查章节没有意义。
+                // match_item_with 内部会再做一次 season 判定（纯函数、很便宜），
+                // 好处是集数/放送窗口的逻辑只有一份实现。
+                let episodes = if store_ready {
+                    match runtime.store.episodes_by_subject(hit.anime_id) {
+                        Ok(episodes) => episodes,
+                        Err(error) => {
+                            log!(logger, Warn, "读取章节失败（anime {}）：{error}", hit.anime_id);
+                            Vec::new()
+                        }
+                    }
+                } else {
+                    Vec::new()
+                };
+                let outcome = match_item_with(
+                    item,
+                    &candidates,
+                    &episodes,
+                    today_local(),
+                    None,
+                    MatchPolicy::ts(),
+                );
+                if outcome.is_ready() {
+                    ready += 1;
+                    log!(logger, Info, "可投放：{}｜{}", hit.matched_name, outcome.describe());
+                } else {
+                    log!(
+                        logger,
+                        Info,
+                        "命中但集数没对齐：{}｜{}",
+                        item.title,
+                        outcome.describe()
+                    );
+                }
             }
             SeasonDecision::NeedsReview { best, .. } => {
                 log!(
@@ -309,10 +347,11 @@ fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
     log!(
         logger,
         Info,
-        "{}｜新 {} 条（命中 {}，新番候选 {}）",
+        "{}｜新 {} 条（命中 {}，可投 {}，新番候选 {}）",
         summary.render().replace('\n', " "),
         fresh,
         matched,
+        ready,
         new_anime
     );
 
@@ -323,6 +362,7 @@ fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
         failures,
         matched,
         new_anime,
+        ready,
     }
 }
 
