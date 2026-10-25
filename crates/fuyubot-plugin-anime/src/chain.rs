@@ -271,7 +271,13 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
     };
     if anime_id > 0
         && let Err(error) =
-            crate::nav::push_episode(runtime, anime_id, config.telegram.anime_channel, message_id)
+            crate::nav::push_episode(
+                runtime,
+                anime_id,
+                config.telegram.anime_channel,
+                message_id,
+                item.episode.as_deref(),
+            )
     {
         log!(&runtime.logger, Warn, "记录 navVideoMessage 失败：{error}");
     }

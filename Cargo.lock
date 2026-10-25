@@ -828,6 +828,7 @@ dependencies = [
  "fuyubot-abi",
  "fuyubot-service",
  "fuyubot-simplify",
+ "fuyubot-tdlib-ext",
  "serde",
  "serde_json",
  "tokio",

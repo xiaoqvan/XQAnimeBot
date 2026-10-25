@@ -19,6 +19,8 @@ chrono.workspace = true
 fuyubot-abi.workspace = true
 # 命令解析 + sendMessage 的 `inputMessageText` 组装都在这里，别再手搓一遍 JSON。
 fuyubot-simplify.workspace = true
+# TDLib 读接口（getMessageLink 等），simplify 还没提供。
+fuyubot-tdlib-ext.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

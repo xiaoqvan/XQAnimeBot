@@ -25,6 +25,9 @@ pub struct MessageRef {
 pub struct NavMessage {
     #[serde(default)]
     pub page: i64,
+    /// 这一条对应第几集（`01` / `SP`…）。TS 的导航文本按它排序展示。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode: Option<String>,
     #[serde(default)]
     pub chat_id: i64,
     #[serde(default)]
