@@ -9,7 +9,9 @@
 
 use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
-use fuyubot_simplify::{InputFile, Media, ReplyButton, SendMessageParams, Simplify, Text};
+use fuyubot_simplify::{
+    EditCaptionParams, InputFile, Media, ReplyButton, SendMessageParams, Simplify, Text,
+};
 
 /// 一条消息的定位：发给哪个会话、回复哪条、哪个话题。
 #[derive(Debug, Clone, Copy)]
@@ -80,6 +82,26 @@ impl Td {
         let mut params = SendMessageParams::text(Text::plain(text));
         params.reply_markup = rows;
         self.send(target, params)
+    }
+
+    /// 改一条媒体消息的标题（导航卡的「已收录 N 集」走这里）。
+    ///
+    /// 只发请求不等结果：改标题失败不影响业务（下一条消息还会再改一次）。
+    pub fn edit_caption(&self, chat_id: i64, message_id: i64, text: impl Into<String>) -> bool {
+        let params = EditCaptionParams {
+            text: Some(Text::plain(text)),
+            reply_markup: Vec::new(),
+        };
+        match self.api.edit_message_caption(chat_id, message_id, &params) {
+            Ok(_request) => true,
+            Err(error) => {
+                self.host.log(
+                    LogLevel::Warn,
+                    &format!("改标题失败（chat {chat_id} / msg {message_id}）：{error}"),
+                );
+                false
+            }
+        }
     }
 
     /// 发图并**等到**最终消息，返回 message_id。仅供后台线程调用（会阻塞）。

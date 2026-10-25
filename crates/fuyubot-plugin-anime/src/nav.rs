@@ -107,6 +107,27 @@ pub fn push_episode(
         false,
         false,
     )?;
+    // 记完就刷新导航标题：失败只记日志（refresh_caption 内部已经降级）。
+    let _ = refresh_caption(runtime, anime_id);
+    Ok(())
+}
+
+/// 刷新导航卡的标题（已收录集数）。
+///
+/// 没有导航消息就什么也不做——没配导航频道的机器上也应该能跑完整条链。
+pub fn refresh_caption(runtime: &Runtime, anime_id: i64) -> Result<()> {
+    let Some(anime) = runtime.store.anime_by_id(anime_id)? else {
+        return Ok(());
+    };
+    let Some(nav) = anime.nav_message.as_ref() else {
+        return Ok(());
+    };
+    let text = format!(
+        "{}｜已收录 {} 集",
+        anime.display_name(),
+        anime.nav_video_message.len()
+    );
+    runtime.td.edit_caption(nav.chat_id, nav.message_id, text);
     Ok(())
 }
 

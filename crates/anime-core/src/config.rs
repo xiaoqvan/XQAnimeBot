@@ -50,6 +50,9 @@ pub struct QbConfig {
     pub save_path: String,
     /// 等待下载完成的最长秒数。
     pub download_timeout_secs: u64,
+    /// 发送成功后是否把种子和文件一起从 qB 删掉（TS 的 cleanupLocalMedia 行为）。
+    /// 关掉的话种子会继续做种占磁盘，源文件被删后还会变 missingFiles。
+    pub delete_torrent_after_send: bool,
     pub poll_interval_secs: u64,
 }
 
@@ -61,6 +64,7 @@ impl Default for QbConfig {
             password: String::new(),
             save_path: String::new(),
             download_timeout_secs: 60 * 60 * 6,
+            delete_torrent_after_send: true,
             poll_interval_secs: 5,
         }
     }

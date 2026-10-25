@@ -60,6 +60,18 @@ impl Qb {
         Ok(field_array(&reply))
     }
 
+    /// 删除种子；`delete_files` = 连磁盘文件一起删。
+    ///
+    /// 发送完成后调用：不删的话 qB 会一直做种占着磁盘，而且源文件被我们删掉后
+    /// 会变成 missingFiles 状态。
+    pub fn delete(&self, hash: &str, delete_files: bool) -> Result<()> {
+        self.call(
+            "delete",
+            json!({ "hashes": hash, "delete_files": delete_files }),
+        )?;
+        Ok(())
+    }
+
     /// 种子里的文件列表（`name` 是相对路径，`size` 是字节）。
     pub fn files(&self, hash: &str) -> Result<Vec<Value>> {
         let reply = self.call("files", json!({ "hash": hash }))?;

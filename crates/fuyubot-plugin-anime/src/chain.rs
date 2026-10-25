@@ -189,6 +189,14 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
         }
     }
     mark_status(runtime, item, TorrentStatus::Done);
+
+    // 清理：发送完还留着种子会一直做种；源文件被删的情况下 qB 还会报 missingFiles。
+    if config.qbittorrent.delete_torrent_after_send {
+        match qb.delete(hash, true) {
+            Ok(()) => log!(&runtime.logger, Info, "已从 qB 删除种子与文件：{}", item.title),
+            Err(error) => log!(&runtime.logger, Warn, "从 qB 删除种子失败：{error}"),
+        }
+    }
     log!(&runtime.logger, Info, "已发送：{}", item.title);
     Ok(())
 }
