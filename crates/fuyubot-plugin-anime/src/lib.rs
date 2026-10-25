@@ -27,6 +27,7 @@ mod review;
 mod runtime;
 mod store;
 mod td;
+mod web;
 
 use std::sync::Arc;
 
@@ -52,6 +53,8 @@ struct AnimePlugin {
     poller: Option<Poller>,
     /// 内联键盘回调订阅。`drop` 就退订，同上。
     callback: Option<callback::CallbackSubscription>,
+    /// 管理 API。`drop` 就停监听。
+    web: Option<web::WebServer>,
 }
 
 impl Plugin for AnimePlugin {
@@ -63,6 +66,7 @@ impl Plugin for AnimePlugin {
             subscription: None,
             poller: None,
             callback: None,
+            web: None,
         })
     }
 
@@ -80,6 +84,8 @@ impl Plugin for AnimePlugin {
         .ok_or_else(|| "订阅 updateNewMessage 失败（宿主没接事件总线？）".to_owned())?;
 
         let poller = Poller::spawn(Arc::clone(&runtime), Arc::clone(&runtime.poll_stats));
+        // 管理 API 没配 listen 时 spawn 返回 None，属于正常情况。
+        let web = web::spawn(Arc::clone(&runtime));
         // 回调订阅失败不致命：没有审核按钮，其余功能照跑。
         let callback = callback::spawn(self.host, Arc::clone(&runtime));
         if callback.is_none() {
@@ -95,6 +101,7 @@ impl Plugin for AnimePlugin {
         self.runtime = Some(runtime);
         self.poller = Some(poller);
         self.callback = callback;
+        self.web = web;
         self.host.log(
             LogLevel::Info,
             &format!(
@@ -110,6 +117,7 @@ impl Plugin for AnimePlugin {
         // 丢在最前面会让还在跑的回调拿到 `None`。
         self.subscription = None;
         self.callback = None;
+        self.web = None;
         self.poller = None;
         self.runtime = None;
         self.host.log(LogLevel::Info, &format!("[{TAG}] stop"));

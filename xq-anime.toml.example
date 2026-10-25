@@ -78,6 +78,7 @@ base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 
 [http]
-# Web 管理端监听地址；空 = 不启动（当前还没实现，占位）
+# 管理 API 监听地址；空 = 不启动（只读接口，无前端）
+# 例：127.0.0.1:8787
 listen = ""
 token = ""
