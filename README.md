@@ -39,7 +39,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 | 番剧卡片数据 payload | ~0.3k | ✅ 完成 |
 | RSS 三源解析（bangumi/dmhy/acgnx） | ~1.2k | ✅ 完成（三源 + 合并去重 + 条目构建，真网络验证） |
 | 番剧匹配（season + 集数对齐） | ~0.6k | ✅ 完成（打分 + 阈值 + 放送日期窗口，真数据验证） |
-| 插件壳 / 命令路由 | ~3.3k | 🚧 3 个命令 + 后台 RSS 轮询（已接存储去重与番剧/集数匹配，只记日志） |
+| 插件壳 / 命令路由 | ~3.3k | 🚧 7 个命令 + 后台 RSS 轮询（已接存储去重、番剧/集数匹配、下载→发视频） |
 | 业务存储层（db） | ~2.5k | 🚧 `anime-core::store` 就绪（Storage trait + 业务查询），插件侧已用 `storage.mongo` 实现 |
 | TDLib 读接口 / inline | — | 🚧 `fuyubot-tdlib-ext`（getMessage/getChat/getMessageLink/answerInlineQuery 等 10 个） |
 | 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | ❌ 未开始 |
@@ -51,7 +51,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 ```bash
 cargo build --workspace       # 全部插件（0 warning）
-cargo test --workspace        # 207 个单测（离线，不碰网络/数据库）
+cargo test --workspace        # 213 个单测（离线，不碰网络/数据库）
 cargo run -p ultralight-gen-image --example render_card          # 出图（含渲染器）
 cargo run -p fuyubot-plugin-ffmpeg --example plan_smoke         # 转码选路 + 真实转码
 cargo run -p anime-core --example rss_probe                     # RSS 三源抓取 + 合并 + 标题解析

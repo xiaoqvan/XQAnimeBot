@@ -296,6 +296,40 @@ pub trait Storage {
         )?;
         Ok(())
     }
+
+    /// 按关键词模糊搜番剧（对应 TS 的 `searchAnime`）。
+    ///
+    /// 先搜 name / name_cn，没结果再搜 names 数组——TS 也是这个顺序，
+    /// 因为 names 里混着中日英三语名，直接全搜会让结果变吵。
+    /// 关键词至少 2 个字符：单字搜索在几万条番剧里没有意义。
+    fn search_anime(&self, keyword: &str) -> Result<Vec<Anime>> {
+        let keyword = keyword.trim();
+        if keyword.chars().count() < 2 {
+            return Err(Error::Store("搜索关键词至少 2 个字符".to_owned()));
+        }
+        let pattern = regex::escape(keyword);
+        let regex = json!({ "$regex": pattern, "$options": "i" });
+        let projection = json!({ "_id": 0 });
+        let sort = json!({ "updatedAt": -1 });
+
+        let mut docs = self.find(
+            "anime",
+            json!({ "$or": [{ "name": regex.clone() }, { "name_cn": regex }] }),
+            Some(projection.clone()),
+            Some(sort.clone()),
+            Some(20),
+        )?;
+        if docs.is_empty() {
+            docs = self.find(
+                "anime",
+                json!({ "names": regex }),
+                Some(projection),
+                Some(sort),
+                Some(20),
+            )?;
+        }
+        docs.into_iter().map(|doc| decode("anime", doc)).collect()
+    }
 }
 
 /// cacheItem 的投影壳：只取 item，忽略 _id / id / createdAt。

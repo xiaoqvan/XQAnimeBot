@@ -65,6 +65,16 @@ pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
     }
 }
 
+/// 当前在下载/发送的条目数。
+///
+/// 读的是「已占槽位」的集合，不是 qB 里的种子数：暂停在 qB 队列里的不算。
+pub fn active() -> usize {
+    IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .len()
+}
+
 fn acquire_slot() {
     let (lock, cvar) = &*SLOTS;
     let mut active = lock.lock().unwrap_or_else(|e| e.into_inner());

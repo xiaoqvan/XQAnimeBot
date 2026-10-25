@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use chrono::Utc;
+use anime_core::store::Storage;
 use fuyubot_simplify::Command;
 
 use crate::poll;
@@ -29,6 +30,11 @@ pub struct CommandSpec {
 /// 全部业务命令。**按字母序**排，`/help` 直接照这个顺序输出。
 pub const COMMANDS: &[CommandSpec] = &[
     CommandSpec {
+        name: "about",
+        summary: "这个机器人是干什么的",
+        handler: cmd_about,
+    },
+    CommandSpec {
         name: "help",
         summary: "看看我能做什么",
         handler: cmd_help,
@@ -39,9 +45,29 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_ping,
     },
     CommandSpec {
+        name: "progress",
+        summary: "轮询与下载进度",
+        handler: cmd_progress,
+    },
+    CommandSpec {
+        name: "s",
+        summary: "/searchanime 的短命令",
+        handler: cmd_search,
+    },
+    CommandSpec {
+        name: "searchanime",
+        summary: "按关键词搜库里的番剧",
+        handler: cmd_search,
+    },
+    CommandSpec {
         name: "status",
         summary: "运行状态：依赖的服务在不在、配置从哪来",
         handler: cmd_status,
+    },
+    CommandSpec {
+        name: "web",
+        summary: "查看管理端地址（配置里没开就没有）",
+        handler: cmd_web,
     },
 ];
 
@@ -62,6 +88,82 @@ pub fn dispatch(runtime: &Arc<Runtime>, command: &Command) -> bool {
     };
     (spec.handler)(runtime, command);
     true
+}
+
+/// `/about`：TS 里这是 `/start` 的一大段欢迎语；宿主已有内置 start 插件，
+/// 抢它的命令只会让用户收到两条回复，所以换个名字。
+fn cmd_about(runtime: &Arc<Runtime>, command: &Command) {
+    runtime.td.reply_text(
+        Target::new(command.chat_id, command.message_id),
+        "XQAnimeBot｜把种子发到群里，或等 RSS 自动抓\n\
+         抓到后会解析番名、对齐集数，命中库里的番就直接下载并投到频道。\n\
+         管理命令：/progress /searchanime /status /help",
+    );
+}
+
+/// `/web`：管理端默认不启动（`http.listen` 为空），所以这里只说事实。
+fn cmd_web(runtime: &Arc<Runtime>, command: &Command) {
+    let http = &runtime.config.http;
+    let text = if http.listen.trim().is_empty() {
+        "Web 管理端未启用（配置里 http.listen 为空）".to_owned()
+    } else {
+        let token = if http.token.trim().is_empty() {
+            "未设置访问令牌".to_owned()
+        } else {
+            "令牌已配置（这里不回显）".to_owned()
+        };
+        format!("管理端：http://{}\n{token}", http.listen.trim())
+    };
+    runtime
+        .td
+        .reply_text(Target::new(command.chat_id, command.message_id), text);
+}
+
+/// `/progress`：轮询累计 + 当前在下载的条目数。
+fn cmd_progress(runtime: &Arc<Runtime>, command: &Command) {
+    let (rounds, items, usable, failures) = runtime.poll_stats.snapshot();
+    let text = format!(
+        "轮询：{rounds} 轮｜{items} 条｜可解析 {usable} 条｜源失败 {failures} 次\n\
+         下载中：{} 条（上限 3）",
+        crate::chain::active()
+    );
+    runtime
+        .td
+        .reply_text(Target::new(command.chat_id, command.message_id), text);
+}
+
+/// `/searchanime`、`/s`：查库是 IO，放到线程里，别堵住命令回调线程。
+fn cmd_search(runtime: &Arc<Runtime>, command: &Command) {
+    let keyword = command.args.trim().to_owned();
+    if keyword.chars().count() < 2 {
+        runtime.td.reply_text(
+            Target::new(command.chat_id, command.message_id),
+            "用法：/searchanime 关键词（至少 2 个字）",
+        );
+        return;
+    }
+    let runtime = Arc::clone(runtime);
+    let target = Target::new(command.chat_id, command.message_id);
+    std::thread::spawn(move || {
+        let text = match runtime.store.search_anime(&keyword) {
+            Ok(list) if list.is_empty() => format!("没有找到「{keyword}」"),
+            Ok(list) => {
+                let mut text = format!("找到 {} 部：\n", list.len());
+                for anime in list.iter().take(10) {
+                    let episode = anime.episode.as_deref().unwrap_or("-");
+                    text.push_str(&format!(
+                        "· {}（{}）共 {} 集\n",
+                        anime.display_name(),
+                        anime.id,
+                        episode
+                    ));
+                }
+                text
+            }
+            Err(error) => format!("搜索失败：{error}"),
+        };
+        runtime.td.reply_text(target, text);
+    });
 }
 
 fn cmd_ping(runtime: &Arc<Runtime>, command: &Command) {
