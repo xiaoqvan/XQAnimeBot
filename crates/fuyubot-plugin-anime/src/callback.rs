@@ -328,7 +328,13 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
 ///
 /// 幂等性靠 `status == pending`：重复点击（或两个管理员同时点）只认第一次，
 /// 后面的只在管理群里回一句「已经处理过」，不会把已通过的记录改成驳回。
-fn settle(runtime: &Runtime, action: ReviewAction, key: &str, operator: i64, message_id: i64) {
+fn settle(
+    runtime: &Arc<Runtime>,
+    action: ReviewAction,
+    key: &str,
+    operator: i64,
+    message_id: i64,
+) {
     let existing = match runtime.store.pending_review_get(key) {
         Ok(existing) => existing,
         Err(error) => {
@@ -388,6 +394,14 @@ fn settle(runtime: &Runtime, action: ReviewAction, key: &str, operator: i64, mes
         action.label()
     );
     notify_admin(runtime, report(action, key, operator, message_id));
+
+    // 通过 = 真去下载；驳回就到此为止。
+    if action == ReviewAction::Approve && !crate::review::start_approved_download(runtime, &existing) {
+        notify_admin(
+            runtime,
+            format!("⚠️ 审核通过但没能开始下载：{key}（记录缺 magnet/title）"),
+        );
+    }
 }
 
 /// 管理群里的结果文案。带 emoji 是为了在一屏消息里一眼扫到结论。

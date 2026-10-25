@@ -51,7 +51,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 ```bash
 cargo build --workspace       # 全部插件（0 warning）
-cargo test --workspace        # 250 个单测（离线，不碰网络/数据库）
+cargo test --workspace        # 252 个单测（离线，不碰网络/数据库）
 cargo run -p ultralight-gen-image --example render_card          # 出图（含渲染器）
 cargo run -p fuyubot-plugin-ffmpeg --example plan_smoke         # 转码选路 + 真实转码
 cargo run -p anime-core --example rss_probe                     # RSS 三源抓取 + 合并 + 标题解析
