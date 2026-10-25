@@ -394,6 +394,10 @@ pub struct BangumiUserDoc {
     pub nickname: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub avatar: Option<String>,
+    /// 该用户的 Bangumi access token（收藏操作要用它代表用户本人）。
+    /// 与 TS 版一致：token 存在 `bangumi_users` 里，不写进日志。
+    #[serde(default)]
+    pub access_token: String,
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
     #[serde(rename = "updatedAt")]

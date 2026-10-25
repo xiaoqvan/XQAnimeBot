@@ -1,0 +1,22 @@
+[
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3020,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "sender_id": {
+        "@type": "messageSenderUser",
+        "user_id": 777
+      },
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/collect 400602"
+        }
+      }
+    }
+  }
+]

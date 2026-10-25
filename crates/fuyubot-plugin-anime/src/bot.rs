@@ -62,6 +62,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_canceltask,
     },
     CommandSpec {
+        name: "collect",
+        summary: "给条目/章节标记 Bangumi 收藏状态",
+        handler: cmd_collect,
+    },
+    CommandSpec {
         name: "exitbangumi",
         summary: "解绑当前账号的 Bangumi 绑定",
         handler: cmd_exitbangumi,
@@ -437,7 +442,7 @@ fn cmd_bindbangumi(runtime: &Arc<Runtime>, command: &Command) {
     let runtime = Arc::clone(runtime);
     std::thread::spawn(move || {
         let mut config = runtime.config.bangumi.clone();
-        config.access_token = token;
+        config.access_token = token.clone();
         let client = BgmClient::new(config);
         let text = match client.me() {
             Ok(user) => {
@@ -447,6 +452,7 @@ fn cmd_bindbangumi(runtime: &Arc<Runtime>, command: &Command) {
                     username: user.username.clone(),
                     nickname: user.nickname.clone(),
                     avatar: Some(user.avatar.best().to_owned()).filter(|url| !url.is_empty()),
+                    access_token: token.clone(),
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 };
@@ -523,6 +529,31 @@ fn cmd_blacklist(runtime: &Arc<Runtime>, command: &Command) {
     runtime.td.reply_text(target, text);
 }
 
+/// `/collect <条目id> [章节id]`：弹一个五种收藏状态的键盘。
+///
+/// 对应 TS 视频消息下面那排收藏按钮——出图/导航还没接，先用命令把入口给出来。
+fn cmd_collect(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let mut parts = command.args.split_whitespace();
+    let subject = parts.next().and_then(|raw| raw.parse::<u64>().ok());
+    let episode = parts.next().and_then(|raw| raw.parse::<u64>().ok());
+    let Some(subject) = subject else {
+        runtime.td.reply_text(
+            target,
+            "用法：/collect <bangumi 条目 id> [章节 id]",
+        );
+        return;
+    };
+    let text = match episode {
+        Some(episode) => format!("给条目 {subject} / 章节 {episode} 标记收藏状态："),
+        None => format!("给条目 {subject} 标记收藏状态："),
+    };
+    runtime.td.send_text_with_buttons(
+        target,
+        text,
+        crate::callback::collection_buttons(subject, episode),
+    );
+}
 /// `/canceltask`：目前没有任务队列（下载是 detached 线程），只能报告在跑的条数。
 /// 真正的取消要等 checkpoint/队列落地——那时才可能「取消某一条」。
 fn cmd_canceltask(runtime: &Arc<Runtime>, command: &Command) {

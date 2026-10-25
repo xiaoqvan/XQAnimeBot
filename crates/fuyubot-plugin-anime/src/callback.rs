@@ -283,8 +283,142 @@ unsafe extern "C-unwind" fn callback_trampoline(
     0
 }
 
+/// 条目收藏状态：1 想看 / 2 看过 / 3 在看 / 4 搁置 / 5 抛弃（Bangumi v0 的定义）。
+pub const COLLECTION_STATUSES: [(u32, &str); 5] = [
+    (1, "想看"),
+    (2, "看过"),
+    (3, "在看"),
+    (4, "搁置"),
+    (5, "抛弃"),
+];
+
+/// 一次收藏回调：`collection:<subject>:<type>`（可带 `:episode:etype`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CollectionRequest {
+    pub subject_id: u64,
+    pub kind: u32,
+    /// (章节 id, 章节状态)：可选。
+    pub episode: Option<(u64, u32)>,
+}
+
+/// 解析收藏回调数据；不是收藏按钮返回 None。
+pub fn parse_collection(data: &str) -> Option<CollectionRequest> {
+    let mut parts = data.split(':');
+    if parts.next()? != "collection" {
+        return None;
+    }
+    let subject_id = parts.next()?.parse::<u64>().ok()?;
+    let kind = parts.next()?.parse::<u32>().ok()?;
+    if !(1..=5).contains(&kind) {
+        return None;
+    }
+    let episode = match (parts.next(), parts.next()) {
+        (Some(episode), Some(ep_kind)) => {
+            let episode = episode.parse::<u64>().ok()?;
+            let ep_kind = ep_kind.parse::<u32>().ok()?;
+            if ep_kind > 3 {
+                return None;
+            }
+            Some((episode, ep_kind))
+        }
+        (None, None) => None,
+        _ => return None,
+    };
+    Some(CollectionRequest {
+        subject_id,
+        kind,
+        episode,
+    })
+}
+
+/// 收藏键盘：五个状态排成两行（3 + 2）。
+pub fn collection_buttons(subject_id: u64, episode: Option<u64>) -> Vec<Vec<ReplyButton>> {
+    let make = |kind: u32, label: &str| {
+        let data = match episode {
+            Some(episode) => format!("collection:{subject_id}:{kind}:{episode}:2"),
+            None => format!("collection:{subject_id}:{kind}"),
+        };
+        ReplyButton::callback(label, data)
+    };
+    vec![
+        COLLECTION_STATUSES[..3]
+            .iter()
+            .map(|(kind, label)| make(*kind, label))
+            .collect(),
+        COLLECTION_STATUSES[3..]
+            .iter()
+            .map(|(kind, label)| make(*kind, label))
+            .collect(),
+    ]
+}
+
+/// 处理收藏按钮：用点击者自己的 token 改收藏状态。
+fn handle_collection(runtime: &Arc<Runtime>, query: &CallbackQuery, request: CollectionRequest) {
+    let worker = Arc::clone(runtime);
+    let query = query.clone();
+    let spawned = thread::Builder::new()
+        .name("xq-anime-collect".to_owned())
+        .spawn(move || {
+            let toast = apply_collection(&worker, &query, request);
+            if let Err(error) = Simplify::new(worker.host).answer_callback_query(
+                query.id,
+                Some(&toast),
+                false,
+            ) {
+                log!(&worker.logger, Warn, "answerCallbackQuery 失败：{error}");
+            }
+            log!(
+                &worker.logger,
+                Info,
+                "收藏回调：条目 {} → {}（用户 {}）",
+                request.subject_id,
+                request.kind,
+                query.sender_user_id
+            );
+        });
+    if let Err(error) = spawned {
+        log!(&runtime.logger, Error, "收藏回调线程启动失败：{error}");
+    }
+}
+
+/// 真正调 Bangumi。返回给用户看的 toast 文案。
+fn apply_collection(
+    runtime: &Runtime,
+    query: &CallbackQuery,
+    request: CollectionRequest,
+) -> String {
+    use anime_core::store::Storage;
+    let binding = match runtime.store.bangumi_user_by_tg(query.sender_user_id) {
+        Ok(binding) => binding,
+        Err(error) => return format!("读取绑定失败：{error}"),
+    };
+    let Some(binding) = binding.filter(|user| !user.access_token.trim().is_empty()) else {
+        return "请先 /bindbangumi 绑定 Bangumi 账号".to_owned();
+    };
+    let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+    if let Err(error) =
+        client.set_subject_collection(&binding.access_token, request.subject_id, request.kind)
+    {
+        return format!("修改收藏失败：{error}");
+    }
+    if let Some((episode_id, ep_kind)) = request.episode {
+        // 章节失败不报错：条目状态已经改成功，章节可能因为未收藏而 400。
+        let _ = client.set_episode_collection(&binding.access_token, episode_id, ep_kind);
+    }
+    let label = COLLECTION_STATUSES
+        .iter()
+        .find(|(kind, _)| *kind == request.kind)
+        .map(|(_, label)| *label)
+        .unwrap_or("?");
+    format!("已标记为「{label}」")
+}
 /// 认得出就处理，认不出就放过（同一进程里还有别的插件在收同一条更新）。
 fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
+    // 收藏按钮：不弹审核结论，只回一个 toast。
+    if let Some(request) = parse_collection(&query.data) {
+        handle_collection(runtime, query, request);
+        return;
+    }
     let Some((action, key)) = parse(&query.data) else {
         log!(
             &runtime.logger,
@@ -555,6 +689,33 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parses_collection_callbacks() {
+        let request = parse_collection("collection:400602:3").expect("应当能解析");
+        assert_eq!(request.subject_id, 400602);
+        assert_eq!(request.kind, 3);
+        assert!(request.episode.is_none());
+
+        let with_episode = parse_collection("collection:400602:3:12345:2").unwrap();
+        assert_eq!(with_episode.episode, Some((12345, 2)));
+
+        assert!(parse_collection("collection:400602:9").is_none());
+        assert!(parse_collection("collection:400602").is_none());
+        assert!(parse_collection("collection:400602:3:1").is_none());
+        assert!(parse_collection("review:approve:x").is_none());
+    }
+
+    #[test]
+    fn collection_keyboard_has_five_statuses() {
+        let rows = collection_buttons(400602, None);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].len(), 3);
+        assert_eq!(rows[1].len(), 2);
+        let with_episode = collection_buttons(400602, Some(12345));
+        let debug = format!("{:?}", with_episode[0][0]);
+        assert!(debug.contains("想看"), "{debug}");
+        assert!(debug.contains("collection:400602:1:12345:2"), "{debug}");
+    }
     #[test]
     fn review_keyboard_is_one_row_of_two_callback_buttons() {
         let markup = review_keyboard("abc123");

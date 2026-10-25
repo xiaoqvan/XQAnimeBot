@@ -86,6 +86,33 @@ impl Http {
         })
     }
 
+    /// 带 Bearer 的 PUT（Bangumi 章节收藏用）。
+    pub fn put_json_auth(&self, url: &str, body: &Value, token: Option<&str>) -> Result<Value> {
+        let payload = serde_json::to_string(body).map_err(|err| Error::Parse {
+            what: "请求体",
+            message: err.to_string(),
+        })?;
+        let mut request = self
+            .agent
+            .put(url)
+            .header("Content-Type", "application/json");
+        if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        let response = request.send(payload.as_str()).map_err(|source| Error::Http {
+            url: url.to_owned(),
+            source: Box::new(source),
+        })?;
+        let text = read_body(response, url)?;
+        if text.trim().is_empty() {
+            return Ok(Value::Null);
+        }
+        serde_json::from_str(&text).map_err(|err| Error::Parse {
+            what: "JSON 响应",
+            message: format!("{url}：{err}"),
+        })
+    }
+
     /// POST 一个 JSON 并读回 JSON（bangumi.moe 的三次 `fetch` 接口）。
     pub fn post_json(&self, url: &str, body: &Value) -> Result<Value> {
         self.post_json_auth(url, body, None)

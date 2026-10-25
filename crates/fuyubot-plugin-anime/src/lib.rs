@@ -155,7 +155,6 @@ fn configure_storage(runtime: Arc<Runtime>) {
     let spawned = std::thread::Builder::new()
         .name("xq-anime-mongo".to_owned())
         .spawn(move || {
-            let mut warned_uri = false;
             for _ in 0..15 {
                 if service_available(&runtime.host, "storage.mongo", "configure") {
                     let input = serde_json::json!({
@@ -170,8 +169,7 @@ fn configure_storage(runtime: Arc<Runtime>) {
                         let db = info["db"].as_str().unwrap_or_default();
                         let uri = info["uri"].as_str().unwrap_or_default();
                         if db == mongo.database {
-                            if uri != mongo.uri && !warned_uri {
-                                warned_uri = true;
+                            if uri != mongo.uri {
                                 runtime.host.log(
                                     LogLevel::Warn,
                                     &format!(

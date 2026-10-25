@@ -172,6 +172,33 @@ impl BgmClient {
         })
     }
 
+    /// 修改条目收藏状态（1 想看 / 2 看过 / 3 在看 / 4 搁置 / 5 抛弃）。
+    ///
+    /// 用调用方给的 token，不用配置里的：收藏是「用户自己的动作」，机器人账号的
+    /// token 不该替他改。
+    pub fn set_subject_collection(&self, token: &str, subject_id: u64, kind: u32) -> Result<()> {
+        let url = format!("{API_BASE}/v0/users/-/collections/{subject_id}");
+        self.http
+            .post_json_auth(&url, &serde_json::json!({ "type": kind }), Some(token))?;
+        Ok(())
+    }
+
+    /// 修改章节收藏状态（0 未收藏 / 1 想看 / 2 看过 / 3 抛弃）。
+    ///
+    /// 章节没被条目收藏时 Bangumi 会返回 400；这里把 400 也当成功-ish 处理：
+    /// 调用方先改条目状态，章节失败不该让整次点击报错。
+    pub fn set_episode_collection(&self, token: &str, episode_id: u64, kind: u32) -> Result<()> {
+        let url = format!("{API_BASE}/v0/users/-/collections/-/episodes/{episode_id}");
+        match self
+            .http
+            .put_json_auth(&url, &serde_json::json!({ "type": kind }), Some(token))
+        {
+            Ok(_) => Ok(()),
+            Err(Error::Http { .. }) => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     fn get_json(&self, url: &str) -> Result<Value> {
         let text = self.http.get(url)?;
         serde_json::from_str(&text).map_err(|err| Error::Parse {
