@@ -71,6 +71,7 @@ timeout_secs = 7200
 # 单条消息能发的最大字节数；超过就按大小分段（TG 约 2GB）
 max_upload_bytes = 1950000000
 
+# AI 兜底：集数抽取 + 章节匹配。关掉就完全走规则
 [ai]
 enabled = false
 api_key = ""

@@ -11,7 +11,8 @@
 
 use std::time::{Duration, Instant};
 
-use anime_core::config::RssConfig;
+use anime_core::ai::AiClient;
+use anime_core::config::{AiConfig, RssConfig};
 use anime_core::log;
 use anime_core::logger::Logger;
 use anime_core::models::RssKind;
@@ -87,7 +88,8 @@ impl Summary {
 }
 
 /// 抓一轮。
-pub fn run(config: &RssConfig, logger: &Logger) -> Summary {
+pub fn run(config: &RssConfig, ai: &AiConfig, logger: &Logger) -> Summary {
+    let ai_episode_fallback = config.ai_episode_fallback;
     let started = Instant::now();
     let http = Http::new(TIMEOUT);
 
@@ -113,6 +115,8 @@ pub fn run(config: &RssConfig, logger: &Logger) -> Summary {
     let mut usable = 0usize;
     let mut samples = Vec::new();
     let mut items = Vec::new();
+    // AI 客户端建一次：每轮几十条，逐条 new 会白建连接池。
+    let ai_client = AiClient::new(ai.clone());
     for item in &report.items {
         // bangumi.moe 的组名/磁力/多语言名都在 API 里，RSS 条目本身没有 `author`：
         // 不走 `enrich_bangumi` 就只能靠标题里的组标签猜，猜不到就整条丢掉。
@@ -128,7 +132,23 @@ pub fn run(config: &RssConfig, logger: &Logger) -> Summary {
         if samples.len() < SAMPLE_LIMIT {
             samples.push(shorten(&item.title, SHORTEN));
         }
-        if let Some(built) = built {
+        if let Some(mut built) = built {
+            // AI 只做兜底：规则解析出集数后仍然问一次模型，模型给了更可信的结果才覆盖。
+            // 开关关掉时连请求都不发。
+            if ai_episode_fallback
+                && ai_client.usable()
+                && let Some(episode) = ai_client.extract_episode(&built.title, &built.names)
+            {
+                log!(
+                    logger,
+                    Debug,
+                    "AI 修正集数：{} → {}（{}）",
+                    built.episode.as_deref().unwrap_or("未知"),
+                    episode,
+                    built.title
+                );
+                built.episode = Some(episode);
+            }
             items.push(built);
         }
     }

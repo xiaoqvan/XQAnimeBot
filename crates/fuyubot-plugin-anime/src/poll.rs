@@ -23,6 +23,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Timelike, Utc};
 
+use anime_core::ai::AiClient;
 use anime_core::log;
 use anime_core::matching::{
     AnimeCandidate, MatchPolicy, SeasonDecision, decide_season_with, match_item_with, today_local,
@@ -251,7 +252,7 @@ pub struct Round {
 /// 这里只把「这条种子属于谁」判出来，让日志能回答「为什么没发」。
 fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     let logger = &runtime.logger;
-    let summary = fetch::run(&runtime.config.rss, logger);
+    let summary = fetch::run(&runtime.config.rss, &runtime.config.ai, logger);
     let failures = summary
         .sources
         .iter()
@@ -272,6 +273,7 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     let candidates = load_candidates(runtime);
     let store_ready = runtime.store.available();
 
+    let ai = AiClient::new(runtime.config.ai.clone());
     let mut matched = 0usize;
     let mut new_anime = 0usize;
     let mut ready = 0usize;
@@ -317,7 +319,25 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
                     None,
                     MatchPolicy::ts(),
                 );
-                if outcome.is_ready() {
+                // 规则没对上时再问一次 AI（TS 是 AI 优先，这里 AI 兜底：少一次请求，
+                // 而且规则命中的结果本来就更稳）。
+                let mut episode_ok = outcome.is_ready();
+                if !episode_ok && ai.usable() && !episodes.is_empty() {
+                    let pairs: Vec<(i64, f64)> =
+                        episodes.iter().map(|episode| (episode.id, episode.sort)).collect();
+                    if let Some(id) = ai.match_episode(item.episode.as_deref().unwrap_or(""), &pairs) {
+                        log!(
+                            logger,
+                            Info,
+                            "AI 匹配到章节：{}（anime {} / 集数 {}）",
+                            id,
+                            hit.anime_id,
+                            item.episode.as_deref().unwrap_or("未知")
+                        );
+                        episode_ok = true;
+                    }
+                }
+                if episode_ok {
                     ready += 1;
                     log!(logger, Info, "可投放：{}｜{}", hit.matched_name, outcome.describe());
                     // 下载可能要几十分钟：交给 chain 的限流线程，轮询继续跑。
