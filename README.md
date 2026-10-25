@@ -47,6 +47,12 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 | 任务恢复 / 检查点 / 审核 | ~1.0k | ❌ 未开始 |
 | Web 管理端（Fastify + Vue） | ~7k | 🚧 只读 HTTP API（health/stats/anime/reviews/tasks + Bearer）；前端不做 |
 
+## 数据库（本地 / 云端）
+
+`[mongodb]` 是唯一配置入口：插件启动时调 `storage.mongo.configure` 把 `uri`/`database`/`timeout_ms` 下发给 mongo 插件（云上用 `mongodb+srv://...` 即可，连接串原样透传）。也支持用 `MONGO_URI` / `MONGO_DB` / `MONGO_TIMEOUT_MS` 环境变量覆盖。
+
+判断是否生效：宿主日志里会有 `[anime] storage.mongo 就绪：库 fuyubot（来自 [mongodb] 配置）`；若显示「连接串是 …，[mongodb].uri 不生效」，说明 mongo 插件已被宿主先配好，此时只会切换库名。
+
 ## 快速开始
 
 1. 装好四个基础插件（mongo / qb / ffmpeg / 出图），并让宿主加载本插件；

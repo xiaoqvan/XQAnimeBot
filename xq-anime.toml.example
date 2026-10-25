@@ -32,9 +32,15 @@ delete_torrent_after_send = true
 poll_interval_secs = 5
 
 [mongodb]
+# 本插件的 [mongodb] 会通过 storage.mongo 的 configure 方法**真正生效**（启动时下发）。
+# 本地示例：
 uri = "mongodb://127.0.0.1:27017"
+# 云端示例（Atlas / 自建 TLS 都行，驱动自己解析 SRV）：
+# uri = "mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
 # 与 TS 版一致：TS 从 MONGODB_URL 取库名，缺省 fuyubot
 database = "fuyubot"
+# 连接/选择超时（毫秒）。云端抖动时宁可快速失败，默认 10 秒（驱动默认 30 秒会卡线程）
+timeout_ms = 10000
 
 [rss]
 # 0 = 按北京时间自动分时段（21-次日2 点 1 分钟一轮，白天 15 分钟）

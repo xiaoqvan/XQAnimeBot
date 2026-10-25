@@ -71,6 +71,7 @@ impl Plugin for MongoPlugin {
                 ("distinct", svc_distinct as Handler),
                 ("ensure_index", svc_ensure_index as Handler),
                 ("collections", svc_collections as Handler),
+                ("configure", svc_configure as Handler),
             ],
         )
         .register(&host)?;
@@ -80,17 +81,10 @@ impl Plugin for MongoPlugin {
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
         let raw: Value = serde_json::from_str(config_json).unwrap_or(Value::Null);
-        // 配置优先，其次环境变量（联调/容器里不必改宿主配置），最后内置默认值。
-        let uri = opt_str(&raw, "uri")
-            .map(str::to_owned)
-            .or_else(|| std::env::var("MONGO_URI").ok().filter(|uri| !uri.trim().is_empty()))
-            .unwrap_or_else(|| "mongodb://127.0.0.1:27017".to_owned());
-        let db = opt_str(&raw, "db")
-            .map(str::to_owned)
-            .or_else(|| std::env::var("MONGO_DB").ok().filter(|db| !db.trim().is_empty()))
-            .unwrap_or_else(|| "xqanime".to_owned());
-
-        api::configure(&uri, &db)?;
+        let options = api::options_from(&raw);
+        let uri = options.uri.clone();
+        let db = options.db.clone();
+        api::configure_with(&options)?;
 
         // 预热：真的 ping 一次，配置写错在 start 阶段就暴露，而不是等第一条业务查询。
         match api::ping() {
@@ -116,21 +110,103 @@ fuyubot_abi::define_plugin!(MongoPlugin, "fuyubot.mongo");
 pub mod api {
     use super::*;
 
+    /// 连接参数。云上的 Mongo（Atlas / 自建 TLS）有两个额外需求：
+    /// 连接串要原样透传（\`mongodb+srv://\` 由驱动自己解析 DNS），
+    /// 以及**超时要短**——默认 30 秒的 server selection 会让一次云端抖动把插件卡住。
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Options {
+        pub uri: String,
+        pub db: String,
+        /// server selection + connect timeout，毫秒。
+        pub timeout_ms: u64,
+        /// 连接串里没带 appName 时补一个，云控制台按它区分客户端。
+        pub app_name: String,
+    }
+
+    impl Default for Options {
+        fn default() -> Self {
+            Self {
+                uri: "mongodb://127.0.0.1:27017".to_owned(),
+                db: "xqanime".to_owned(),
+                timeout_ms: 10_000,
+                app_name: "fuyubot".to_owned(),
+            }
+        }
+    }
+
+    /// 从插件配置 + 环境变量拼出连接参数。
+    ///
+    /// 优先级：显式配置 > 环境变量 > 默认值。云端部署时把连接串放环境变量更常见
+    /// （不写进配置文件、方便轮换），所以两条路都支持。
+    pub fn options_from(raw: &Value) -> Options {
+        let env = |key: &str| {
+            std::env::var(key)
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        };
+        let defaults = Options::default();
+        Options {
+            uri: opt_str(raw, "uri")
+                .map(str::to_owned)
+                .or_else(|| env("MONGO_URI"))
+                .unwrap_or(defaults.uri),
+            db: opt_str(raw, "db")
+                .map(str::to_owned)
+                .or_else(|| env("MONGO_DB"))
+                .unwrap_or(defaults.db),
+            timeout_ms: raw
+                .get("timeout_ms")
+                .and_then(Value::as_u64)
+                .or_else(|| env("MONGO_TIMEOUT_MS").and_then(|text| text.parse().ok()))
+                .unwrap_or(defaults.timeout_ms),
+            app_name: opt_str(raw, "app_name")
+                .map(str::to_owned)
+                .or_else(|| env("MONGO_APP_NAME"))
+                .unwrap_or(defaults.app_name),
+        }
+    }
+
     /// 建运行时 + 客户端。重复调用是安全的（第二次直接返回）。
     pub fn configure(uri: &str, db: &str) -> Result<(), String> {
-        if CLIENT.get().is_none() {
-            let runtime = Runtime::new().map_err(|err| format!("建 tokio 运行时失败：{err}"))?;
-            let client = runtime
-                .block_on(Client::with_uri_str(uri))
-                .map_err(|err| format!("连接 MongoDB 失败（{uri}）：{err}"))?;
-            let _ = RUNTIME.set(runtime);
-            let _ = CLIENT.set(client);
-        }
-        SETTINGS.set(Config {
+        let options = Options {
             uri: uri.to_owned(),
             db: db.to_owned(),
+            ..Options::default()
+        };
+        configure_with(&options).map(|_| ())
+    }
+
+    /// 用完整参数配置。返回「这次是否真的建立了连接」——已经有客户端时返回 false，
+    /// 调用方据此提示「配置没生效」。
+    pub fn configure_with(options: &Options) -> Result<bool, String> {
+        if CLIENT.get().is_none() {
+            let runtime = Runtime::new().map_err(|err| format!("建 tokio 运行时失败：{err}"))?;
+            let client = runtime.block_on(async {
+                let mut client_options = mongodb::options::ClientOptions::parse(&options.uri)
+                    .await
+                    .map_err(|err| format!("解析连接串失败（{}）：{err}", options.uri))?;
+                // 云端抖动时宁可快速失败，也别把插件的线程按住 30 秒。
+                let timeout = std::time::Duration::from_millis(options.timeout_ms.max(1_000));
+                client_options.server_selection_timeout = Some(timeout);
+                client_options.connect_timeout = Some(timeout);
+                client_options.app_name = Some(options.app_name.clone());
+                Client::with_options(client_options)
+                    .map_err(|err| format!("连接 MongoDB 失败（{}）：{err}", options.uri))
+            })?;
+            let _ = RUNTIME.set(runtime);
+            let _ = CLIENT.set(client);
+            SETTINGS.set(Config {
+                uri: options.uri.clone(),
+                db: options.db.clone(),
+            });
+            return Ok(true);
+        }
+        // 已经连上了：只允许切库，不允许悄悄换连接串（换了也不会生效，必须说清楚）。
+        SETTINGS.set(Config {
+            uri: options.uri.clone(),
+            db: options.db.clone(),
         });
-        Ok(())
+        Ok(false)
     }
 
     /// 按方法名分派。入参/出参与服务协议完全一致。
@@ -147,8 +223,23 @@ pub mod api {
             "distinct" => distinct(&input),
             "ensure_index" => ensure_index(&input),
             "collections" => collections(&input),
+            "configure" => configure_service(&input),
             other => Err(format!("未知方法：{other}")),
         }
+    }
+
+    /// 服务方法：让业务插件用自己的配置驱动连接（动漫插件的 `[mongodb]` 走这里）。
+    ///
+    /// 已经连上时返回 `applied: false`：换连接串不会生效，调用方据此提示。
+    fn configure_service(input: &Value) -> Result<Value, String> {
+        let options = options_from(input);
+        let applied = configure_with(&options)?;
+        Ok(json!({
+            "applied": applied,
+            "uri": options.uri,
+            "db": options.db,
+            "timeout_ms": options.timeout_ms,
+        }))
     }
 
     pub fn ping() -> Result<Value, String> {
@@ -441,6 +532,10 @@ fn dispatch(method: &str, input: *const c_char) -> *const c_char {
             error(message)
         }
     }
+}
+
+unsafe extern "C" fn svc_configure(_ctx: *mut c_void, input: *const c_char) -> *const c_char {
+    dispatch("configure", input)
 }
 
 unsafe extern "C" fn svc_ping(_ctx: *mut c_void, input: *const c_char) -> *const c_char {

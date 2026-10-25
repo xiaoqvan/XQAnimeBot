@@ -14,6 +14,8 @@ MongoDB 插件：注册 `storage.mongo`，给**任意**插件提供集合级 CRU
 
 `uri` 支持标准连接串（含副本集、SRV、账号密码）。`start()` 会真 ping 一次——配错了在启动日志里就能看到，不用等第一条业务查询。
 
+**云端连接**：`uri` 原样透传，`mongodb+srv://` 由驱动自己解析 DNS；server selection / connect 超时默认 **10 秒**（驱动默认 30 秒会把调用线程按住），用 `timeout_ms` 调；`appName` 默认 `fuyubot`。业务插件可以通过服务方法 `configure`（`{uri, db, timeout_ms}`）下发参数——XQAnimeBot 的 `[mongodb]` 就是这么生效的；已建立过连接时返回 `applied:false`，只切换库名。
+
 ## 方法
 
 所有方法入参都是 JSON，出参统一 `{"ok":true, ...}`；失败是 `{"ok":false,"error":"..."}`。

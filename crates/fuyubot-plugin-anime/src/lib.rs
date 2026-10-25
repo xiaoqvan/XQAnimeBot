@@ -100,6 +100,15 @@ impl Plugin for AnimePlugin {
                 .log(LogLevel::Warn, "订阅 updateNewCallbackQuery 失败，审核按钮不可用");
         }
 
+        // 用本插件的 [mongodb] 驱动 storage.mongo（云端连接串走这里）。
+        // 最多等 3 秒让它生效：否则第一轮轮询可能落在切换前的空库上。
+        configure_storage(Arc::clone(&runtime));
+        for _ in 0..30 {
+            if STORAGE_READY.load(std::sync::atomic::Ordering::Acquire) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
         // 恢复上次没跑完的任务（检查点）。放在轮询启动之后：恢复是补作业，
         // 不该挡住插件进入就绪状态。
         recover_tasks(Arc::clone(&runtime));
@@ -132,6 +141,75 @@ impl Plugin for AnimePlugin {
 }
 
 define_plugin!(AnimePlugin, "xq.anime");
+
+/// `storage.mongo` 是否已经按本插件配置就绪（启动时最多等 3 秒）。
+static STORAGE_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// 用本插件的 `[mongodb]` 配置去驱动 `storage.mongo`。
+///
+/// 为什么要重试：插件加载顺序不保证（实测 anime 常先于 mongo 起来），一次性调用
+/// 会找不到服务。这里最多等 30 秒，等到就配、配完退出。
+fn configure_storage(runtime: Arc<Runtime>) {
+    use fuyubot_service::{call_service, service_available};
+    let mongo = runtime.config.mongodb.clone();
+    if mongo.uri.trim().is_empty() {
+        return;
+    }
+    let spawned = std::thread::Builder::new()
+        .name("xq-anime-mongo".to_owned())
+        .spawn(move || {
+            let mut warned_uri = false;
+            for _ in 0..15 {
+                if service_available(&runtime.host, "storage.mongo", "configure") {
+                    let input = serde_json::json!({
+                        "uri": mongo.uri,
+                        "db": mongo.database,
+                        "timeout_ms": 10_000u64,
+                    });
+                    let _ = call_service(&runtime.host, "storage.mongo", "configure", &input);
+                    // 读回真实状态：mongo 插件自己的 start 可能晚一步把库改回去，
+                    // 所以「调用成功」不算数，以 ping 回来的 db 为准。
+                    if let Ok(info) = call_service(&runtime.host, "storage.mongo", "ping", &serde_json::json!({})) {
+                        let db = info["db"].as_str().unwrap_or_default();
+                        let uri = info["uri"].as_str().unwrap_or_default();
+                        if db == mongo.database {
+                            if uri != mongo.uri && !warned_uri {
+                                warned_uri = true;
+                                runtime.host.log(
+                                    LogLevel::Warn,
+                                    &format!(
+                                        "[{TAG}] storage.mongo 的连接串是 {uri}（由宿主配置建立），[mongodb].uri={} 不生效；库已切到 {db}",
+                                        mongo.uri
+                                    ),
+                                );
+                            }
+                            runtime.host.log(
+                                LogLevel::Info,
+                                &format!("[{TAG}] storage.mongo 就绪：库 {db}（来自 [mongodb] 配置）"),
+                            );
+                            STORAGE_READY.store(true, std::sync::atomic::Ordering::Release);
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_secs(1));
+            }
+            runtime.host.log(
+                LogLevel::Warn,
+                &format!(
+                    "[{TAG}] 15 秒内没能把 storage.mongo 切到库 {}，仍用宿主配置（可用 MONGO_URI/MONGO_DB）",
+                    mongo.database
+                ),
+            );
+            // 失败也要放行：不让第一轮轮询无限等下去。
+            STORAGE_READY.store(true, std::sync::atomic::Ordering::Release);
+        });
+
+    if spawned.is_err() {
+        // 起不来就退回宿主配置，不影响插件本身。
+    }
+}
+
 
 /// 同一个任务最多重放几次。超过就判失败：崩溃—重启—再崩溃的死循环比丢一条种子更糟。
 const MAX_RESUME_ATTEMPTS: i32 = 3;
