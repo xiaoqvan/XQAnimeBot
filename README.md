@@ -67,6 +67,24 @@ cargo run -p anime-core --example rss_probe                     # RSS 三源抓�
 cargo run -p anime-core --example matching_probe                # 番剧匹配 + 集数对齐（--live 用真实 RSS）
 ```
 
+### 真宿主回放（已实测）
+
+`--replay` 不接 TDLib，但会真的加载插件、跑事件循环、把 `sendMessage` 记下来：
+
+```bash
+cargo build -p fuyubot-plugin-anime
+mkdir -p target/abi-probe/plugins
+cp target/debug/fuyubot_plugin_anime.dll target/abi-probe/plugins/
+<FuyuBot>/target/debug/fuyubot.exe run \
+  --replay examples/replay/commands.json \
+  --plugin-dir target/abi-probe/plugins --replay-wait 500
+```
+
+2026-10-26 实测结果：插件加载成功、13 条命令注册、`/ping` `/status` `/help` 各发出一条
+字段正确的 `sendMessage`（含 `inputMessageText` + `reply_to`）、服务发现四项全 ✓、
+后台 RSS 真的抓到三源（bangumi 23 / dmhy 23 / acgnx 11）、`stop` 正常调用。
+Mongo / qB 没起时只打 warn，不影响插件运行。
+
 ### 在真宿主里验插件（不需要 Telegram 账号）
 
 回放模式不接 TDLib，插件的 `sendMessage` 会被记下来而不真的发出，所以离线就能验证

@@ -11,7 +11,6 @@ use serde_json::{Value, json};
 
 use crate::config::AiConfig;
 use crate::rss::Http;
-use crate::{Error, Result};
 
 /// 请求超时。模型慢，但也不能让 RSS 一轮被一条卡住。
 const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
