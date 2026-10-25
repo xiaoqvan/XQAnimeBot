@@ -7,10 +7,21 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
+use serde::Deserializer;
 
 /// 卡片上展示的 staff 字段，顺序即展示顺序（与 TS 番剧卡一致）。
 pub const STAFF_KEYS: [&str; 6] = ["原作", "导演", "动画制作", "音乐", "系列构成", "脚本"];
 
+/// 把 `null` 反序列化成空字符串。
+///
+/// Bangumi 的 `name_cn` / `summary` / `date` 在没填时是 `null` 而不是缺字段，
+/// 直接用 String 接会报 `invalid type: null, expected a string`（搜索接口就是这样）。
+fn null_to_empty<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.unwrap_or_default())
+}
 /// 条目图片。五种尺寸都是 Bangumi 直接给的 URL。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
@@ -159,15 +170,20 @@ impl Infobox {
 #[serde(default)]
 pub struct Subject {
     pub id: u64,
+    #[serde(deserialize_with = "null_to_empty")]
     pub name: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub name_cn: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub summary: String,
     pub images: Images,
     pub rating: Rating,
     pub collection: Collection,
     /// 本篇话数（Bangumi 的 `eps`；`total_episodes` 是章节总数，含 SP）。
     pub eps: u32,
+    #[serde(deserialize_with = "null_to_empty")]
     pub date: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub platform: String,
     pub infobox: Vec<Infobox>,
     pub tags: Vec<Tag>,
@@ -297,10 +313,15 @@ pub struct Episode {
     pub r#type: i32,
     pub ep: f64,
     pub sort: f64,
+    #[serde(deserialize_with = "null_to_empty")]
     pub name: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub name_cn: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub airdate: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub duration: String,
+    #[serde(deserialize_with = "null_to_empty")]
     pub desc: String,
 }
 

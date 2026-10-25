@@ -39,7 +39,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 | 番剧卡片数据 payload | ~0.3k | ✅ 完成 |
 | RSS 三源解析（bangumi/dmhy/acgnx） | ~1.2k | ✅ 完成（三源 + 合并去重 + 条目构建，真网络验证） |
 | 番剧匹配（season + 集数对齐） | ~0.6k | ✅ 完成（打分 + 阈值 + 放送日期窗口，真数据验证） |
-| 插件壳 / 命令路由 | ~3.3k | 🚧 15 个命令 + 后台 RSS 轮询（去重 → 匹配 → 下载 → 转码 → 发视频；审核提示/按钮/通过即下载；/addanime 导入库；导航卡 + 每集链接） |
+| 插件壳 / 命令路由 | ~3.3k | 🚧 16 个命令 + 后台 RSS 轮询（去重 → 匹配 → 下载 → 转码 → 发视频；审核提示/按钮/通过即下载；/addanime 导入库；导航卡 + 每集链接） |
 | 业务存储层（db） | ~2.5k | 🚧 `anime-core::store` 就绪（Storage trait + 业务查询），插件侧已用 `storage.mongo` 实现 |
 | TDLib 读接口 / inline | — | 🚧 `fuyubot-tdlib-ext`（getMessage/getChat/getMessageLink/answerInlineQuery 等 10 个） |
 | 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | 🚧 主链已通（含待审核分支、导航卡、navVideoMessage）；缺分段/多集/播报 |
@@ -80,7 +80,7 @@ cp target/debug/fuyubot_plugin_anime.dll target/abi-probe/plugins/
   --plugin-dir target/abi-probe/plugins --replay-wait 500
 ```
 
-2026-10-26 实测结果：插件加载成功、13 条命令注册、`/ping` `/status` `/help` 各发出一条
+2026-10-26 实测结果：插件加载成功、命令全部注册、`/ping` `/status` `/help` 各发出一条
 字段正确的 `sendMessage`（含 `inputMessageText` + `reply_to`）、服务发现四项全 ✓、
 后台 RSS 真的抓到三源（bangumi 23 / dmhy 23 / acgnx 11）、`stop` 正常调用。
 Mongo / qB 没起时只打 warn，不影响插件运行。

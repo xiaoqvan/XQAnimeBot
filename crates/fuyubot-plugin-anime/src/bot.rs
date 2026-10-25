@@ -47,6 +47,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_blacklist,
     },
     CommandSpec {
+        name: "bgm",
+        summary: "按关键词搜 Bangumi，给出可 /addanime 的条目 id",
+        handler: cmd_bgm,
+    },
+    CommandSpec {
         name: "canceltask",
         summary: "取消下载（当前没有队列，仅报告状态）",
         handler: cmd_canceltask,
@@ -364,6 +369,37 @@ fn cmd_search(runtime: &Arc<Runtime>, command: &Command) {
     });
 }
 
+/// `/bgm <关键词>`：搜 Bangumi 并列出 id，方便接着 `/addanime <id>`。
+///
+/// 本地 `/searchanime` 只搜已入库的番剧；要『先查外部再导入』就得走这条。
+fn cmd_bgm(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let keyword = command.args.trim().to_owned();
+    if keyword.is_empty() {
+        runtime.td.reply_text(target, "用法：/bgm <关键词>");
+        return;
+    }
+    let runtime = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        let client = BgmClient::new(runtime.config.bangumi.clone());
+        let text = match client.search(&keyword) {
+            Ok(list) if list.is_empty() => format!("Bangumi 没有找到「{keyword}」"),
+            Ok(list) => {
+                let mut text = format!("Bangumi 找到 {} 部：\n", list.len());
+                for subject in list.iter().take(8) {
+                    text.push_str(&format!(
+                        "· {} / {}（{}）\n",
+                        subject.name_cn, subject.name, subject.id
+                    ));
+                }
+                text.push_str("\n用 /addanime <id> 导入。");
+                text
+            }
+            Err(error) => format!("搜索 Bangumi 失败：{error}"),
+        };
+        runtime.td.reply_text(target, text);
+    });
+}
 /// `/animeblacklist`：只读展示。增删改需要写 config 集合，等审核链路一起做。
 fn cmd_blacklist(runtime: &Arc<Runtime>, command: &Command) {
     let target = Target::new(command.chat_id, command.message_id);
