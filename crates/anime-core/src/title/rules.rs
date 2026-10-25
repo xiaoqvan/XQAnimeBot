@@ -40,8 +40,9 @@ pub static RULES: &[(&str, Rule)] = &[
     ("樱桃花字幕组", cherry),
     ("S1百综字幕组", s1),
     ("绿茶字幕组", green_tea),
-    ("LoliHouse", cut_at_episode_bracket),
+    ("LoliHouse", lolihouse),
     ("云光字幕组", cut_at_episode_bracket),
+    ("MingYSub", ming_y_sub),
     ("奇怪机翻组", cut_at_episode_bracket),
     ("晚街与灯", cut_at_episode_bracket),
     ("Prejudice-Studio", cut_at_episode_bracket),
@@ -52,7 +53,13 @@ pub static RULES: &[(&str, Rule)] = &[
 
 /// 组名别名：发布组自报的名字和规则 key 对不上时，先精确归到规则组。
 pub static ALIASES: &[(&str, &str)] = &[
+    // 悠哈系：同一个组在不同站点/不同时期用过简体、繁体、简称三种写法，
+    // 少一条就会退到「包含匹配」，而「悠哈C9漢化組」里并不含「悠哈璃羽字幕社」。
     ("悠哈C9字幕社", "悠哈璃羽字幕社"),
+    ("悠哈C9字幕组", "悠哈璃羽字幕社"),
+    ("悠哈C9漢化組", "悠哈璃羽字幕社"),
+    ("悠哈C9汉化组", "悠哈璃羽字幕社"),
+    ("YUI-7&悠哈C9字幕组", "悠哈璃羽字幕社"),
     ("望月月", "悠哈璃羽字幕社"),
     ("萌樱字幕组", "云歌字幕组"),
     ("微雨恋樱", "樱桃花字幕组"),
@@ -443,6 +450,71 @@ fn cut_at_episode_bracket(title: &str) -> Vec<String> {
     sort_names_by_priority(names, title)
 }
 
+/// LoliHouse：`[LoliHouse] 中文名 / English Name - 04 [WebRip 1080p HEVC-10bit AAC][简体内嵌]`。
+///
+/// 不能复用 [`cut_at_episode_bracket`]：那个只认 `[04]` 这类「集数单独成括号」的写法，
+/// 而 LoliHouse 把集数写成 ` - 04`、技术参数塞进后续 `[]` 里；漏切的话整段
+/// `- 04 [WebRip …]` 会被当成英文名送去 Bangumi 检索，命中率直接归零。
+/// 所以这里单独按 `/` 拆、按 ` - 数字` / `[数字]` 截断，再剥掉残留的 `[]`/`()` 标记。
+fn lolihouse(title: &str) -> Vec<String> {
+    static PREFIX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\[LoliHouse\]\s*").expect("内置正则必须合法"));
+    static CUT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\s*-\s*\d+|\s*\[\d+\]").expect("内置正则必须合法")
+    });
+    static MARKS: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"\[[^\]]*\]|\([^)]*\)").expect("内置正则必须合法")
+    });
+
+    let t = PREFIX.replace(title, "").to_string();
+    let names: Vec<String> = split_slash(&t)
+        .into_iter()
+        .map(|part| {
+            let cut = match CUT.find(&part) {
+                Some(m) => part[..m.start()].to_owned(),
+                None => part,
+            };
+            MARKS.replace_all(&cut, "").trim().to_owned()
+        })
+        // 两字以内基本是 `01`、`SP` 之类的残留；真正的番名不会这么短。
+        .filter(|name| name.chars().count() > 2)
+        .collect();
+    sort_names_by_priority(names, title)
+}
+
+/// MingYSub：`[MingYSub] 中文名 / English Name（日文名）[01][1080P]`。
+///
+/// TS 版把「第一个全角括号」整段当检索用名——它的标题习惯直接写 `（日文名）`，
+/// 不是 `（检索用：…）`，所以不能复用 [`search_name`]（那个只认「检索用」前缀）。
+/// 也正因为这个名字被单独取走、又以 `（日文名）` 的形式参与
+/// [`sort_names_by_priority`] 的检索用判定，日文名才会排在中文名前面。
+fn ming_y_sub(title: &str) -> Vec<String> {
+    static PREFIX: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^\[MingY[^\[\]]*\]\s*").expect("内置正则必须合法")
+    });
+    static PAREN: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"（([^）]+)）").expect("内置正则必须合法"));
+    static PAREN_ANY: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"（[^）]*）").expect("内置正则必须合法"));
+
+    let search = PAREN
+        .captures(title)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().trim().to_owned())
+        .filter(|name| !name.is_empty());
+    // 番名只到第一个 `[` 为止，后面都是 `[01][1080P]` 这类技术信息。
+    let t = PREFIX.replace(title, "").to_string();
+    let t = t.split('[').next().unwrap_or("").trim().to_owned();
+    // 括号里的检索用名已经取出，正文里再留一份会被当成普通番名候选。
+    let t = PAREN_ANY.replace(&t, "").trim().to_owned();
+
+    let mut names = split_slash(&t);
+    if let Some(search) = search {
+        names.insert(0, search);
+    }
+    sort_names_by_priority(names, title)
+}
+
 fn yunge(title: &str) -> Vec<String> {
     static NOISE: LazyLock<regex::Regex> = LazyLock::new(|| {
         regex::Regex::new(
@@ -607,5 +679,57 @@ mod tests {
         assert!(is_tech_token("1080P"));
         assert!(is_tech_token("简体"));
         assert!(!is_tech_token("葬送的芙莉莲"));
+    }
+
+    #[test]
+    fn ming_y_sub_reads_slash_names_and_search_paren() {
+        // TS 注释里的形态：组标签 + 中/英名用 `/` 分隔，日文检索名放全角括号。
+        let names = ming_y_sub(
+            "[MingYSub] 地缚少年花子君 / Toilet-bound Hanako-kun（地縛少年花子くん）[01][1080P][简日内嵌]",
+        );
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(
+            names[0], "地縛少年花子くん",
+            "全角括号里的检索用名要排第一：{names:?}"
+        );
+        assert!(names.iter().any(|n| n == "地缚少年花子君"), "{names:?}");
+        assert!(
+            names.iter().any(|n| n == "Toilet-bound Hanako-kun"),
+            "{names:?}"
+        );
+    }
+
+    #[test]
+    fn lolihouse_cuts_dash_episode_and_strips_tech_marks() {
+        // 真实形态：集数是 ` - 04`，后面还跟着一整串技术参数，不能当番名。
+        let names = lolihouse(
+            "[LoliHouse] 才女的侍从 / Saijo no Osewa - 04 [WebRip 1080p HEVC-10bit AAC][简体内嵌]",
+        );
+        assert_eq!(names, vec!["才女的侍从", "Saijo no Osewa"], "{names:?}");
+    }
+
+    #[test]
+    fn youha_aliases_route_to_yuha_rule() {
+        // 用函数地址确认别名指向 `yuha` 本身，而不是某条碰巧输出相同的规则。
+        let expected = rule_for("悠哈C9漢化組").expect("繁体别名必须命中");
+        assert!(
+            std::ptr::fn_addr_eq(expected, yuha as Rule),
+            "悠哈C9漢化組 要归到悠哈璃羽的规则"
+        );
+        for alias in [
+            "悠哈C9字幕社",
+            "悠哈C9字幕组",
+            "悠哈C9汉化组",
+            "YUI-7&悠哈C9字幕组",
+        ] {
+            let rule = rule_for(alias).unwrap_or_else(|| panic!("{alias} 没归到任何规则"));
+            assert!(
+                std::ptr::fn_addr_eq(rule, yuha as Rule),
+                "{alias} 没归到悠哈璃羽的规则"
+            );
+        }
+        // 再走一遍真实标题，确认规则本身能解析（地址对但函数坏的情况也要挡住）。
+        let names = expected("[葬送的芙莉莲][01][1080P]");
+        assert_eq!(names.first().map(String::as_str), Some("葬送的芙莉莲"));
     }
 }

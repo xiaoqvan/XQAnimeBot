@@ -5,12 +5,18 @@
 //! 1. 把宿主事件翻成 `anime-core` 的调用（`bot`）；
 //! 2. 把 `anime-core` 的结果翻成 TDLib 请求（`td`，实际映射在 `fuyubot-simplify`）；
 //! 3. 维护命令 / 回调路由；
-//! 4. 持有运行时状态（配置、连接、任务句柄）。
+//! 4. 持有运行时状态（配置、连接、任务句柄）；
+//! 5. **养一条后台 RSS 轮询线程**（`poll`）。
+//!
+//! 第 5 条是插件的“心跳”：对应用户看不到的那部分。TS 里它是 `anime/index.ts`
+//! 的 `while (true)` 主循环，不是任何命令——用户不敲任何东西，它也在抓。
 //!
 //! **业务判断一律不写在这里**。宿主层能做的只有「收到什么、回什么」，
 //! 「这条种子属于哪部番、该不该投」是 `anime-core` 的事——那边能纯 `cargo test`。
 
 mod bot;
+mod fetch;
+mod poll;
 mod runtime;
 mod td;
 
@@ -19,6 +25,7 @@ use std::sync::Arc;
 use fuyubot_abi::{HostApi, LogLevel, Plugin, define_plugin};
 use fuyubot_simplify::{CommandSubscription, on_command};
 
+use crate::poll::Poller;
 use crate::runtime::{Bootstrap, Runtime};
 
 /// 插件标识，宿主日志里用它区分来源。
@@ -33,6 +40,8 @@ struct AnimePlugin {
     runtime: Option<Arc<Runtime>>,
     /// 订阅守卫：`drop` 就退订，所以 `stop` 里只要把它置空。
     subscription: Option<CommandSubscription>,
+    /// 后台 RSS 轮询。`drop` = 请求停止，所以 `stop` 里只要把它置空。
+    poller: Option<Poller>,
 }
 
 impl Plugin for AnimePlugin {
@@ -42,6 +51,7 @@ impl Plugin for AnimePlugin {
             host,
             runtime: None,
             subscription: None,
+            poller: None,
         })
     }
 
@@ -58,18 +68,26 @@ impl Plugin for AnimePlugin {
         })
         .ok_or_else(|| "订阅 updateNewMessage 失败（宿主没接事件总线？）".to_owned())?;
 
+        let poller = Poller::spawn(Arc::clone(&runtime), Arc::clone(&runtime.poll_stats));
+
         self.subscription = Some(subscription);
         self.runtime = Some(runtime);
+        self.poller = Some(poller);
         self.host.log(
             LogLevel::Info,
-            &format!("[{TAG}] 就绪｜{} 条命令已注册", bot::COMMANDS.len()),
+            &format!(
+                "[{TAG}] 就绪｜{} 条命令已注册，RSS 轮询已启动",
+                bot::COMMANDS.len()
+            ),
         );
         Ok(())
     }
 
     fn stop(&mut self) {
-        // 顺序：先退订（不再接新消息），再丢运行时（关任务）。
+        // 顺序：先退订（不再接新消息），再停轮询，最后丢运行时。
+        // 丢在最前面会让还在跑的回调拿到 `None`。
         self.subscription = None;
+        self.poller = None;
         self.runtime = None;
         self.host.log(LogLevel::Info, &format!("[{TAG}] stop"));
     }
@@ -90,5 +108,16 @@ mod tests {
     #[test]
     fn command_table_is_not_empty() {
         assert!(!bot::COMMANDS.is_empty(), "至少要有 /ping 证明链路是通的");
+    }
+
+    #[test]
+    fn rss_polling_is_background_not_a_command() {
+        // 这条断言锁的是「形态」：原项目里 RSS 抓取是 `anime/index.ts` 的后台主循环，
+        // 用户不敲命令它也在跑。曾经这里有个手动的 `/rss`，属实是把后台任务
+        // 降级成了手动触发器——别再把它加回来。
+        assert!(
+            bot::spec_for("rss").is_none(),
+            "RSS 是后台轮询，不该做成命令"
+        );
     }
 }

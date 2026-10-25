@@ -7,8 +7,10 @@
 
 use std::sync::Arc;
 
+use chrono::Utc;
 use fuyubot_simplify::Command;
 
+use crate::poll;
 use crate::runtime::Runtime;
 use crate::td::Target;
 
@@ -93,18 +95,24 @@ fn cmd_status(runtime: &Arc<Runtime>, command: &Command) {
     .collect::<Vec<_>>()
     .join("　");
 
+    let (rounds, items, usable, failures) = runtime.poll_stats.snapshot();
+    let mut tally = format!("{rounds} 轮 / {items} 条，可解析 {usable} 条");
+    if failures > 0 {
+        tally.push_str(&format!("，{failures} 次源失败"));
+    }
+
     let text = format!(
         "XQAnimeBot 运行中\n\
          ── 版本：{}\n\
          ── 运行：{}\n\
          ── 配置：{source}\n\
-         ── RSS：每 {} 秒，单次最多 {} 条\n\
+         ── RSS：{}\n\
+         ── 累计：{tally}\n\
          ── 频道：番剧 {}｜导航 {}\n\
          ── 服务：{services}",
         env!("CARGO_PKG_VERSION"),
         runtime.uptime(),
-        config.rss.interval_secs,
-        config.rss.max_items,
+        poll::interval_label(config.rss.interval_secs, Utc::now()),
         config.telegram.anime_channel,
         config.telegram.nav_channel
     );

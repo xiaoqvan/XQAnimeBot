@@ -36,7 +36,7 @@ pub use episode::{
 pub use normalize::{compact_for_match, normalize_for_match};
 pub use season::{
     AnimeCandidate, EpisodeFit, MatchKind, MatchPolicy, SeasonDecision, SeasonMatch, decide_season,
-    decide_season_with, episode_total, fit_episode, rank_seasons,
+    decide_season_with, episode_total, fit_episode, rank_seasons, rank_seasons_with,
 };
 
 /// 一条种子的完整匹配结论。

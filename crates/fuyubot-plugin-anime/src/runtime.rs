@@ -18,9 +18,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anime_core::config::Config;
+use anime_core::logger::Logger;
 use fuyubot_abi::{HostApi, LogLevel};
 
-use crate::td::Td;
+use crate::poll::Stats;
+use crate::td::{HostLog, Td};
 
 /// 启动时从宿主 JSON 里读出来的「配置在哪」。
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -89,6 +91,16 @@ pub struct Runtime {
     pub host: HostApi,
     pub td: Td,
     pub config: Config,
+    /// 领域层日志出口，转发到宿主日志。
+    ///
+    /// 后台线程和命令回调共用同一个 `Arc`，所以日志是交织的——这也正是想要的：
+    /// 排查「这一轮抓了什么 / 用户当时敲了什么」时顺序就是真相。
+    pub logger: Logger,
+    /// 后台 RSS 轮询的累计计数。
+    ///
+    /// 计数放这里、线程句柄放 `AnimePlugin`：**数据是运行时状态，句柄是插件的生命周期**。
+    /// 混在一起会让 `stop` 的清理顺序变得难猜。
+    pub poll_stats: Arc<Stats>,
     /// 配置从哪个文件来的；`None` = 内置默认值。
     pub config_source: Option<PathBuf>,
     /// 启动时刻，`/status` 用来算运行时长。
@@ -101,6 +113,8 @@ impl Runtime {
             host,
             td: Td::new(host),
             config,
+            logger: Arc::new(HostLog::new(host)),
+            poll_stats: Arc::new(Stats::default()),
             config_source,
             started_at: chrono::Local::now(),
         })

@@ -21,6 +21,8 @@ fuyubot-simplify = { path = "F:/Rust/FuyuBot/crates/fuyubot-simplify" }
 anime-core = { path = "crates/anime-core", version = "0.1.0" }
 # 插件服务的公共外壳：JSON 服务表 + 统一回复缓冲。
 fuyubot-service = { path = "crates/fuyubot-service", version = "0.1.0" }
+# 宿主 SDK 没覆盖的 TDLib 方法（读操作 / 内联查询 / 置顶），插件按需引用。
+fuyubot-tdlib-ext = { path = "crates/fuyubot-tdlib-ext", version = "0.1.0" }
 
 base64 = "0.22.1"
 chrono = { version = "0.4.45", features = ["serde", "clock"] }

@@ -1,0 +1,98 @@
+[
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3001,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/rss"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3002,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/rss 10"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3003,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/status"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3004,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "占位：让宿主多活几秒，好看清后台轮询自己跑了一轮"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3005,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "占位2"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 3006,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/status"
+        }
+      }
+    }
+  }
+]

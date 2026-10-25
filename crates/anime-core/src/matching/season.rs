@@ -143,8 +143,27 @@ pub struct SeasonMatch {
 pub struct MatchPolicy {
     /// 低于这个分数不进 `Matched`，转人工/AI 复核。
     pub min_score: u32,
-    /// 前两名（且属于不同番剧）分差小于等于它 → 视为分不清。
+    /// 前两名（且属于不同番剧）分差小于等于它 → 视为分不清。`0` = 不做歧义判定。
     pub ambiguous_gap: u32,
+    /// 包含关系要求较短一侧至少多少字符。
+    pub min_contains_len: usize,
+    /// 纯 ASCII 名的包含关系是否要求词边界（`ani` 不能命中 `anime`）。
+    pub require_word_boundary: bool,
+}
+
+impl MatchPolicy {
+    /// 与 TS `hasAnimeSend` 完全一致的策略：包含即命中、不设阈值、不做歧义复核。
+    ///
+    /// 这是「行为对齐」用的档位；[MatchPolicy::default] 是加固过的档位（宁可漏也不发错）。
+    /// 两者都保留，由调用方按产品口味选，别在代码里二选一写死。
+    pub const fn ts() -> Self {
+        Self {
+            min_score: 0,
+            ambiguous_gap: 0,
+            min_contains_len: 1,
+            require_word_boundary: false,
+        }
+    }
 }
 
 impl Default for MatchPolicy {
@@ -154,6 +173,8 @@ impl Default for MatchPolicy {
         Self {
             min_score: 760,
             ambiguous_gap: 40,
+            min_contains_len: MIN_CONTAINS_LEN,
+            require_word_boundary: true,
         }
     }
 }
@@ -252,6 +273,15 @@ pub fn fit_episode(total: Option<f64>, bt_episode: Option<&str>) -> EpisodeFit {
 ///
 /// 纯函数：不查库、不联网，所以优先级、阈值、歧义判定全都能用 fixture 单测。
 pub fn rank_seasons(names: &[String], candidates: &[AnimeCandidate]) -> Vec<SeasonMatch> {
+    rank_seasons_with(names, candidates, MatchPolicy::default())
+}
+
+/// 用指定策略打分排序（`min_contains_len` / 词边界 / 阈值都在 `policy` 里）。
+pub fn rank_seasons_with(
+    names: &[String],
+    candidates: &[AnimeCandidate],
+    policy: MatchPolicy,
+) -> Vec<SeasonMatch> {
     let mut matches: Vec<SeasonMatch> = Vec::new();
 
     for (rank, raw_input) in names.iter().enumerate() {
@@ -268,7 +298,7 @@ pub fn rank_seasons(names: &[String], candidates: &[AnimeCandidate]) -> Vec<Seas
                 if db.is_empty() {
                     continue;
                 }
-                let Some((kind, score)) = compare(&input, &input_compact, &db) else {
+                let Some((kind, score)) = compare(&input, &input_compact, &db, policy) else {
                     continue;
                 };
                 let hit = SeasonMatch {
@@ -332,7 +362,7 @@ pub fn decide_season_with(
     candidates: &[AnimeCandidate],
     policy: MatchPolicy,
 ) -> SeasonDecision {
-    let ranked = rank_seasons(names, candidates);
+    let ranked = rank_seasons_with(names, candidates, policy);
     let Some(best) = ranked.first().cloned() else {
         return SeasonDecision::New;
     };
@@ -345,7 +375,8 @@ pub fn decide_season_with(
     }
 
     // 分够高，但第二名的分数咬得太近且是另一部番 → 分不清，别猜。
-    if let Some(runner) = ranked.get(1).cloned()
+    if policy.ambiguous_gap > 0
+        && let Some(runner) = ranked.get(1).cloned()
         && runner.anime_id != best.anime_id
         && runner.score >= policy.min_score
         && best.score - runner.score <= policy.ambiguous_gap
@@ -360,7 +391,12 @@ pub fn decide_season_with(
 }
 
 /// 比较一对（输入名，库内名），返回命中方式与分数。
-fn compare(input: &str, input_compact: &str, db: &str) -> Option<(MatchKind, u32)> {
+fn compare(
+    input: &str,
+    input_compact: &str,
+    db: &str,
+    policy: MatchPolicy,
+) -> Option<(MatchKind, u32)> {
     if input == db {
         return Some((MatchKind::Exact, MatchKind::Exact.base_score()));
     }
@@ -372,7 +408,9 @@ fn compare(input: &str, input_compact: &str, db: &str) -> Option<(MatchKind, u32
 
     let input_len = input_compact.chars().count();
     let db_len = db_compact.chars().count();
-    if input_len < MIN_CONTAINS_LEN || db_len < MIN_CONTAINS_LEN {
+    // 对齐档位（TS）允许单字/两字名直接命中；默认档位要求 3 个字符。
+    let min_len = policy.min_contains_len.max(1);
+    if input_len < min_len || db_len < min_len {
         return None;
     }
 
@@ -385,7 +423,11 @@ fn compare(input: &str, input_compact: &str, db: &str) -> Option<(MatchKind, u32
     };
 
     // 英文番名的子串命中必须落在词边界上，否则 `ani` 会命中 `anime`。
-    if shorter.is_ascii() && longer.is_ascii() && !ascii_word_hit(longer, shorter) {
+    if policy.require_word_boundary
+        && shorter.is_ascii()
+        && longer.is_ascii()
+        && !ascii_word_hit(longer, shorter)
+    {
         return None;
     }
 
@@ -431,6 +473,36 @@ mod tests {
 
     fn names(items: &[&str]) -> Vec<String> {
         items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn ts_policy_accepts_two_char_containment() {
+        // TS 的 hasAnimeSend 是「包含即命中」：死神 → 死神 千年血战篇。
+        // 默认档位（3 字符 + 阈值）会把它压到复核，这是刻意的加固，不是 bug。
+        let library = vec![candidate(1, "死神 千年血战篇")];
+        let strict = decide_season(&names(&["死神"]), &library);
+        assert!(
+            !matches!(strict, SeasonDecision::Matched(_)),
+            "默认档位不该自动投放：{strict:?}"
+        );
+
+        let ts = decide_season_with(&names(&["死神"]), &library, MatchPolicy::ts());
+        let SeasonDecision::Matched(hit) = ts else {
+            panic!("TS 档位应当直接命中：{ts:?}");
+        };
+        assert_eq!(hit.anime_id, 1);
+        assert_eq!(hit.kind, MatchKind::Contains);
+    }
+
+    #[test]
+    fn ts_policy_has_no_ascii_word_boundary() {
+        // 英文短名不做词边界判断（TS 行为）；默认档位仍然要求，避免 ani → anime。
+        let library = vec![candidate(1, "anime")];
+        let ts = decide_season_with(&names(&["ani"]), &library, MatchPolicy::ts());
+        assert!(matches!(ts, SeasonDecision::Matched(_)), "{ts:?}");
+
+        let strict = decide_season(&names(&["ani"]), &library);
+        assert!(!matches!(strict, SeasonDecision::Matched(_)), "{strict:?}");
     }
 
     #[test]

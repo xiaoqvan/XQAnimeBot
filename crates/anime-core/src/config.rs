@@ -81,9 +81,11 @@ pub struct MongoConfig {
 
 impl Default for MongoConfig {
     fn default() -> Self {
+        // 库名与 TS 版对齐：TS 从 `MONGODB_URL` 里取库名、取不到时用 `fuyubot`。
+        // 这里保持同样的缺省值，接老库时不用再改配置。
         Self {
             uri: "mongodb://127.0.0.1:27017".to_owned(),
-            database: "fuyu_anime".to_owned(),
+            database: "fuyubot".to_owned(),
         }
     }
 }
@@ -91,7 +93,11 @@ impl Default for MongoConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct RssConfig {
-    /// 轮询间隔（秒）。
+    /// 轮询间隔（秒）。**`0` 表示按北京时间自动分时段**——夜里新番集中更新时
+    /// 一分钟一轮，白天十五分钟一轮（见 `fuyubot-plugin-anime` 的 `poll` 模块）。
+    ///
+    /// 非 0 则固定为这个值，自动分时段不生效。**默认 0**：手动固定间隔等于
+    /// 拿 CPU 换延迟，不该是默认行为。
     pub interval_secs: u64,
     /// 每个源最多取多少条（TS 版 dmhy 是 50）。
     pub max_items: usize,
@@ -108,7 +114,7 @@ pub struct RssConfig {
 impl Default for RssConfig {
     fn default() -> Self {
         Self {
-            interval_secs: 300,
+            interval_secs: 0,
             max_items: 50,
             workers: 3,
             mkv_workers: 1,
@@ -273,8 +279,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(config.telegram.anime_channel, -100123);
-        // 没写的段用默认值，不是 null。
-        assert_eq!(config.rss.interval_secs, 300);
+        // 没写的段用默认值，不是 null。RSS 间隔默认 0 = 自动分时段。
+        assert_eq!(config.rss.interval_secs, 0);
         assert_eq!(config.qbittorrent.host, "http://127.0.0.1:8080");
     }
 
