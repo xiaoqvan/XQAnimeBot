@@ -42,10 +42,19 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 | 插件壳 / 命令路由 | ~3.3k | 🚧 13 个命令 + 后台 RSS 轮询（去重 → 匹配 → 下载 → 转码 → 发视频；审核提示/按钮/通过即下载；/addanime 导入库；导航卡 + navVideoMessage） |
 | 业务存储层（db） | ~2.5k | 🚧 `anime-core::store` 就绪（Storage trait + 业务查询），插件侧已用 `storage.mongo` 实现 |
 | TDLib 读接口 / inline | — | 🚧 `fuyubot-tdlib-ext`（getMessage/getChat/getMessageLink/answerInlineQuery 等 10 个） |
-| 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | ❌ 未开始 |
-| Bangumi API + AI Agent | ~1.8k | ❌ 未开始 |
+| 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | 🚧 主链已通（含待审核分支、导航卡、navVideoMessage）；缺分段/多集/播报 |
+| Bangumi API + AI Agent | ~1.8k | 🚧 API 客户端 + `/addanime` `/testbgimg`；AI 部分未接 |
 | 任务恢复 / 检查点 / 审核 | ~1.0k | ❌ 未开始 |
 | Web 管理端（Fastify + Vue） | ~7k | ❌ 未开始（决策待定） |
+
+## 快速开始
+
+1. 装好四个基础插件（mongo / qb / ffmpeg / 出图），并让宿主加载本插件；
+2. 复制 [`xq-anime.toml.example`](xq-anime.toml.example) 成 `xq-anime.toml`，填频道 id、qB 账号、Mongo 地址；
+3. 导入第一部番：`/addanime 400602`（会自动发导航卡）；
+4. 之后 RSS 轮询命中就会自动下载 → 转码 → 发番剧频道。
+
+常用命令：`/addanime` `/testbgimg` `/searchanime` `/progress` `/status` `/web` `/help`。
 
 ## 构建与验证
 

@@ -1,0 +1,81 @@
+# XQAnimeBot（Rust 版）配置示例
+#
+# 用法：复制成 xq-anime.toml 放到工作目录（或让插件配置里指定 config_path）。
+# 环境变量可以覆盖凭据：XQ_MONGO_URI / XQ_MONGO_DB / XQ_QB_HOST / XQ_QB_USERNAME /
+# XQ_QB_PASSWORD / DEEPSEEK_API_KEY（或 OPENAI_API_KEY）。
+# 字段名写错会直接报错（deny_unknown_fields），不会静默忽略。
+
+[telegram]
+# 导航频道：番剧卡发这里
+nav_channel = -1000000000000
+# 番剧频道：每集视频发这里
+anime_channel = -1000000000000
+# 管理群：待审核提示、错误通知
+admin_group_id = -1000000000000
+# 话题 id（论坛式群组）。0 = 主楼
+anime_group_thread_id = 0
+nav_group_thread_id = 0
+error_group_thread_id = 0
+# 主人 user id（预留给权限校验；目前命令还没强制校验）
+owner_id = 0
+
+[qbittorrent]
+host = "http://127.0.0.1:8080"
+username = "admin"
+password = ""
+# 下载落到哪个目录（qB 自己落盘，插件只读）
+save_path = "D:/downloads/xq-anime"
+# 等下载完成的最长秒数
+download_timeout_secs = 21600
+# 发送成功后删种 + 删文件（TS 的 cleanupLocalMedia）。想保种就改 false
+delete_torrent_after_send = true
+poll_interval_secs = 5
+
+[mongodb]
+uri = "mongodb://127.0.0.1:27017"
+# 与 TS 版一致：TS 从 MONGODB_URL 取库名，缺省 fuyubot
+database = "fuyubot"
+
+[rss]
+# 0 = 按北京时间自动分时段（21-次日2 点 1 分钟一轮，白天 15 分钟）
+# 非 0 = 固定间隔（秒）
+interval_secs = 0
+# 每个源最多取多少条
+max_items = 50
+# 下载并发槽位
+workers = 3
+# MKV 独立槽位（预留给烧字幕队列）
+mkv_workers = 1
+# 黑名单关键词（标题包含即跳过）
+blacklist = []
+# 是否用 AI 兜底解析集数（还没接）
+ai_episode_fallback = false
+
+[bangumi]
+app_id = ""
+app_secret = ""
+access_token = ""
+# Bangumi 要求带可识别 UA（公开接口目前用通用 UA）
+user_agent = "XQAnimeBot/0.1 (https://github.com/xiaoqvan/XQAnimeBot)"
+
+[media]
+# ffmpeg / ffprobe 路径；只写文件名表示走 PATH
+ffmpeg = "ffmpeg"
+ffprobe = "ffprobe"
+# 转码临时目录；空 = 系统临时目录下的 xq-anime
+work_dir = ""
+# 转码成功后删掉源文件
+delete_source_after_remux = true
+# 单个视频最长处理秒数
+timeout_secs = 7200
+
+[ai]
+enabled = false
+api_key = ""
+base_url = "https://api.deepseek.com"
+model = "deepseek-v4-flash"
+
+[http]
+# Web 管理端监听地址；空 = 不启动（当前还没实现，占位）
+listen = ""
+token = ""
