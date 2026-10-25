@@ -337,6 +337,33 @@ pub trait Storage {
         docs.into_iter().map(|doc| decode("anime", doc)).collect()
     }
 
+    /// 写入/更新一部番剧的章节（按 `subject_id + id` upsert）。
+    ///
+    /// TS 的 `replaceEpisodeMetas` 是先删后插；这个 trait 没有 delete（只有
+    /// find/find_one/insert/update/count），所以用 upsert：章节 id 是 Bangumi 的稳定
+    /// 主键，重复导入不会产生重复文档。代价是「Bangumi 删掉的章节」会留在库里——
+    /// 这种脏数据只影响统计，不影响匹配。
+    fn upsert_episodes(
+        &self,
+        subject_id: i64,
+        episodes: &[crate::models::EpisodeMeta],
+    ) -> Result<usize> {
+        let mut written = 0usize;
+        for episode in episodes {
+            let doc = serde_json::to_value(episode)
+                .map_err(|err| Error::Store(format!("章节序列化失败：{err}")))?;
+            self.update(
+                "episodes_meta",
+                json!({ "subject_id": subject_id, "id": episode.id }),
+                json!({ "$set": doc }),
+                true,
+                false,
+            )?;
+            written += 1;
+        }
+        Ok(written)
+    }
+
     // ── 待审核（pendingReviews）──────────────────────────────────────────
 
     /// 写入一条待审核记录（按 `key` upsert），初始状态固定 [PENDING_REVIEW_STATUS]。

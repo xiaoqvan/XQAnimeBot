@@ -37,6 +37,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_about,
     },
     CommandSpec {
+        name: "addanime",
+        summary: "按 Bangumi 条目 id 导入/更新番剧与章节：/addanime <id>",
+        handler: cmd_addanime,
+    },
+    CommandSpec {
         name: "animeblacklist",
         summary: "查看 RSS 黑名单关键词",
         handler: cmd_blacklist,
@@ -112,6 +117,45 @@ pub fn dispatch(runtime: &Arc<Runtime>, command: &Command) -> bool {
     true
 }
 
+/// `/addanime <bangumi_id>`：拉条目 + 章节写库。
+///
+/// TS 里 `addanime` 是「给已有番剧加种子」、`addnewanime` 是「新建番剧」。
+/// 这里先合并成一条「按 id 导入/更新」：章节按 id upsert，重复执行只刷新内容。
+fn cmd_addanime(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let Some(id) = command
+        .args
+        .split_whitespace()
+        .next()
+        .and_then(|raw| raw.parse::<u64>().ok())
+    else {
+        runtime
+            .td
+            .reply_text(target, "用法：/addanime <bangumi 条目 id>");
+        return;
+    };
+    let runtime = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        let result = import_anime(&runtime, id);
+        let text = match result {
+            Ok((name, total)) => format!("已导入「{name}」（{id}），章节 {total} 条"),
+            Err(error) => format!("导入失败：{error}"),
+        };
+        runtime.td.reply_text(target, text);
+    });
+}
+
+/// 拉 Bangumi 条目与章节，写入 anime / episodes_meta。返回（展示名, 章节数）。
+fn import_anime(runtime: &Runtime, id: u64) -> anime_core::Result<(String, usize)> {
+    let client = BgmClient::new(runtime.config.bangumi.clone());
+    let subject = client.subject(id)?;
+    let episodes = client.episodes(id)?;
+    let anime = subject.to_anime();
+    runtime.store.save_anime(&anime)?;
+    let metas: Vec<_> = episodes.iter().map(|episode| episode.to_meta(id)).collect();
+    let written = runtime.store.upsert_episodes(id as i64, &metas)?;
+    Ok((anime.display_name().to_owned(), written))
+}
 /// `/testbgimg <subject_id>`：拉 Bangumi 条目 → 出图 → 发回当前会话。
 /// 网络 + 渲染都是慢操作，放线程里跑。
 fn cmd_testbgimg(runtime: &Arc<Runtime>, command: &Command) {

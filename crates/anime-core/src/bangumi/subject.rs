@@ -220,6 +220,73 @@ impl Subject {
     }
 }
 
+impl Subject {
+    /// 转成库里的 `anime` 文档。
+    ///
+    /// 只映射**能从 Bangumi 拿到**的字段：创建/更新时间由 store 写，导航消息、
+    /// r18、播放进度这些依赖本地状态，留空由后续流程补。
+    pub fn to_anime(&self) -> crate::models::Anime {
+        use crate::models::{Anime, Scalar};
+
+        let mut names: Vec<String> = Vec::new();
+        for name in [self.name.as_str(), self.name_cn.as_str()] {
+            let name = name.trim();
+            if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+                names.push(name.to_owned());
+            }
+        }
+        let airing_start = if self.date.trim().is_empty() {
+            self.infobox_text("放送开始")
+        } else {
+            Some(self.date.trim().to_owned())
+        };
+
+        Anime {
+            id: self.id as i64,
+            name: Some(self.name.trim().to_owned()).filter(|name| !name.is_empty()),
+            name_cn: Some(self.name_cn.trim().to_owned()).filter(|name| !name.is_empty()),
+            names,
+            image: Some(self.images.best().to_owned()).filter(|url| !url.is_empty()),
+            summary: Some(self.summary.trim().to_owned()).filter(|text| !text.is_empty()),
+            tags: self
+                .tags
+                .iter()
+                .map(|tag| tag.name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+                .collect(),
+            episode: (self.eps > 0).then(|| self.eps.to_string()),
+            score: (self.rating.score > 0.0).then_some(Scalar::Num(f64::from(self.rating.score))),
+            airing_day: self.infobox_text("放送星期"),
+            airing_start,
+            ..Default::default()
+        }
+    }
+}
+
+impl Episode {
+    /// 转成 `episodes_meta` 文档。空字符串统一折成 `None`：老库里的空值就是缺字段，
+    /// 两种形态混着会让下游的 `Option` 判断变得难写。
+    pub fn to_meta(&self, subject_id: u64) -> crate::models::EpisodeMeta {
+        let text = |value: &str| {
+            let value = value.trim();
+            (!value.is_empty()).then(|| value.to_owned())
+        };
+        crate::models::EpisodeMeta {
+            id: self.id as i64,
+            ep: self.ep,
+            sort: self.sort,
+            r#type: Some(self.r#type),
+            airdate: text(&self.airdate),
+            name: text(&self.name),
+            name_cn: text(&self.name_cn),
+            duration: text(&self.duration),
+            desc: text(&self.desc),
+            comment: None,
+            subject_id: subject_id as i64,
+        }
+    }
+}
+
 /// 章节（`/v0/episodes`）。
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -326,6 +393,35 @@ mod tests {
         "type": 2
     }"#;
 
+#[test]
+    fn subject_maps_to_anime_document() {
+        let subject: Subject = serde_json::from_str(SUBJECT_JSON).unwrap();
+        let anime = subject.to_anime();
+        assert_eq!(anime.id, 400602);
+        assert_eq!(anime.display_name(), "葬送的芙莉莲");
+        // 中文名 + 原名都在 names 里，匹配时两种写法都能命中。
+        assert!(anime.names.contains(&"葬送のフリーレン".to_owned()));
+        assert!(anime.names.contains(&"葬送的芙莉莲".to_owned()));
+        assert_eq!(anime.episode.as_deref(), Some("28"));
+        assert_eq!(anime.airing_start.as_deref(), Some("2023-09-29"));
+        assert!(anime.image.as_deref().unwrap_or_default().ends_with(".jpg"));
+    }
+
+    #[test]
+    fn episode_maps_to_meta_and_blanks_become_none() {
+        let episode: Episode = serde_json::from_str(
+            r#"{"id": 1, "type": 1, "ep": 0, "sort": 1.5, "name": "SP1", "name_cn": "", "airdate": "", "duration": "24m"}"#,
+        )
+        .unwrap();
+        let meta = episode.to_meta(400602);
+        assert_eq!(meta.subject_id, 400602);
+        assert_eq!(meta.r#type, Some(1));
+        assert!((meta.sort - 1.5).abs() < 1e-9);
+        // 空字符串统一折成 None，别让下游既判 None 又判空串。
+        assert!(meta.name_cn.is_none());
+        assert!(meta.airdate.is_none());
+        assert_eq!(meta.name.as_deref(), Some("SP1"));
+    }
     #[test]
     fn parses_real_subject_shape() {
         let subject: Subject = serde_json::from_str(SUBJECT_JSON).unwrap();
