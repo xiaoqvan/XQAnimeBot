@@ -1,0 +1,69 @@
+[workspace]
+members = ["crates/*"]
+default-members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99"
+license = "MIT OR Apache-2.0"
+
+# ⚠️ `fuyubot-abi` 目前只在运行时仓库里（crates.io 还没发）。
+# 本机把下面的 path 指到你的 Fuyu-Bot 检出目录即可；SDK 发版后换成
+# `fuyubot-abi = "0.1.0"` 一行就够。
+[workspace.dependencies]
+fuyubot-abi = { path = "F:/Rust/FuyuBot/crates/fuyubot-abi" }
+# 命令解析（`on_command`）与 `sendMessage` 的 `inputMessageText` 组装。
+# 和 abi 一样先走 path，SDK 发版后换成版本号。
+fuyubot-simplify = { path = "F:/Rust/FuyuBot/crates/fuyubot-simplify" }
+
+anime-core = { path = "crates/anime-core", version = "0.1.0" }
+# 插件服务的公共外壳：JSON 服务表 + 统一回复缓冲。
+fuyubot-service = { path = "crates/fuyubot-service", version = "0.1.0" }
+
+base64 = "0.22.1"
+chrono = { version = "0.4.45", features = ["serde", "clock"] }
+image = { version = "0.25.10", default-features = false, features = [
+    "jpeg",
+    "png",
+    "webp",
+    "gif",
+] }
+libloading = "0.9.0"
+sha2 = "0.10.9"
+futures-util = "0.3.34"
+# `chrono-0_4`：让 `DateTime<Utc>` 直接映射成 BSON `Date`，与 TS 版写入的
+# `new Date()` 字段二进制兼容（否则老数据读回来是 BSON 里的另一种类型）。
+# `serde` + `serde_json-1`：Extended JSON 互转（业务侧只认 JSON）。
+bson = { version = "3", features = ["chrono-0_4", "serde", "serde_json-1"] }
+mongodb = { version = "3", features = ["bson-3"] }
+quick-xml = "0.42.0"
+regex = "1.13.1"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.21"
+tokio = { version = "1.53.2", features = [
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+    "process",
+    "fs",
+    "io-util",
+] }
+toml = "0.9.12"
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"] }
+
+# 本地迭代：比 dev 略高优化，保留调试信息。
+[profile.debug]
+inherits = "dev"
+opt-level = 1
+
+# 插件是热路径上的动态库：LTO + 单 codegen unit，体积和启动都更划算。
+# ⚠️ 不要加 `panic = "abort"`：`define_plugin!` 靠 `catch_unwind` 兜住插件里的 panic，
+# abort 会让一次插件崩直接带走整个宿主机进程。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+opt-level = 3

@@ -1,0 +1,30 @@
+[package]
+name = "anime-core"
+description = "XQ 动漫插件的领域逻辑：RSS / 标题解析 / 番剧匹配 / qB / ffmpeg / MongoDB（不认识宿主与 TDLib）"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+base64.workspace = true
+chrono.workspace = true
+futures-util.workspace = true
+bson = { workspace = true, optional = true }
+image.workspace = true
+mongodb = { workspace = true, optional = true }
+quick-xml.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+toml.workspace = true
+ureq.workspace = true
+
+[features]
+# 默认带 MongoDB：插件生产环境就是它。
+default = ["mongo"]
+# 关掉后只剩 `MemoryRepo`，用于单测与「没有数据库也想跑」的演示。
+mongo = ["dep:mongodb", "dep:bson"]

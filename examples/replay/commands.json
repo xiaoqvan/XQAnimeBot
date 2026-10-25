@@ -1,0 +1,82 @@
+[
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 2001,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/ping"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 2002,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/status"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 2003,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/help"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 2004,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "/not_our_command"
+        }
+      }
+    }
+  },
+  {
+    "@type": "updateNewMessage",
+    "message": {
+      "@type": "message",
+      "id": 2005,
+      "chat_id": -1001234567890,
+      "is_outgoing": false,
+      "content": {
+        "@type": "messageText",
+        "text": {
+          "@type": "formattedText",
+          "text": "这条是普通聊天，不该有任何回复"
+        }
+      }
+    }
+  }
+]

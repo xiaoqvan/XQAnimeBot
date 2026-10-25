@@ -1,0 +1,18 @@
+[package]
+name = "fuyubot-plugin-qb"
+description = "FuyuBot qBittorrent 插件：手写 WebUI v2 API 客户端，注册 download.qbittorrent 服务"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib 给宿主加载；rlib 让示例/集成测试能直接调用业务逻辑。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+fuyubot-service.workspace = true
+serde_json.workspace = true
+# 只要 HTTP 客户端，不引任何 qBittorrent 封装包：API 语义自己实现。
+ureq = { workspace = true, features = ["cookies", "multipart"] }

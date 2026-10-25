@@ -1,0 +1,26 @@
+[package]
+name = "ultralight-gen-image"
+description = "ultralightGenImage：一个插件搞定 HTML 出图——注册 image.render 服务，自己带 Ultralight 渲染器"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib 给宿主加载；rlib 让同包的 bin 复用协议与 FFI，不必抄一遍。
+crate-type = ["cdylib", "rlib"]
+
+# 渲染器是同包的第二个产物：Ultralight 要求 Renderer 在**主线程**创建并驱动，
+# 而宿主主线程归 tokio，插件里抢不到——所以渲染器以独立进程运行，插件调它。
+[[bin]]
+name = "image-shot"
+path = "src/bin/image-shot.rs"
+
+[dependencies]
+fuyubot-abi.workspace = true
+fuyubot-service.workspace = true
+image.workspace = true
+libloading.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

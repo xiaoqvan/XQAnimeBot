@@ -1,0 +1,7 @@
+# 构建产物与运行时（都可重新生成，不入库）
+
+/target
+**/out/
+
+# Ultralight SDK 解压出来的运行时：约 56 MB，用 scripts/fetch-ultralight.ps1 拉取
+/runtime/ultralight/

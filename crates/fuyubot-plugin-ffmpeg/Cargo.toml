@@ -1,0 +1,19 @@
+[package]
+name = "fuyubot-plugin-ffmpeg"
+description = "FuyuBot 转码插件：能力探测 + 自动选最佳工具 + 实时进度，注册 media.ffmpeg 服务"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# cdylib 给宿主加载；rlib 让单测与示例能直接调用内部能力。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+fuyubot-abi.workspace = true
+fuyubot-service.workspace = true
+# 进程管理与 stderr 进度解析都用现成包；关掉它自带的「自动下载 ffmpeg」，
+# 部署时我们自己的运行时目录里已经有 ffmpeg/ffprobe。
+ffmpeg-sidecar = { version = "2.7.0", default-features = false }
+serde_json.workspace = true

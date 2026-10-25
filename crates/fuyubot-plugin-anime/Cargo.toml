@@ -1,0 +1,24 @@
+[package]
+name = "fuyubot-plugin-anime"
+description = "XQ 动漫机器人（FuyuBot 插件）：RSS 订阅 → 匹配 → qB 下载 → 转码 → 发频道"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lib]
+# 插件是热加载的动态库，只导出 ABI 入口。
+crate-type = ["cdylib"]
+
+[dependencies]
+anime-core.workspace = true
+# 出图走**独立插件**的服务（image.render），本插件不自己渲染。
+# 跨插件调用统一用 fuyubot_service::call_service，不需要专门的客户端 crate。
+fuyubot-service.workspace = true
+chrono.workspace = true
+fuyubot-abi.workspace = true
+# 命令解析 + sendMessage 的 `inputMessageText` 组装都在这里，别再手搓一遍 JSON。
+fuyubot-simplify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<!--
+  最简模板示例：证明出图插件与业务无关。
+
+  契约只有三条：
+  1. `<!--__VUE_RUNTIME__-->` 会被替换成 Vue 3 全局构建；
+  2. `__IMAGE_DATA__` 会被替换成调用方给的 JSON（字段随便定）；
+  3. 页面渲染完成后把 `window.__READY__` 置 true，image-shot 才截图。
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <style>
+    html, body { margin: 0; padding: 0; }
+    #app {
+      width: 1000px; height: 550px; box-sizing: border-box;
+      padding: 48px; display: flex; flex-direction: column;
+      background: linear-gradient(135deg, #1b1d29 0%, #2b2440 100%);
+      color: #f5f5f7; font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    }
+    .eyebrow { font-size: 16px; letter-spacing: 4px; color: #9aa0b5; text-transform: uppercase; }
+    .title { margin-top: 18px; font-size: 56px; font-weight: 700; line-height: 1.15; }
+    .subtitle { margin-top: 12px; font-size: 22px; color: #b9bfd4; }
+    .rows { margin-top: auto; display: flex; gap: 18px; }
+    .row {
+      flex: 1; padding: 20px 22px; border-radius: 16px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+    }
+    .row-key { font-size: 15px; color: #9aa0b5; }
+    .row-value { margin-top: 8px; font-size: 30px; font-weight: 600; }
+    .footer { margin-top: 26px; font-size: 14px; color: #7c8298; }
+  </style>
+</head>
+
+<body>
+<div id="app">
+  <div class="eyebrow">{{ eyebrow }}</div>
+  <div class="title">{{ title }}</div>
+  <div class="subtitle">{{ subtitle }}</div>
+  <div class="rows">
+    <div class="row" v-for="item in rows" :key="item.key">
+      <div class="row-key">{{ item.key }}</div>
+      <div class="row-value">{{ item.value }}</div>
+    </div>
+  </div>
+  <div class="footer">{{ footer }}</div>
+</div>
+
+<!--__VUE_RUNTIME__-->
+
+<script id="image-data" type="application/json">__IMAGE_DATA__</script>
+<script>
+  (function () {
+    var payload = JSON.parse(document.getElementById('image-data').textContent);
+    var app = Vue.createApp({
+      data: function () {
+        return payload;
+      },
+      mounted: function () {
+        // 等两帧，确保布局与字体稳定后再让 image-shot 截图。
+        requestAnimationFrame(function () {
+          requestAnimationFrame(function () {
+            window.__READY__ = true;
+          });
+        });
+      }
+    });
+    app.mount('#app');
+  })();
+</script>
+</body>
+</html>
