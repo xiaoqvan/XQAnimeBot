@@ -50,13 +50,21 @@ pub fn publish(runtime: &Runtime, subject: &Subject, episodes: &[Episode]) -> Re
     let card = crate::card::with_emoji(BangumiCard::from_subject(subject, episodes));
     let path = crate::card::render(runtime, &card)?;
     let target = Target::new(chat_id, 0).with_topic(thread_id);
-    let message_id = runtime
-        .td
-        .send_photo_wait(target, path.display().to_string(), caption(subject))
-        .ok_or_else(|| Error::Service {
-            service: "td".to_owned(),
-            message: "导航卡发送未确认（等不到 messageSendSucceeded）".to_owned(),
-        })?;
+    let message_id = if runtime.config.telegram.wait_send {
+        runtime
+            .td
+            .send_photo_wait(target, path.display().to_string(), caption(subject))
+            .ok_or_else(|| Error::Service {
+                service: "td".to_owned(),
+                message: "导航卡发送未确认（等不到 messageSendSucceeded）".to_owned(),
+            })?
+    } else {
+        // 不等确认就拿不到 message_id：导航卡发出去了，但记不了账。
+        let _ = runtime
+            .td
+            .send_photo_now(target, path.display().to_string(), caption(subject));
+        0
+    };
 
     let nav = json!({
         "chat_id": chat_id,

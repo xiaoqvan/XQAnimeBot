@@ -104,6 +104,38 @@ impl Td {
         }
     }
 
+    /// 发视频但**不等**确认（`telegram.wait_send = false` 时用）。
+    ///
+    /// 只投递、不拿 message_id：导航记账会因此跳过这一集，换来的是不阻塞。
+    pub fn send_video_now(
+        &self,
+        target: Target,
+        path: impl Into<String>,
+        caption: impl Into<String>,
+    ) -> bool {
+        let media = Media::Video {
+            file: InputFile::local(path),
+            caption: Some(Text::plain(caption)),
+            duration: 0,
+            width: 0,
+            height: 0,
+            supports_streaming: true,
+            has_spoiler: false,
+        };
+        self.send(target, SendMessageParams::media(media))
+    }
+
+    /// 发图但不等确认（同上）。
+    pub fn send_photo_now(
+        &self,
+        target: Target,
+        path: impl Into<String>,
+        caption: impl Into<String>,
+    ) -> bool {
+        let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
+        self.send(target, SendMessageParams::media(media))
+    }
+
     /// 发图并**等到**最终消息，返回 message_id。仅供后台线程调用（会阻塞）。
     pub fn send_photo_wait(
         &self,

@@ -463,7 +463,7 @@ fn cmd_selftest(runtime: &Arc<Runtime>, command: &Command) {
         // 自检只取少量条目：bangumi 每条要打 3 次 API，全量跑一轮能到分钟级，
         // 自检的目的是「通不通」，不是「跑完整轮」。
         let mut probe_config = runtime.config.rss.clone();
-        probe_config.max_items = probe_config.max_items.min(8);
+        probe_config.max_items = probe_config.max_items.min(25);
         let mut seen = crate::fetch::Seen::default();
         let summary = crate::fetch::run(
             &probe_config,

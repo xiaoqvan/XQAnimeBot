@@ -7,7 +7,6 @@
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
-use serde::Deserializer;
 
 /// 卡片上展示的 staff 字段，顺序即展示顺序（与 TS 番剧卡一致）。
 pub const STAFF_KEYS: [&str; 6] = ["原作", "导演", "动画制作", "音乐", "系列构成", "脚本"];
@@ -213,6 +212,34 @@ impl Subject {
             .filter(|text| !text.trim().is_empty())
     }
 
+    /// 别名列表（infobox 的「别名」项，可能是多条）。
+    ///
+    /// Bangumi 的 v0 接口没有独立的 aliases 字段，多语言名都塞在 infobox 里；
+    /// 不取出来，英文名/繁中名的种子就匹配不上（比如 Hotel Inhumans 的英文名）。
+    pub fn aliases(&self) -> Vec<String> {
+        let Some(value) = self.infobox_value("别名") else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        let mut push = |text: &str| {
+            let text = text.trim();
+            if !text.is_empty() && !out.iter().any(|existing| existing == text) {
+                out.push(text.to_owned());
+            }
+        };
+        match value {
+            InfoboxValue::List(items) => {
+                for item in items {
+                    if let Some(text) = item.text() {
+                        push(text);
+                    }
+                }
+            }
+            other => push(&other.joined()),
+        }
+        out
+    }
+
     /// 卡片要展示的 staff（原作 / 导演 / 动画制作 / 音乐 / 系列构成 / 脚本）。
     pub fn staff(&self) -> Vec<(String, String)> {
         STAFF_KEYS
@@ -249,6 +276,12 @@ impl Subject {
             let name = name.trim();
             if !name.is_empty() && !names.iter().any(|existing| existing == name) {
                 names.push(name.to_owned());
+            }
+        }
+        // 别名（多语言名）也要进 names：匹配是「包含即命中」，缺一个名字就漏一批种子。
+        for alias in self.aliases() {
+            if !names.iter().any(|existing| existing == &alias) {
+                names.push(alias);
             }
         }
         let airing_start = if self.date.trim().is_empty() {
@@ -423,6 +456,12 @@ mod tests {
         // 中文名 + 原名都在 names 里，匹配时两种写法都能命中。
         assert!(anime.names.contains(&"葬送のフリーレン".to_owned()));
         assert!(anime.names.contains(&"葬送的芙莉莲".to_owned()));
+        // infobox 的「别名」也要进 names，否则英文/罗马字标题的种子匹配不上。
+        assert!(
+            anime.names.iter().any(|name| name.contains("Frieren")),
+            "{:?}",
+            anime.names
+        );
         assert_eq!(anime.episode.as_deref(), Some("28"));
         assert_eq!(anime.airing_start.as_deref(), Some("2023-09-29"));
         assert!(anime.image.as_deref().unwrap_or_default().ends_with(".jpg"));

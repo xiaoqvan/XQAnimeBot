@@ -80,10 +80,15 @@ impl Plugin for MongoPlugin {
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
         let raw: Value = serde_json::from_str(config_json).unwrap_or(Value::Null);
+        // 配置优先，其次环境变量（联调/容器里不必改宿主配置），最后内置默认值。
         let uri = opt_str(&raw, "uri")
-            .unwrap_or("mongodb://127.0.0.1:27017")
-            .to_owned();
-        let db = opt_str(&raw, "db").unwrap_or("xqanime").to_owned();
+            .map(str::to_owned)
+            .or_else(|| std::env::var("MONGO_URI").ok().filter(|uri| !uri.trim().is_empty()))
+            .unwrap_or_else(|| "mongodb://127.0.0.1:27017".to_owned());
+        let db = opt_str(&raw, "db")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("MONGO_DB").ok().filter(|db| !db.trim().is_empty()))
+            .unwrap_or_else(|| "xqanime".to_owned());
 
         api::configure(&uri, &db)?;
 

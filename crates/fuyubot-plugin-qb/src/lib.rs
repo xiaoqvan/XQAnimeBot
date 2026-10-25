@@ -118,17 +118,24 @@ impl Plugin for QbPlugin {
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
         let raw: Value = serde_json::from_str(config_json).unwrap_or(Value::Null);
-        let url = opt_str(&raw, "url").unwrap_or("http://127.0.0.1:8080");
+        // 配置优先，其次环境变量（容器/联调时不必改宿主配置），最后内置默认值。
+        let url = opt_str(&raw, "url")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("QB_URL").ok().filter(|url| !url.trim().is_empty()))
+            .unwrap_or_else(|| "http://127.0.0.1:8080".to_owned());
+        let username = opt_str(&raw, "username")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("QB_USERNAME").ok().filter(|name| !name.is_empty()))
+            .unwrap_or_else(|| "admin".to_owned());
+        let password = opt_str(&raw, "password")
+            .map(str::to_owned)
+            .or_else(|| std::env::var("QB_PASSWORD").ok())
+            .unwrap_or_default();
         let timeout_ms = raw
             .get("timeout_ms")
             .and_then(Value::as_u64)
             .unwrap_or(15_000);
-        api::configure(
-            url,
-            opt_str(&raw, "username").unwrap_or("admin"),
-            opt_str(&raw, "password").unwrap_or(""),
-            timeout_ms,
-        );
+        api::configure(&url, &username, &password, timeout_ms);
 
         match api::call("login", json!({})) {
             Ok(_) => self

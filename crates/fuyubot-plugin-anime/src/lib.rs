@@ -71,7 +71,14 @@ impl Plugin for AnimePlugin {
     }
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
-        let (config, source) = Bootstrap::parse(config_json).resolve()?;
+        let (config, source) = Bootstrap::parse(config_json).resolve().map_err(|error| {
+            // 宿主只会说「plugin_start 返回 -1」，把真正的原因写进日志。
+            self.host.log(
+                LogLevel::Error,
+                &format!("[{TAG}] 启动失败（配置）：{error}"),
+            );
+            error
+        })?;
         let runtime = Runtime::new(self.host, config, source);
         runtime.log_boot();
 

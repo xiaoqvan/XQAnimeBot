@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
+/// serde 的默认值：布尔字段不写时默认 true（与 `Default::default()` 保持一致）。
+fn default_true() -> bool {
+    true
+}
+
 /// 插件总配置。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -37,6 +42,12 @@ pub struct TelegramConfig {
     /// 主人 user id：只有他们能跑管理命令。
     #[serde(default)]
     pub owner_id: i64,
+    /// 发消息后是否等 `messageSendSucceeded` 再算成功。
+    ///
+    /// 默认 true（生产）：等到确认才能拿 message_id 回写导航。
+    /// 回放/无 TDLib 的环境里等不到确认，关掉后退化成「投递即成功」。
+    #[serde(default = "default_true")]
+    pub wait_send: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

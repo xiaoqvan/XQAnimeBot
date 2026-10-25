@@ -63,23 +63,29 @@ impl Bootstrap {
 
     /// 按 内联 TOML → 显式路径 → `discover` 的顺序拿到最终配置。
     pub fn resolve(&self) -> Result<(Config, Option<PathBuf>), String> {
-        let mut config = match (&self.config_toml, &self.config_path) {
-            (Some(text), _) => Config::parse(text).map_err(|e| format!("内联配置解析失败：{e}"))?,
-            (None, Some(path)) => {
-                Config::load(path).map_err(|e| format!("读取配置 {} 失败：{e}", path.display()))?
-            }
+        // `discovered` 只有「走 discover 真的找到文件」时才有值：日志里要能说清
+        // 「配置到底是从哪个文件读的」，否则排查时只会看到「内置默认值」。
+        let (mut config, discovered) = match (&self.config_toml, &self.config_path) {
+            (Some(text), _) => (
+                Config::parse(text).map_err(|e| format!("内联配置解析失败：{e}"))?,
+                None,
+            ),
+            (None, Some(path)) => (
+                Config::load(path).map_err(|e| format!("读取配置 {} 失败：{e}", path.display()))?,
+                Some(path.clone()),
+            ),
             (None, None) => {
-                Config::discover(None)
-                    .map_err(|e| format!("查找配置失败：{e}"))?
-                    .0
+                let (config, path) =
+                    Config::discover(None).map_err(|e| format!("查找配置失败：{e}"))?;
+                (config, path)
             }
         };
         config.apply_env_overrides();
-        let source = self
-            .config_toml
-            .as_ref()
-            .map(|_| None)
-            .unwrap_or_else(|| self.config_path.clone());
+        let source = if self.config_toml.is_some() {
+            None
+        } else {
+            discovered
+        };
         Ok((config, source))
     }
 }

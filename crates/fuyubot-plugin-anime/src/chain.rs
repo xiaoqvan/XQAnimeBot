@@ -39,25 +39,27 @@ static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new
 /// 起一个后台任务。拿不到槽位就等——阻塞的是调用方线程（轮询线程）……
 /// 所以调用方必须在自己的线程里调它，**不能**在命令回调里直接调。
 pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
-    let Some(hash) = btih_from_magnet(&item.magnet) else {
-        log!(&runtime.logger, Warn, "没有 btih，跳过下载：{}", item.title);
-        return;
-    };
+    // dmhy 的 enclosure 往往是 .torrent 地址而不是 magnet:，拿不到 btih。
+    // 这不影响下载（qB 自己能算 hash），只影响去重键——所以退化用标题当键。
+    let known_hash = btih_from_magnet(&item.magnet);
+    let task_key = known_hash
+        .clone()
+        .unwrap_or_else(|| checkpoint_key(&item));
     // 同一条种子只下一次：轮询可能在同一秒里重复投递（Seen 失效、手动触发等）。
     {
         let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
-        if !in_flight.insert(hash.clone()) {
+        if !in_flight.insert(task_key.clone()) {
             return;
         }
     }
     acquire_slot();
     let worker = Arc::clone(&runtime);
     let title = item.title.clone();
-    let task_hash = hash.clone();
+    let release_key = task_key.clone();
     let spawned = thread::Builder::new()
         .name("xq-anime-chain".to_owned())
         .spawn(move || {
-            let result = run(&worker, &item, anime_id, &task_hash);
+            let result = run(&worker, &item, anime_id, known_hash.as_deref());
             if let Err(error) = result {
                 log!(&worker.logger, Error, "下载链路失败（{title}）：{error}");
                 let _ = worker.store.checkpoint_finish(
@@ -65,10 +67,10 @@ pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
                     anime_core::models::CheckpointStatus::Failed,
                 );
             }
-            release(&task_hash);
+            release(&release_key);
         });
     if spawned.is_err() {
-        release(&hash);
+        release(&task_key);
     }
 }
 
@@ -158,7 +160,42 @@ fn release(hash: &str) {
     cvar.notify_one();
 }
 
-fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result<()> {
+/// 没有 btih 的种子（dmhy 给的是 .torrent 地址）：加种后从 qB 列表里找新出现的那条。
+///
+/// 不按标题匹配：qB 的 `name` 会被它自己改（去掉扩展名、截断），按标题找经常找不着。
+/// 用「加种前后的 hash 差集」最稳，最多等 30 秒（qB 要下载 .torrent 才能算出 hash）。
+fn add_and_discover(runtime: &Runtime, qb: &Qb, item: &AnimeItem) -> Result<String> {
+    let before: HashSet<String> = qb
+        .list(&[])?
+        .iter()
+        .filter_map(|torrent| torrent.get("hash").and_then(Value::as_str).map(str::to_owned))
+        .collect();
+    qb.add(
+        &item.magnet,
+        &runtime.config.qbittorrent.save_path,
+        CATEGORY,
+    )?;
+    for _ in 0..30 {
+        thread::sleep(Duration::from_secs(1));
+        let now = qb.list(&[])?;
+        if let Some(hash) = now.iter().find_map(|torrent| {
+            let hash = torrent.get("hash").and_then(Value::as_str)?;
+            (!before.contains(hash)).then(|| hash.to_owned())
+        }) {
+            return Ok(hash);
+        }
+    }
+    Err(Error::Service {
+        service: "download.qbittorrent".to_owned(),
+        message: "加种后 30 秒内没在 qB 列表里看到新种子".to_owned(),
+    })
+}
+fn run(
+    runtime: &Runtime,
+    item: &AnimeItem,
+    anime_id: i64,
+    known_hash: Option<&str>,
+) -> Result<()> {
     let qb = Qb::new(runtime.host);
     if !qb.available() {
         return Err(Error::Service {
@@ -184,10 +221,17 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
     {
         log!(&runtime.logger, Warn, "写入种子记录失败（继续下载）：{error}");
     }
-    qb.add(&item.magnet, &config.qbittorrent.save_path, CATEGORY)?;
+    // 有 btih 就直接用；没有（dmhy 的 .torrent 地址）就让 qB 算完再从列表里找出来。
+    let hash = match known_hash {
+        Some(hash) => {
+            qb.add(&item.magnet, &config.qbittorrent.save_path, CATEGORY)?;
+            hash.to_owned()
+        }
+        None => add_and_discover(runtime, &qb, item)?,
+    };
     log!(&runtime.logger, Info, "已加种：{}（anime {anime_id}）", item.title);
 
-    let torrent = wait_done(runtime, &qb, hash)?;
+    let torrent = wait_done(runtime, &qb, &hash)?;
     let _ = runtime.store.checkpoint_stage(&key, "转码");
     let base = torrent
         .get("content_path")
@@ -204,7 +248,7 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
             message: "种子里没有 content_path / save_path".to_owned(),
         })?;
 
-    let files = qb.files(hash)?;
+    let files = qb.files(&hash)?;
     let video = pick_video(&files, &base).ok_or_else(|| Error::Service {
         service: "download.qbittorrent".to_owned(),
         message: format!("种子里没有视频文件（{} 个文件）", files.len()),
@@ -227,12 +271,21 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
         } else {
             caption(item)
         };
-        // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）。
-        let sent = runtime
-            .td
-            .send_video_wait(target, part.display().to_string(), text);
+        // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）；
+        // `wait_send = false` 时只投递（回放/无 TDLib 环境用）。
+        let sent = if config.telegram.wait_send {
+            runtime
+                .td
+                .send_video_wait(target, part.display().to_string(), text)
+        } else {
+            runtime
+                .td
+                .send_video_now(target, part.display().to_string(), text)
+                .then_some(0)
+        };
         if sent.is_none() {
             send_failed = true;
+
             log!(
                 &runtime.logger,
                 Warn,
@@ -269,7 +322,9 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
             message: "发视频失败或未确认".to_owned(),
         });
     };
+    // message_id = 0 表示没等确认（拿不到 id），导航无法记账，跳过。
     if anime_id > 0
+        && message_id > 0
         && let Err(error) =
             crate::nav::push_episode(
                 runtime,
@@ -302,7 +357,7 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
 
     // 清理：发送完还留着种子会一直做种；源文件被删的情况下 qB 还会报 missingFiles。
     if config.qbittorrent.delete_torrent_after_send {
-        match qb.delete(hash, true) {
+        match qb.delete(&hash, true) {
             Ok(()) => log!(&runtime.logger, Info, "已从 qB 删除种子与文件：{}", item.title),
             Err(error) => log!(&runtime.logger, Warn, "从 qB 删除种子失败：{error}"),
         }
