@@ -92,6 +92,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_testbgimg,
     },
     CommandSpec {
+        name: "updateanime",
+        summary: "按 Bangumi 条目 id 刷新番剧与章节：/updateanime <id>",
+        handler: cmd_updateanime,
+    },
+    CommandSpec {
         name: "web",
         summary: "查看管理端地址（配置里没开就没有）",
         handler: cmd_web,
@@ -117,6 +122,32 @@ pub fn dispatch(runtime: &Arc<Runtime>, command: &Command) -> bool {
     true
 }
 
+/// `/updateanime <id>`：只刷新库里的条目与章节，不动导航消息。
+///
+/// 和 `/addanime` 的区别：那条会顺手发导航卡（第一次入库时有用），
+/// 这条是维护命令——番剧信息变了（评分/集数/简介）刷一遍即可。
+fn cmd_updateanime(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let Some(id) = command
+        .args
+        .split_whitespace()
+        .next()
+        .and_then(|raw| raw.parse::<u64>().ok())
+    else {
+        runtime
+            .td
+            .reply_text(target, "用法：/updateanime <bangumi 条目 id>");
+        return;
+    };
+    let runtime = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        let text = match refresh_anime(&runtime, id) {
+            Ok((name, total)) => format!("已刷新「{name}」（{id}），章节 {total} 条"),
+            Err(error) => format!("刷新失败：{error}"),
+        };
+        runtime.td.reply_text(target, text);
+    });
+}
 /// `/addanime <bangumi_id>`：拉条目 + 章节写库。
 ///
 /// TS 里 `addanime` 是「给已有番剧加种子」、`addnewanime` 是「新建番剧」。
@@ -150,14 +181,22 @@ fn cmd_addanime(runtime: &Arc<Runtime>, command: &Command) {
     });
 }
 
-/// 拉 Bangumi 条目与章节写库，然后发/复用导航消息。
-///
-/// 返回（展示名, 章节数, 导航消息）。导航频道没配时返回 `None`——这不是失败，
-/// 只是这台机器上没开导航。
-fn import_and_publish(
+/// 拉 Bangumi 条目与章节写库。返回（展示名, 章节数）——不碰导航。
+fn refresh_anime(runtime: &Runtime, id: u64) -> anime_core::Result<(String, usize)> {
+    let (anime, _subject, _episodes, written) = save_subject(runtime, id)?;
+    Ok((anime.display_name().to_owned(), written))
+}
+
+/// 拉取 + 写库的公共部分：返回写好的 anime 与章节数。
+fn save_subject(
     runtime: &Runtime,
     id: u64,
-) -> anime_core::Result<(String, usize, Option<crate::nav::NavRef>)> {
+) -> anime_core::Result<(
+    anime_core::models::Anime,
+    anime_core::bangumi::Subject,
+    Vec<anime_core::bangumi::Episode>,
+    usize,
+)> {
     let client = BgmClient::new(runtime.config.bangumi.clone());
     let subject = client.subject(id)?;
     let episodes = client.episodes(id)?;
@@ -165,9 +204,21 @@ fn import_and_publish(
     runtime.store.save_anime(&anime)?;
     let metas: Vec<_> = episodes.iter().map(|episode| episode.to_meta(id)).collect();
     let written = runtime.store.upsert_episodes(id as i64, &metas)?;
+    Ok((anime, subject, episodes, written))
+}
+
+/// 拉 Bangumi 条目与章节写库，然后发/复用导航消息。
+///
+/// 返回（展示名, 章节数, 导航消息）。导航频道没配时返回 None——这不是失败，
+/// 只是这台机器上没开导航。
+fn import_and_publish(
+    runtime: &Runtime,
+    id: u64,
+) -> anime_core::Result<(String, usize, Option<crate::nav::NavRef>)> {
+    let (anime, subject, episodes, written) = save_subject(runtime, id)?;
 
     // 已经有导航消息就复用：重复 /addanime 不该在频道里刷第二张卡。
-    let nav = match runtime.store.anime_by_id(subject.id as i64)? {
+    let nav = match runtime.store.anime_by_id(id as i64)? {
         Some(anime) => anime.nav_message,
         None => None,
     }
