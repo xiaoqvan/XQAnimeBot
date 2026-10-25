@@ -77,6 +77,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_search,
     },
     CommandSpec {
+        name: "selftest",
+        summary: "一条命令自检：服务、库、RSS、匹配各跑一遍（不发消息）",
+        handler: cmd_selftest,
+    },
+    CommandSpec {
         name: "setanimer18",
         summary: "设置番剧的 r18 标记：/setanimer18 <id> <true|false>",
         handler: cmd_set_r18,
@@ -384,6 +389,84 @@ fn cmd_canceltask(runtime: &Arc<Runtime>, command: &Command) {
         .reply_text(Target::new(command.chat_id, command.message_id), text);
 }
 
+/// `/selftest`：把「服务 / 库 / RSS / 匹配」四条线跑一遍，只在会话里回结果。
+///
+/// 存在的意义：真机联调时不用等 RSS 命中才能确认链路通——这一条命令就能看出
+/// 是哪个环节坏了（插件没装？库空的？RSS 抓不到？匹配全落空？）。
+/// **不发任何业务消息**，只回一条纯文本。
+fn cmd_selftest(runtime: &Arc<Runtime>, command: &Command) {
+    let runtime = Arc::clone(runtime);
+    let target = Target::new(command.chat_id, command.message_id);
+    std::thread::spawn(move || {
+        let mut lines: Vec<String> = Vec::new();
+
+        // 1) 四个基础服务在不在
+        let services = ["storage.mongo", "download.qbittorrent", "media.ffmpeg", "image.render"]
+            .iter()
+            .map(|name| {
+                let present = !runtime.host.get_service(name).is_null();
+                format!("{} {name}", if present { "✓" } else { "✗" })
+            })
+            .collect::<Vec<_>>()
+            .join("　");
+        lines.push(format!("服务：{services}"));
+
+        // 2) 库：候选番剧（只查一次：Mongo 挂着时每次查询要等 30s 超时）。
+        let candidates = match runtime.store.anime_candidates() {
+            Ok(candidates) => {
+                lines.push(format!("库：{} 部番剧", candidates.len()));
+                candidates
+            }
+            Err(error) => {
+                lines.push(format!("库：读取失败（{error}）"));
+                Vec::new()
+            }
+        };
+
+        // 3) RSS：真抓一轮（不发消息）
+        // 自检只取少量条目：bangumi 每条要打 3 次 API，全量跑一轮能到分钟级，
+        // 自检的目的是「通不通」，不是「跑完整轮」。
+        let mut probe_config = runtime.config.rss.clone();
+        probe_config.max_items = probe_config.max_items.min(8);
+        let mut seen = crate::fetch::Seen::default();
+        let summary = crate::fetch::run(
+            &probe_config,
+            &runtime.config.ai,
+            &runtime.logger,
+            &mut seen,
+        );
+        lines.push(format!(
+            "RSS：{} 条，可解析 {} 条，源失败 {}",
+            summary.total,
+            summary.usable,
+            summary.sources.iter().filter(|line| line.error.is_some()).count()
+        ));
+
+        // 4) 匹配：拿库里已有番剧跑一遍，看有几条能对上
+        let mut matched = 0usize;
+        let mut samples: Vec<String> = Vec::new();
+        for item in &summary.items {
+            if let anime_core::matching::SeasonDecision::Matched(hit) =
+                anime_core::matching::decide_season_with(
+                    &item.names,
+                    &candidates,
+                    anime_core::matching::MatchPolicy::ts(),
+                )
+            {
+                matched += 1;
+                if samples.len() < 3 {
+                    samples.push(format!("{} → {}", item.title, hit.matched_name));
+                }
+            }
+        }
+        lines.push(format!("匹配：命中 {matched} 条"));
+        for sample in samples {
+            lines.push(format!("  · {sample}"));
+        }
+
+        runtime.td.reply_text(target, lines.join("\n"));
+    });
+}
 /// `/setanimer18 <id> <true|false>`：只改标记，不动其它字段。
 fn cmd_set_r18(runtime: &Arc<Runtime>, command: &Command) {
     let target = Target::new(command.chat_id, command.message_id);

@@ -15,7 +15,6 @@
 //! 并发 worker 池（TS 的 `AnimeProcessorManager`）**现在还没做**：下游目前只记账，
 //! 秒级就完事，开并发反而让日志乱序。等下游变成下载+转码（分钟级）时再加。
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::{self, JoinHandle};
@@ -29,10 +28,9 @@ use anime_core::matching::{
     AnimeCandidate, MatchPolicy, SeasonDecision, decide_season_with, match_item_with, today_local,
 };
 use anime_core::store::Storage;
-use anime_core::title;
 
 use crate::chain;
-use crate::fetch;
+use crate::fetch::{self, Seen};
 use crate::review;
 use crate::runtime::Runtime;
 
@@ -112,30 +110,6 @@ fn humanize(seconds: u64) -> String {
         return format!("每 {minutes} 分钟");
     }
     format!("每 {} 小时", minutes / 60)
-}
-
-/// 跨轮次去重。
-///
-/// 满了就整个清空：RSS 一轮几十条，几千条够撑几十轮；清空的代价是最早的一批标题
-/// 会被再处理一次，而那些漏过去的会被 `db` 的持久去重拦住。为了省这点重复，
-/// 不值得在内存里维护一个真环形缓冲——那是 `db` 该操心的事。
-#[derive(Debug, Default)]
-pub struct Seen {
-    titles: HashSet<String>,
-}
-
-impl Seen {
-    /// 这条见过吗？没见过就记住并返回 `true`（= 是新条目）。
-    pub fn accept(&mut self, title: &str) -> bool {
-        if self.titles.contains(title) {
-            return false;
-        }
-        if self.titles.len() >= SEEN_CAPACITY {
-            self.titles.clear();
-        }
-        self.titles.insert(title.to_owned());
-        true
-    }
 }
 
 /// 轮询累计计数。原子：被后台线程加，被命令回调读。
@@ -252,22 +226,15 @@ pub struct Round {
 /// 这里只把「这条种子属于谁」判出来，让日志能回答「为什么没发」。
 fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     let logger = &runtime.logger;
-    let summary = fetch::run(&runtime.config.rss, &runtime.config.ai, logger);
+    let summary = fetch::run(&runtime.config.rss, &runtime.config.ai, logger, seen);
     let failures = summary
         .sources
         .iter()
         .filter(|line| line.error.is_some())
         .count();
 
-    // 所有合并标题都占一次机会（含解析失败的）：解析失败的 bangumi 条目每轮都会
-    // 重打一遍 API，不去重的话光是白跑流量。
-    let mut fresh_titles = HashSet::new();
-    for title in &summary.titles {
-        if seen.accept(title) {
-            fresh_titles.insert(title.clone());
-        }
-    }
-    let fresh = fresh_titles.len();
+    // 去重已经在 fetch 里做完了（解析之前），这里只剩计数。
+    let fresh = summary.fresh;
 
     // 库里的候选番剧一轮只取一次：匹配是纯函数，逐条查库纯属浪费。
     let candidates = load_candidates(runtime);
@@ -278,9 +245,6 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     let mut new_anime = 0usize;
     let mut ready = 0usize;
     for item in &summary.items {
-        if !fresh_titles.contains(&title::clean_title(&item.title)) {
-            continue;
-        }
         if store_ready {
             match runtime.store.has_torrent_title(&item.title) {
                 Ok(true) => {

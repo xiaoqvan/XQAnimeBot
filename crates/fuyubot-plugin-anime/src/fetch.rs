@@ -23,6 +23,8 @@ use anime_core::title;
 const TIMEOUT: Duration = Duration::from_secs(15);
 /// 日志里附几条样本。多了没人看，还会把宿主日志冲掉。
 const SAMPLE_LIMIT: usize = 3;
+/// 内存里记住多少条标题。RSS 一轮几十条，这个容量够撑几十轮。
+const SEEN_CAPACITY: usize = 2000;
 /// 单行截短长度。错误原文（ureq 的）能很长，日志里留个开头就够。
 const SHORTEN: usize = 60;
 
@@ -53,11 +55,11 @@ pub struct Summary {
     pub usable: usize,
     /// 前几条的样子，给日志用。
     pub samples: Vec<String>,
-    /// 归一化后的标题列表。**去重键**：下游拿它判断这条见过没有。
+    /// 本轮真正的新条目数（跨轮次去重后）。
     ///
-    /// 单独列出来是因为去重发生在 `poll` 层，而汇总本是为日志准备的——
-    /// 不带上它，下游为了去重就得再遍历一遍原始条目。
-    pub titles: Vec<String>,
+    /// 去重放在解析**之前**：bangumi 条目每条要打 3 次 API（种子/发布组/标签），
+    /// 对已经处理过的标题再解析一遍纯属浪费——一轮几十条时这是分钟级差距。
+    pub fresh: usize,
     /// 解析成功的条目（下游拿它去查库/匹配）。
     ///
     /// 与 `titles` 不是一一对应：`titles` 覆盖所有合并后的原始条目（含解析失败的），
@@ -87,8 +89,8 @@ impl Summary {
     }
 }
 
-/// 抓一轮。
-pub fn run(config: &RssConfig, ai: &AiConfig, logger: &Logger) -> Summary {
+/// 抓一轮。`seen` 由调用方持有：跨轮次去重在解析之前就挡掉老条目。
+pub fn run(config: &RssConfig, ai: &AiConfig, logger: &Logger, seen: &mut Seen) -> Summary {
     let ai_episode_fallback = config.ai_episode_fallback;
     let started = Instant::now();
     let http = Http::new(TIMEOUT);
@@ -104,20 +106,18 @@ pub fn run(config: &RssConfig, ai: &AiConfig, logger: &Logger) -> Summary {
         })
         .collect::<Vec<_>>();
 
-    // 去重键对所有条目都收集：解析不出番名的条目也占一次投放机会，
-    // 不记进 `Seen` 就会在下一轮被再处理一遍。
-    let titles = report
-        .items
-        .iter()
-        .map(|item| title::clean_title(&item.title))
-        .collect::<Vec<_>>();
-
+    let mut fresh = 0usize;
     let mut usable = 0usize;
     let mut samples = Vec::new();
     let mut items = Vec::new();
     // AI 客户端建一次：每轮几十条，逐条 new 会白建连接池。
     let ai_client = AiClient::new(ai.clone());
     for item in &report.items {
+        // 先去重再解析：老条目连 `enrich_bangumi` 都不该调。
+        if !seen.accept(&title::clean_title(&item.title)) {
+            continue;
+        }
+        fresh += 1;
         // bangumi.moe 的组名/磁力/多语言名都在 API 里，RSS 条目本身没有 `author`：
         // 不走 `enrich_bangumi` 就只能靠标题里的组标签猜，猜不到就整条丢掉。
         // dmhy / acgnx 的 `author` 就是组名，直接解析即可。
@@ -163,12 +163,39 @@ pub fn run(config: &RssConfig, ai: &AiConfig, logger: &Logger) -> Summary {
         total: report.items.len(),
         usable,
         samples,
-        titles,
+        fresh,
         items,
         elapsed_ms: started.elapsed().as_millis() as u64,
     }
 }
 
+/// 跨轮次去重。
+///
+/// 满了就整个清空：RSS 一轮几十条，几千条够撑几十轮；清空的代价是最早的一批标题
+/// 会被再处理一次，而那些漏过去的会被 `db` 的持久去重拦住。为了省这点重复，
+/// 不值得在内存里维护一个真环形缓冲——那是 `db` 该操心的事。
+#[derive(Debug, Default)]
+pub struct Seen {
+    titles: std::collections::HashSet<String>,
+}
+
+impl Seen {
+    /// 这条见过吗？没见过就记住并返回 `true`（= 是新条目）。
+    pub fn accept(&mut self, title: &str) -> bool {
+        if self.titles.contains(title) {
+            return false;
+        }
+        if self.titles.len() >= SEEN_CAPACITY {
+            self.titles.clear();
+        }
+        self.titles.insert(title.to_owned());
+        true
+    }
+
+    pub fn len(&self) -> usize {
+        self.titles.len()
+    }
+}
 /// 毫秒 → 人话。RSS 一轮是秒级的，别报「1832 ms」这种。
 fn format_elapsed(ms: u64) -> String {
     if ms < 1000 {
@@ -203,6 +230,23 @@ mod tests {
     }
 
     #[test]
+    fn seen_rejects_repeats_and_accepts_new() {
+        let mut seen = Seen::default();
+        assert!(seen.accept("A"));
+        assert!(!seen.accept("A"), "同一条标题第二轮要被挡住");
+        assert!(seen.accept("B"));
+        assert_eq!(seen.len(), 2);
+    }
+
+    #[test]
+    fn seen_clears_at_capacity() {
+        let mut seen = Seen::default();
+        for index in 0..SEEN_CAPACITY + 10 {
+            seen.accept(&format!("标题 {index}"));
+        }
+        assert!(seen.len() <= SEEN_CAPACITY + 1, "容量要有上限：{}", seen.len());
+    }
+    #[test]
     fn render_is_one_line_plus_samples() {
         let summary = Summary {
             sources: vec![
@@ -213,7 +257,7 @@ mod tests {
             total: 25,
             usable: 17,
             samples: vec!["[桜都字幕组] 死神 千年血战篇".to_owned()],
-            titles: vec!["[桜都字幕组] 死神 千年血战篇".to_owned()],
+            fresh: 1,
             items: Vec::new(),
             elapsed_ms: 1900,
         };
@@ -231,7 +275,7 @@ mod tests {
             total: 0,
             usable: 0,
             samples: Vec::new(),
-            titles: Vec::new(),
+            fresh: 0,
             items: Vec::new(),
             elapsed_ms: 12,
         };
