@@ -118,6 +118,14 @@ impl Storage for HostStore {
         let reply = self.call("count", json!({ "collection": collection, "filter": filter }))?;
         Ok(reply.get("count").and_then(Value::as_u64).unwrap_or(0))
     }
+
+    fn delete(&self, collection: &str, filter: Value, many: bool) -> Result<u64> {
+        let reply = self.call(
+            "delete",
+            json!({ "collection": collection, "filter": filter, "many": many }),
+        )?;
+        Ok(reply.get("deleted").and_then(Value::as_u64).unwrap_or(0))
+    }
 }
 
 #[cfg(test)]

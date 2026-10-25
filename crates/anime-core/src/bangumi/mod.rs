@@ -155,6 +155,23 @@ impl BgmClient {
         parse_search_response(&url, value)
     }
 
+    /// 取当前登录用户（`/v0/me`）。access_token 为空时直接报错，不打空请求。
+    pub fn me(&self) -> Result<crate::bangumi::BangumiUser> {
+        if self.config.access_token.trim().is_empty() {
+            return Err(Error::Config(
+                "未配置 bangumi.access_token，无法查询 Bangumi 用户".to_owned(),
+            ));
+        }
+        let url = format!("{API_BASE}/v0/me");
+        let value = self
+            .http
+            .get_json_auth(&url, Some(self.config.access_token.as_str()))?;
+        serde_json::from_value(value).map_err(|err| Error::Parse {
+            what: "Bangumi 用户",
+            message: format!("{url}：{err}"),
+        })
+    }
+
     fn get_json(&self, url: &str) -> Result<Value> {
         let text = self.http.get(url)?;
         serde_json::from_str(&text).map_err(|err| Error::Parse {
@@ -163,6 +180,8 @@ impl BgmClient {
         })
     }
 }
+
+pub use subject::BangumiUser;
 
 /// 单页章节响应。字段名与 `/v0/episodes` 一致。
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]

@@ -336,6 +336,17 @@ impl Episode {
     }
 }
 
+/// `/v0/me`：已登录的 Bangumi 用户。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct BangumiUser {
+    pub id: u64,
+    pub username: String,
+    #[serde(deserialize_with = "null_to_empty")]
+    pub nickname: String,
+    pub avatar: Images,
+}
+
 /// 章节（`/v0/episodes`）。
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]

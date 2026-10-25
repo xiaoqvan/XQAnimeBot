@@ -52,9 +52,19 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_bgm,
     },
     CommandSpec {
+        name: "bindbangumi",
+        summary: "绑定 Bangumi 账号：/bindbangumi <access_token>",
+        handler: cmd_bindbangumi,
+    },
+    CommandSpec {
         name: "canceltask",
         summary: "取消下载（当前没有队列，仅报告状态）",
         handler: cmd_canceltask,
+    },
+    CommandSpec {
+        name: "exitbangumi",
+        summary: "解绑当前账号的 Bangumi 绑定",
+        handler: cmd_exitbangumi,
     },
     CommandSpec {
         name: "help",
@@ -123,12 +133,47 @@ pub fn spec_for(name: &str) -> Option<&'static CommandSpec> {
         .find(|spec| spec.name.eq_ignore_ascii_case(name))
 }
 
+thread_local! {
+    /// 当前命令的发送者。命令处理函数是同步的，所以线程局部足够传递。
+    static CURRENT_SENDER: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// 当前命令是谁发的（`None` = 频道身份或取不到）。
+///
+/// 处理函数用它做「这是不是我的 Bangumi 绑定」这类判断，不必改 16 个函数的签名。
+pub fn current_sender() -> Option<i64> {
+    CURRENT_SENDER.with(std::cell::Cell::get)
+}
+
+/// 只有主人能敲的命令（`telegram.owner_id`；为 0 时不校验，保持旧行为）。
+const ADMIN_COMMANDS: &[&str] = &[
+    "addanime",
+    "updateanime",
+    "setanimer18",
+    "animeblacklist",
+    "canceltask",
+    "testbgimg",
+    "bindbangumi",
+    "exitbangumi",
+];
+
 /// 分发一条命令。返回 `true` 表示这次消息被本插件处理了。
-pub fn dispatch(runtime: &Arc<Runtime>, command: &Command) -> bool {
+pub fn dispatch(runtime: &Arc<Runtime>, command: &Command, sender: Option<i64>) -> bool {
     let Some(spec) = spec_for(&command.name) else {
         return false;
     };
+    let owner = runtime.config.telegram.owner_id;
+    if ADMIN_COMMANDS.contains(&spec.name) && owner != 0 && sender != Some(owner) {
+        // 不回复：群里可能还有别的机器人在管同一批命令，沉默比报错干净。
+        runtime.host.log(
+            fuyubot_abi::LogLevel::Warn,
+            &format!("[anime] 非主人执行管理命令 /{}（sender {sender:?}）", spec.name),
+        );
+        return true;
+    }
+    CURRENT_SENDER.with(|cell| cell.set(sender));
     (spec.handler)(runtime, command);
+    CURRENT_SENDER.with(|cell| cell.set(None));
     true
 }
 
@@ -369,6 +414,73 @@ fn cmd_search(runtime: &Arc<Runtime>, command: &Command) {
     });
 }
 
+/// `/bindbangumi <access_token>`：校验 token（调 `/v0/me`）后写 `bangumi_users`。
+///
+/// TS 版走 OAuth 授权页 + 回调；那要求一个能接 redirect 的 HTTP 端点。这里先用
+/// 「粘贴 access token」的等价做法：token 从 https://next.bgm.tv/demo/access-token 生成。
+fn cmd_bindbangumi(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let token = command.args.trim().to_owned();
+    if token.is_empty() {
+        runtime.td.reply_text(
+            target,
+            "用法：/bindbangumi <bangumi access_token>\n可在 https://next.bgm.tv/demo/access-token 生成",
+        );
+        return;
+    }
+    let Some(tg_user_id) = current_sender() else {
+        runtime
+            .td
+            .reply_text(target, "无法识别你的 Telegram 账号：请在私聊里绑定");
+        return;
+    };
+    let runtime = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        let mut config = runtime.config.bangumi.clone();
+        config.access_token = token;
+        let client = BgmClient::new(config);
+        let text = match client.me() {
+            Ok(user) => {
+                let doc = anime_core::models::BangumiUserDoc {
+                    tg_user_id,
+                    id: user.id as i64,
+                    username: user.username.clone(),
+                    nickname: user.nickname.clone(),
+                    avatar: Some(user.avatar.best().to_owned()).filter(|url| !url.is_empty()),
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                };
+                match runtime.store.bangumi_user_upsert(&doc) {
+                    Ok(()) => format!(
+                        "已绑定 Bangumi 账号：{}（{}）",
+                        if user.nickname.is_empty() { &user.username } else { &user.nickname },
+                        user.id
+                    ),
+                    Err(error) => format!("写入绑定失败：{error}"),
+                }
+            }
+            Err(error) => format!("校验 access token 失败：{error}"),
+        };
+        runtime.td.reply_text(target, text);
+    });
+}
+
+/// `/exitbangumi`：删掉当前 Telegram 用户的绑定。
+fn cmd_exitbangumi(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let Some(tg_user_id) = current_sender() else {
+        runtime
+            .td
+            .reply_text(target, "无法识别你的 Telegram 账号：请在私聊里解绑");
+        return;
+    };
+    let text = match runtime.store.bangumi_user_delete(tg_user_id) {
+        Ok(0) => "你还没有绑定 Bangumi 账号".to_owned(),
+        Ok(_) => "已解绑 Bangumi 账号".to_owned(),
+        Err(error) => format!("解绑失败：{error}"),
+    };
+    runtime.td.reply_text(target, text);
+}
 /// `/bgm <关键词>`：搜 Bangumi 并列出 id，方便接着 `/addanime <id>`。
 ///
 /// 本地 `/searchanime` 只搜已入库的番剧；要『先查外部再导入』就得走这条。
@@ -604,6 +716,16 @@ fn cmd_help(runtime: &Arc<Runtime>, command: &Command) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn admin_commands_are_declared() {
+        // 名单里写错一个名字不会报错，只会让那条命令悄悄变成「谁都能敲」——用测试钉住。
+        for name in ADMIN_COMMANDS {
+            assert!(
+                spec_for(name).is_some(),
+                "管理命令 {name} 不在 COMMANDS 表里"
+            );
+        }
+    }
     #[test]
     fn every_declared_command_is_found() {
         for spec in COMMANDS {

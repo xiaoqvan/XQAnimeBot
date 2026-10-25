@@ -69,6 +69,23 @@ impl Http {
         read_body(response, url)
     }
 
+    /// 带 Bearer 的 GET（Bangumi `/v0/me` 这类需要登录的接口）。
+    pub fn get_json_auth(&self, url: &str, token: Option<&str>) -> Result<Value> {
+        let mut request = self.agent.get(url);
+        if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        let response = request.call().map_err(|source| Error::Http {
+            url: url.to_owned(),
+            source: Box::new(source),
+        })?;
+        let text = read_body(response, url)?;
+        serde_json::from_str(&text).map_err(|err| Error::Parse {
+            what: "JSON 响应",
+            message: format!("{url}：{err}"),
+        })
+    }
+
     /// POST 一个 JSON 并读回 JSON（bangumi.moe 的三次 `fetch` 接口）。
     pub fn post_json(&self, url: &str, body: &Value) -> Result<Value> {
         self.post_json_auth(url, body, None)

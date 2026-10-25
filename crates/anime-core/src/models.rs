@@ -383,6 +383,23 @@ impl CheckpointStatus {
     }
 }
 
+/// `bangumi_users` 集合：Telegram 用户 ↔ Bangumi 账号的绑定。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BangumiUserDoc {
+    #[serde(rename = "tgUserId")]
+    pub tg_user_id: i64,
+    /// Bangumi 用户 id。
+    pub id: i64,
+    pub username: String,
+    pub nickname: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<String>,
+    #[serde(rename = "createdAt")]
+    pub created_at: DateTime<Utc>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: DateTime<Utc>,
+}
+
 /// `cacheItem` 集合：待审核的新番缓存。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheItem {

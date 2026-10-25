@@ -16,6 +16,7 @@
 
 mod bot;
 mod callback;
+mod commands;
 mod card;
 mod chain;
 mod fetch;
@@ -32,7 +33,7 @@ mod web;
 use std::sync::Arc;
 
 use fuyubot_abi::{HostApi, LogLevel, Plugin, define_plugin};
-use fuyubot_simplify::{CommandSubscription, on_command};
+
 
 use crate::poll::Poller;
 use crate::runtime::{Bootstrap, Runtime};
@@ -48,7 +49,7 @@ struct AnimePlugin {
     /// 启动成功后才有值；`init` 阶段还没读配置。
     runtime: Option<Arc<Runtime>>,
     /// 订阅守卫：`drop` 就退订，所以 `stop` 里只要把它置空。
-    subscription: Option<CommandSubscription>,
+    subscription: Option<commands::CommandSubscription>,
     /// 后台 RSS 轮询。`drop` = 请求停止，所以 `stop` 里只要把它置空。
     poller: Option<Poller>,
     /// 内联键盘回调订阅。`drop` 就退订，同上。
@@ -82,13 +83,9 @@ impl Plugin for AnimePlugin {
         let runtime = Runtime::new(self.host, config, source);
         runtime.log_boot();
 
-        // 回调闭包持有 `Arc<Runtime>`：插件实例本身不可克隆，而回调要求 `'static`。
-        let shared = Arc::clone(&runtime);
-        let subscription = on_command(self.host, move |command| {
-            // 不认识的命令静默放过——同一进程里可能还有别的插件在处理。
-            let _ = bot::dispatch(&shared, command);
-        })
-        .ok_or_else(|| "订阅 updateNewMessage 失败（宿主没接事件总线？）".to_owned())?;
+        // 自建订阅而不是用 simplify 的 on_command：管理命令要知道「谁发的」。
+        let subscription = commands::spawn(self.host, Arc::clone(&runtime))
+            .ok_or_else(|| "订阅 updateNewMessage 失败（宿主没接事件总线？）".to_owned())?;
 
         let poller = Poller::spawn(Arc::clone(&runtime), Arc::clone(&runtime.poll_stats));
         // 管理 API 没配 listen 时 spawn 返回 None，属于正常情况。

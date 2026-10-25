@@ -88,6 +88,9 @@ pub trait Storage {
     /// 统计命中条数。
     fn count(&self, collection: &str, filter: Value) -> Result<u64>;
 
+    /// 删除文档，返回删除条数。空 filter 由实现方决定是否拒绝（Mongo 侧要求显式确认）。
+    fn delete(&self, collection: &str, filter: Value, many: bool) -> Result<u64>;
+
     // ── 业务查询（默认实现，全部建立在上面五个动作之上） ──────────────────
 
     /// 拉取番剧库的匹配视图，供 [crate::matching] 使用。
@@ -337,6 +340,47 @@ pub trait Storage {
         docs.into_iter().map(|doc| decode("anime", doc)).collect()
     }
 
+// ── Bangumi 账号绑定（bangumi_users）──────────────────────────────
+
+    /// 写入/更新一条绑定（按 `tgUserId` upsert，createdAt 只写一次）。
+    fn bangumi_user_upsert(&self, user: &crate::models::BangumiUserDoc) -> Result<()> {
+        let mut doc = serde_json::to_value(user)
+            .map_err(|err| Error::Store(format!("绑定文档序列化失败：{err}")))?;
+        if let Some(fields) = doc.as_object_mut() {
+            fields.remove("createdAt");
+            fields.insert("updatedAt".to_owned(), json!(Utc::now()));
+        }
+        self.update(
+            "bangumi_users",
+            json!({ "tgUserId": user.tg_user_id }),
+            json!({ "$set": doc, "$setOnInsert": { "createdAt": json!(Utc::now()) } }),
+            true,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 按 Telegram 用户 id 取绑定。
+    fn bangumi_user_by_tg(
+        &self,
+        tg_user_id: i64,
+    ) -> Result<Option<crate::models::BangumiUserDoc>> {
+        let doc = self.find_one(
+            "bangumi_users",
+            json!({ "tgUserId": tg_user_id }),
+            Some(json!({ "_id": 0 })),
+        )?;
+        doc.map(|doc| decode("bangumi_users", doc)).transpose()
+    }
+
+    /// 解绑（删除该用户的绑定），返回删除条数。
+    fn bangumi_user_delete(&self, tg_user_id: i64) -> Result<u64> {
+        self.delete(
+            "bangumi_users",
+            json!({ "tgUserId": tg_user_id }),
+            true,
+        )
+    }
     /// 按 Bangumi id 取一部番剧。没命中返回 `Ok(None)`。
     fn anime_by_id(&self, id: i64) -> Result<Option<Anime>> {
         let doc = self.find_one("anime", json!({ "id": id }), None)?;
@@ -867,6 +911,20 @@ mod tests {
             }
 
             Ok(affected)
+        }
+
+        fn delete(&self, collection: &str, filter: Value, many: bool) -> crate::Result<u64> {
+            let mut collections = self.collections.borrow_mut();
+            let Some(docs) = collections.get_mut(collection) else {
+                return Ok(0);
+            };
+            let before = docs.len();
+            if many {
+                docs.retain(|doc| !matches_filter(doc, &filter));
+            } else if let Some(index) = docs.iter().position(|doc| matches_filter(doc, &filter)) {
+                docs.remove(index);
+            }
+            Ok((before - docs.len()) as u64)
         }
 
         fn count(&self, collection: &str, filter: Value) -> crate::Result<u64> {
