@@ -18,6 +18,7 @@ mod bot;
 mod fetch;
 mod poll;
 mod runtime;
+mod store;
 mod td;
 
 use std::sync::Arc;

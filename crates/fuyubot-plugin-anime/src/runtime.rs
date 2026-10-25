@@ -22,6 +22,7 @@ use anime_core::logger::Logger;
 use fuyubot_abi::{HostApi, LogLevel};
 
 use crate::poll::Stats;
+use crate::store::HostStore;
 use crate::td::{HostLog, Td};
 
 /// 启动时从宿主 JSON 里读出来的「配置在哪」。
@@ -90,6 +91,8 @@ impl Bootstrap {
 pub struct Runtime {
     pub host: HostApi,
     pub td: Td,
+    /// 业务存储。领域层只认 `Storage` trait，这里是它在宿主里的实现。
+    pub store: HostStore,
     pub config: Config,
     /// 领域层日志出口，转发到宿主日志。
     ///
@@ -112,6 +115,7 @@ impl Runtime {
         Arc::new(Self {
             host,
             td: Td::new(host),
+            store: HostStore::new(host),
             config,
             logger: Arc::new(HostLog::new(host)),
             poll_stats: Arc::new(Stats::default()),

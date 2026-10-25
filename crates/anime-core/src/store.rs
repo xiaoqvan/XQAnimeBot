@@ -340,15 +340,21 @@ fn normalize_date_field(doc: &mut Value, field: &str) {
 /// 从 {"$date": ...} 里取出日期字符串；无法识别时返回 None。
 fn extjson_date_string(value: &Value) -> Option<String> {
     let date = value.as_object()?.get("$date")?;
-    match date {
-        Value::String(text) => Some(text.clone()),
-        Value::Object(inner) => {
-            let millis = inner.get("$numberLong")?.as_str()?.parse::<i64>().ok()?;
-            DateTime::<Utc>::from_timestamp_millis(millis)
-                .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true))
-        }
-        _ => None,
-    }
+    let millis = match date {
+        // relaxed：{"$date": "2026-01-01T00:00:00Z"}
+        Value::String(text) => return Some(text.clone()),
+        // canonical v2：{"$date": {"$numberLong": "1767225600000"}}
+        Value::Object(inner) => match inner.get("$numberLong")? {
+            Value::String(text) => text.parse::<i64>().ok()?,
+            Value::Number(number) => number.as_i64()?,
+            _ => return None,
+        },
+        // Extended JSON v1 的历史写法：{"$date": 1767225600000}
+        Value::Number(number) => number.as_i64()?,
+        _ => return None,
+    };
+    DateTime::<Utc>::from_timestamp_millis(millis)
+        .map(|date| date.to_rfc3339_opts(SecondsFormat::Millis, true))
 }
 
 /// 从磁力链接里取 btih（40 位十六进制），统一返回小写。

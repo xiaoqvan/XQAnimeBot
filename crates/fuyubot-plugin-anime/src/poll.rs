@@ -24,7 +24,9 @@ use std::time::Duration;
 use chrono::{DateTime, Timelike, Utc};
 
 use anime_core::log;
-use anime_core::logger::Logger;
+use anime_core::matching::{AnimeCandidate, MatchPolicy, SeasonDecision, decide_season_with};
+use anime_core::store::Storage;
+use anime_core::title;
 
 use crate::fetch;
 use crate::runtime::Runtime;
@@ -207,7 +209,7 @@ fn loop_forever(runtime: &Arc<Runtime>, stop: &AtomicBool, stats: &Stats) {
     let interval_secs = runtime.config.rss.interval_secs;
     while !stop.load(Ordering::Acquire) {
         // 一轮失败不该让线程死掉：网络抖一下就退出，等于整个插件的 RSS 断了。
-        let outcome = run_round(&runtime.config.rss, &runtime.logger, &mut seen);
+        let outcome = run_round(runtime, &mut seen);
         stats.rounds.fetch_add(1, Ordering::Relaxed);
         stats
             .items
@@ -231,33 +233,87 @@ pub struct Round {
     /// 本轮里跨轮次去重后剩下的新条目数。
     pub fresh: usize,
     pub failures: usize,
+    /// 新条目里命中库内番剧的条数。
+    pub matched: usize,
+    /// 新条目里没命中任何番剧（按新番候选处理）的条数。
+    pub new_anime: usize,
 }
 
-/// 抓一轮，顺手做跨轮次去重。
+/// 抓一轮：抓取 → 跨轮次去重 → 查库去重 → 匹配 → 记日志。
 ///
-/// **下游目前是空的**：`db` 还没写，去重/匹配/下载都接不上，所以新条目现在只进
-/// 计数。`db` 落地后在这里接「查库去重 → 匹配 → 入下载队列」，签名不用动。
-fn run_round(config: &anime_core::config::RssConfig, logger: &Logger, seen: &mut Seen) -> Round {
-    let summary = fetch::run(config, logger);
+/// 这一层**不做业务决定**：命中之后要下载还是发审核，是 `anime` 主链的事。
+/// 这里只把「这条种子属于谁」判出来，让日志能回答「为什么没发」。
+fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
+    let logger = &runtime.logger;
+    let summary = fetch::run(&runtime.config.rss, logger);
     let failures = summary
         .sources
         .iter()
         .filter(|line| line.error.is_some())
         .count();
 
-    let mut fresh = 0usize;
+    // 所有合并标题都占一次机会（含解析失败的）：解析失败的 bangumi 条目每轮都会
+    // 重打一遍 API，不去重的话光是白跑流量。
+    let mut fresh_titles = HashSet::new();
     for title in &summary.titles {
         if seen.accept(title) {
-            fresh += 1;
+            fresh_titles.insert(title.clone());
+        }
+    }
+    let fresh = fresh_titles.len();
+
+    // 库里的候选番剧一轮只取一次：匹配是纯函数，逐条查库纯属浪费。
+    let candidates = load_candidates(runtime);
+    let store_ready = runtime.store.available();
+
+    let mut matched = 0usize;
+    let mut new_anime = 0usize;
+    for item in &summary.items {
+        if !fresh_titles.contains(&title::clean_title(&item.title)) {
+            continue;
+        }
+        if store_ready {
+            match runtime.store.has_torrent_title(&item.title) {
+                Ok(true) => {
+                    log!(logger, Debug, "已入过库，跳过：{}", item.title);
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => log!(logger, Warn, "查种子去重失败：{error}"),
+            }
+        }
+
+        // 行为对齐 TS（包含即命中）；要更保守就换 `MatchPolicy::default()`。
+        match decide_season_with(&item.names, &candidates, MatchPolicy::ts()) {
+            SeasonDecision::Matched(hit) => {
+                matched += 1;
+                log!(logger, Info, "命中『{}』：{}", hit.matched_name, item.title);
+            }
+            SeasonDecision::NeedsReview { best, .. } => {
+                log!(
+                    logger,
+                    Debug,
+                    "待复核『{}』（{} 分）：{}",
+                    best.matched_name,
+                    best.score,
+                    item.title
+                );
+            }
+            SeasonDecision::New => {
+                new_anime += 1;
+                log!(logger, Debug, "新番候选：{}", item.title);
+            }
         }
     }
 
     log!(
         logger,
         Info,
-        "{}｜新 {} 条",
+        "{}｜新 {} 条（命中 {}，新番候选 {}）",
         summary.render().replace('\n', " "),
-        fresh
+        fresh,
+        matched,
+        new_anime
     );
 
     Round {
@@ -265,6 +321,24 @@ fn run_round(config: &anime_core::config::RssConfig, logger: &Logger, seen: &mut
         usable: summary.usable,
         fresh,
         failures,
+        matched,
+        new_anime,
+    }
+}
+
+/// 取库内候选番剧；存储不可用或查询失败时降级成空表（= 全部按新番处理）。
+///
+/// 空表不会让流程停下，但会把已有番剧误判成新番——所以失败必须打 warn，别静默。
+fn load_candidates(runtime: &Runtime) -> Vec<AnimeCandidate> {
+    if !runtime.store.available() {
+        return Vec::new();
+    }
+    match runtime.store.anime_candidates() {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            log!(&runtime.logger, Warn, "读取番剧库失败，本轮按空库处理：{error}");
+            Vec::new()
+        }
     }
 }
 

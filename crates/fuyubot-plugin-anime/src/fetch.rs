@@ -43,7 +43,7 @@ impl SourceLine {
 }
 
 /// 一轮抓取的结果。
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default)]
 pub struct Summary {
     pub sources: Vec<SourceLine>,
     /// 合并去重后的总条数。
@@ -57,6 +57,11 @@ pub struct Summary {
     /// 单独列出来是因为去重发生在 `poll` 层，而汇总本是为日志准备的——
     /// 不带上它，下游为了去重就得再遍历一遍原始条目。
     pub titles: Vec<String>,
+    /// 解析成功的条目（下游拿它去查库/匹配）。
+    ///
+    /// 与 `titles` 不是一一对应：`titles` 覆盖所有合并后的原始条目（含解析失败的），
+    /// 这里只有能进业务的那些。
+    pub items: Vec<anime_core::models::AnimeItem>,
     pub elapsed_ms: u64,
 }
 
@@ -107,6 +112,7 @@ pub fn run(config: &RssConfig, logger: &Logger) -> Summary {
 
     let mut usable = 0usize;
     let mut samples = Vec::new();
+    let mut items = Vec::new();
     for item in &report.items {
         // bangumi.moe 的组名/磁力/多语言名都在 API 里，RSS 条目本身没有 `author`：
         // 不走 `enrich_bangumi` 就只能靠标题里的组标签猜，猜不到就整条丢掉。
@@ -122,6 +128,9 @@ pub fn run(config: &RssConfig, logger: &Logger) -> Summary {
         if samples.len() < SAMPLE_LIMIT {
             samples.push(shorten(&item.title, SHORTEN));
         }
+        if let Some(built) = built {
+            items.push(built);
+        }
     }
 
     // 宏的第二个参数是 `ident`：`log!(logger, Warn, ...)`，不是 `Level::Warn`。
@@ -135,6 +144,7 @@ pub fn run(config: &RssConfig, logger: &Logger) -> Summary {
         usable,
         samples,
         titles,
+        items,
         elapsed_ms: started.elapsed().as_millis() as u64,
     }
 }
@@ -184,6 +194,7 @@ mod tests {
             usable: 17,
             samples: vec!["[桜都字幕组] 死神 千年血战篇".to_owned()],
             titles: vec!["[桜都字幕组] 死神 千年血战篇".to_owned()],
+            items: Vec::new(),
             elapsed_ms: 1900,
         };
         let text = summary.render();
@@ -201,6 +212,7 @@ mod tests {
             usable: 0,
             samples: Vec::new(),
             titles: Vec::new(),
+            items: Vec::new(),
             elapsed_ms: 12,
         };
         let text = summary.render();
