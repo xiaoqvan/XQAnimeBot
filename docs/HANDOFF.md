@@ -2,6 +2,12 @@
 
 > 面向下一个接手的人/AI。读完这份，你应该能在 10 分钟内跑起来，并知道下一步该写哪个文件。
 > 最后更新：2026-10-25 23:55（本地时间）
+>
+> **⚠️ 2026-10-26 现状覆盖**：本文写于迁移中途，第 3/4 节多处已过时。当前事实以
+> [README](../README.md) 与 [audit-2026-10-26.md](audit-2026-10-26.md) 为准：
+> 业务主链（RSS → 匹配 → 下载 → 转码/烧字幕/分段 → 发频道）、审核按钮、导航消息、
+> 检查点恢复、AI 兜底、只读管理 API 都已实现，**281 个测试**；仓库已在 `rust` 分支
+> （github.com/xiaoqvan/XQAnimeBot）。仍未验证的只有「真机联调」（需要 Mongo/qB/TDLib 账号）。
 
 ---
 
@@ -11,7 +17,7 @@
 cd D:/github/XQAnimeBot-Rust
 
 cargo build --workspace     # 全部 7 个 crate，应 0 warning
-cargo test --workspace      # 154 个单测全绿
+cargo test --workspace      # 281 个单测全绿
 
 # 出图端到端（会拉起渲染子进程，需要 runtime/ultralight 已就位）
 cargo run -p ultralight-gen-image --example render_card
@@ -31,10 +37,9 @@ cp target/debug/fuyubot_plugin_anime.dll target/abi-probe/plugins/
   --plugin-dir target/abi-probe/plugins --replay-wait 500
 ```
 
-跑通这几条，说明环境和运行时都没问题。**当前状态：基础设施全部可用，领域层（RSS + 匹配）已通，
-插件壳已在真宿主跑通，剩下的主干是「业务存储 → 下载/转码编排 → 把业务链路接进壳里」。**
+跑通这几条，说明环境和运行时都没问题。**当前状态见文首的「2026-10-26 现状覆盖」。**
 
-项目路径：`D:/github/XQAnimeBot-Rust`（**尚未 git init，没有任何版本控制**，接手第一件事建议先建仓库）。
+项目路径：`D:/github/XQAnimeBot-Rust`（版本控制已在 `rust` 分支，远端 `github.com/xiaoqvan/XQAnimeBot`）。
 上游 TS 参考实现：`F:/Node.JS/XQAnimeBot/plugins/XQAnimeBot`（105 文件 / 20,564 行）。
 
 ---
