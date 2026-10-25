@@ -15,8 +15,10 @@
 //! 「这条种子属于哪部番、该不该投」是 `anime-core` 的事——那边能纯 `cargo test`。
 
 mod bot;
+mod callback;
 mod chain;
 mod fetch;
+mod media;
 mod poll;
 mod qb;
 mod runtime;
@@ -45,6 +47,8 @@ struct AnimePlugin {
     subscription: Option<CommandSubscription>,
     /// 后台 RSS 轮询。`drop` = 请求停止，所以 `stop` 里只要把它置空。
     poller: Option<Poller>,
+    /// 内联键盘回调订阅。`drop` 就退订，同上。
+    callback: Option<callback::CallbackSubscription>,
 }
 
 impl Plugin for AnimePlugin {
@@ -55,6 +59,7 @@ impl Plugin for AnimePlugin {
             runtime: None,
             subscription: None,
             poller: None,
+            callback: None,
         })
     }
 
@@ -72,10 +77,17 @@ impl Plugin for AnimePlugin {
         .ok_or_else(|| "订阅 updateNewMessage 失败（宿主没接事件总线？）".to_owned())?;
 
         let poller = Poller::spawn(Arc::clone(&runtime), Arc::clone(&runtime.poll_stats));
+        // 回调订阅失败不致命：没有审核按钮，其余功能照跑。
+        let callback = callback::spawn(self.host, Arc::clone(&runtime));
+        if callback.is_none() {
+            self.host
+                .log(LogLevel::Warn, "订阅 updateNewCallbackQuery 失败，审核按钮不可用");
+        }
 
         self.subscription = Some(subscription);
         self.runtime = Some(runtime);
         self.poller = Some(poller);
+        self.callback = callback;
         self.host.log(
             LogLevel::Info,
             &format!(
@@ -90,6 +102,7 @@ impl Plugin for AnimePlugin {
         // 顺序：先退订（不再接新消息），再停轮询，最后丢运行时。
         // 丢在最前面会让还在跑的回调拿到 `None`。
         self.subscription = None;
+        self.callback = None;
         self.poller = None;
         self.runtime = None;
         self.host.log(LogLevel::Info, &format!("[{TAG}] stop"));

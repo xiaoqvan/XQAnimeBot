@@ -15,6 +15,7 @@
 //! 出图**不在这里**：那是 ultralightGenImage 插件的通用能力，本 crate 只负责
 //! 把业务数据整理成模板 payload（见 [`card`]），由插件壳去调 `image.render`。
 
+pub mod bangumi;
 pub mod card;
 pub mod config;
 pub mod logger;

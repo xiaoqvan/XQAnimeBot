@@ -220,6 +220,69 @@ impl BangumiCard {
     }
 }
 
+impl BangumiCard {
+    /// 用 Bangumi API 的条目 + 章节填好卡片里**静态**的那部分。
+    ///
+    /// 播放进度（`current_ep` / `next_ep` / `aired_count`）、海报字节、字幕组和
+    /// 评分表情图仍由调用方补：这些要么依赖本地库，要么要下载图片/读资源。
+    pub fn from_subject(
+        subject: &crate::bangumi::Subject,
+        episodes: &[crate::bangumi::Episode],
+    ) -> Self {
+        let mut aired = Vec::new();
+        let mut other_episodes: Vec<(String, Vec<u32>)> = Vec::new();
+        for episode in episodes {
+            if episode.is_main() {
+                aired.push(Episode {
+                    sort: episode.number(),
+                    name: episode.display_name().to_owned(),
+                    airdate: episode.airdate.clone(),
+                });
+                continue;
+            }
+            let label = episode.type_label().to_owned();
+            let sort = episode.number();
+            match other_episodes
+                .iter_mut()
+                .find(|(existing, _)| *existing == label)
+            {
+                Some((_, sorts)) => sorts.push(sort),
+                None => other_episodes.push((label, vec![sort])),
+            }
+        }
+
+        let air_date = if subject.date.trim().is_empty() {
+            subject.infobox_text("放送开始").unwrap_or_default()
+        } else {
+            subject.date.clone()
+        };
+
+        Self {
+            id: subject.id,
+            name: subject.name.clone(),
+            name_cn: subject.name_cn.clone(),
+            poster: None,
+            air_date,
+            platform: subject.platform.clone(),
+            score: subject.rating.score,
+            rating_total: subject.rating.total,
+            rating_counts: subject.rating_counts(),
+            tags: subject.tags.iter().map(|tag| tag.name.clone()).collect(),
+            staff: subject.staff(),
+            collection: Collection {
+                wish: subject.collection.wish,
+                collect: subject.collection.collect,
+                doing: subject.collection.doing,
+                on_hold: subject.collection.on_hold,
+            },
+            episodes: aired,
+            other_episodes,
+            generated_at: chrono::Local::now().format("%Y-%m-%d %H:%M").to_string(),
+            ..Default::default()
+        }
+    }
+}
+
 /// 收藏人数缩写：`1.2K`，与 TS 版 `fmtNum` 一致。
 pub fn format_count(count: u32) -> String {
     if count >= 1000 {
@@ -328,5 +391,80 @@ mod tests {
         assert_eq!(rating_label(9.0), "神作");
         assert_eq!(rating_label(7.0), "推荐");
         assert_eq!(rating_label(0.5), "不忍直视");
+    }
+
+    #[test]
+    fn from_subject_maps_api_payload_and_splits_episodes() {
+        let subject: crate::bangumi::Subject = serde_json::from_str(
+            r#"{
+                "id": 400602,
+                "name": "葬送のフリーレン",
+                "name_cn": "葬送的芙莉莲",
+                "date": "2023-09-29",
+                "platform": "TV",
+                "tags": [{"name": "治愈", "count": 8147}],
+                "rating": {
+                    "score": 8.5,
+                    "total": 36718,
+                    "count": {"1": 130, "8": 10655, "10": 7523}
+                },
+                "collection": {
+                    "wish": 7129, "collect": 55383, "doing": 11876,
+                    "on_hold": 2060, "dropped": 776
+                },
+                "infobox": [
+                    {"key": "放送开始", "value": "2023年9月29日"},
+                    {"key": "导演", "value": "斎藤圭一郎"},
+                    {"key": "动画制作", "value": "MADHOUSE"}
+                ]
+            }"#,
+        )
+        .unwrap();
+        let episodes: Vec<crate::bangumi::Episode> = serde_json::from_str(
+            r#"[
+                {"id": 1, "type": 0, "ep": 1, "sort": 1,
+                 "name": "冒険の終わり", "name_cn": "冒险结束", "airdate": "2023-09-29"},
+                {"id": 2, "type": 0, "ep": 2, "sort": 2,
+                 "name": "別に魔法じゃなくたって…", "name_cn": "", "airdate": "2023-09-29"},
+                {"id": 3, "type": 1, "ep": 1, "sort": 1, "name": "SP1"}
+            ]"#,
+        )
+        .unwrap();
+
+        let card = BangumiCard::from_subject(&subject, &episodes);
+        assert_eq!(card.id, 400602);
+        assert_eq!(card.name, "葬送のフリーレン");
+        assert_eq!(card.name_cn, "葬送的芙莉莲");
+        assert_eq!(card.air_date, "2023-09-29");
+        assert_eq!(card.platform, "TV");
+        assert_eq!(card.score, 8.5);
+        assert_eq!(card.rating_total, 36_718);
+        assert_eq!(card.rating_counts[10], 7523);
+        assert_eq!(card.tags, vec!["治愈".to_owned()]);
+        assert_eq!(card.collection.collect, 55_383);
+        assert_eq!(card.episodes.len(), 2);
+        // 有中文名用中文名，没有则回退原名。
+        assert_eq!(card.episodes[0].name, "冒险结束");
+        assert_eq!(card.episodes[1].name, "別に魔法じゃなくたって…");
+        assert_eq!(card.other_episodes, vec![("SP".to_owned(), vec![1])]);
+        assert_eq!(card.staff[0], ("导演".to_owned(), "斎藤圭一郎".to_owned()));
+        assert_eq!(card.staff.len(), 2);
+        assert!(card.poster.is_none());
+    }
+
+    #[test]
+    fn from_subject_falls_back_to_infobox_air_date() {
+        let subject: crate::bangumi::Subject = serde_json::from_str(
+            r#"{
+                "id": 1,
+                "name": "某番",
+                "infobox": [{"key": "放送开始", "value": "2024年1月5日"}]
+            }"#,
+        )
+        .unwrap();
+        let card = BangumiCard::from_subject(&subject, &[]);
+        assert_eq!(card.air_date, "2024年1月5日");
+        assert!(card.episodes.is_empty());
+        assert!(card.other_episodes.is_empty());
     }
 }

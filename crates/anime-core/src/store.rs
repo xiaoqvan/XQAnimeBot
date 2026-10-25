@@ -35,6 +35,12 @@ use crate::models::{Anime, AnimeItem, EpisodeMeta, TorrentDoc, TorrentStatus};
 use crate::title::clean_title;
 use crate::{Error, Result};
 
+/// `pendingReviews` 里 `status` 的初始值。
+///
+/// 动作后的终态由调用方约定（插件侧用 `"approved"` / `"rejected"`）；本层只保证
+/// 「新写入一定是 pending」，不替业务定义状态机。
+pub const PENDING_REVIEW_STATUS: &str = "pending";
+
 /// 宿主 storage.mongo 服务的最小接口。
 ///
 /// 刻意**不**暴露驱动类型（Collection / Document / Cursor），只保留 JSON 进出的
@@ -329,6 +335,88 @@ pub trait Storage {
             )?;
         }
         docs.into_iter().map(|doc| decode("anime", doc)).collect()
+    }
+
+    // ── 待审核（pendingReviews）──────────────────────────────────────────
+
+    /// 写入一条待审核记录（按 `key` upsert），初始状态固定 [PENDING_REVIEW_STATUS]。
+    ///
+    /// ## 与 TS 的差异
+    ///
+    /// TS 的 `pendingReviews` 用自增 `id` 当主键（`getNextSequence`）；宿主接口没有
+    /// 原子自增（见 [Self::cache_item_add] 的说明），这里先用业务侧生成的 `key`
+    /// 字符串当主键，也不返回自增 id。等宿主补上 `findOneAndUpdate` 再换回自增；
+    /// 在那之前 `key` 才是稳定的定位方式。
+    ///
+    /// 同一个 key 重复写不会多一条：`createdAt` 只在插入时写，`payload` / `updatedAt`
+    /// 每次刷新，状态也回到 pending——用户重新排队审核时，旧的批准/驳回结论作废。
+    fn pending_review_insert(&self, key: &str, payload: &Value) -> Result<()> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(Error::Store(
+                "pending_review_insert 拒绝空 key（key 是主键）".to_owned(),
+            ));
+        }
+
+        let now = Utc::now();
+        self.update(
+            "pendingReviews",
+            json!({ "key": key }),
+            json!({
+                "$set": { "status": PENDING_REVIEW_STATUS, "payload": payload, "updatedAt": now },
+                "$setOnInsert": { "createdAt": now },
+            }),
+            true,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 改一条待审核记录的状态，并刷新 `updatedAt`。
+    ///
+    /// 状态取值由调用方约定（审核动作就是 `"approved"` / `"rejected"`）；这里只拒绝
+    /// 空串，不维护白名单——集合里可能还有别的业务写进来的历史状态。
+    ///
+    /// **返回 `Ok(())` 不代表一定命中**：宿主回的是「真正改动」的条数，状态没变化
+    /// 时也是 0，和「key 不存在」区分不开。要确认存在，先调 [Self::pending_review_get]。
+    fn pending_review_set_status(&self, key: &str, status: &str) -> Result<()> {
+        let key = key.trim();
+        let status = status.trim();
+        if key.is_empty() {
+            return Err(Error::Store(
+                "pending_review_set_status 拒绝空 key".to_owned(),
+            ));
+        }
+        if status.is_empty() {
+            return Err(Error::Store(format!(
+                "pending_review_set_status 拒绝空状态（key={key}）"
+            )));
+        }
+
+        self.update(
+            "pendingReviews",
+            json!({ "key": key }),
+            json!({ "$set": { "status": status, "updatedAt": Utc::now() } }),
+            false,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 按 key 取一条待审核记录（整份文档：key / status / payload / 时间戳）。
+    ///
+    /// 空 key 直接当「没有」返回，不去查库——空 key 不可能命中（写入时就被拒了）。
+    /// 投影掉 `_id`：业务层不该拿宿主的主键当定位方式，`key` 才是。
+    fn pending_review_get(&self, key: &str) -> Result<Option<Value>> {
+        let key = key.trim();
+        if key.is_empty() {
+            return Ok(None);
+        }
+        self.find_one(
+            "pendingReviews",
+            json!({ "key": key }),
+            Some(json!({ "_id": 0 })),
+        )
     }
 }
 
@@ -669,8 +757,7 @@ mod tests {
         };
         docs.sort_by(|left, right| {
             for (field, direction) in sort {
-                let ordering =
-                    compare_values(left.get(field.as_str()), right.get(field.as_str()));
+                let ordering = compare_values(left.get(field.as_str()), right.get(field.as_str()));
                 if ordering != Ordering::Equal {
                     return if direction.as_i64().unwrap_or(1) < 0 {
                         ordering.reverse()
@@ -1086,5 +1173,110 @@ mod tests {
         assert_eq!(loaded.names, item.names);
         assert_eq!(loaded.episode, item.episode);
         assert!(store.cache_item_get(99).unwrap().is_none());
+    }
+
+    // ── 待审核（pendingReviews）──────────────────────────────────────────
+
+    #[test]
+    fn pending_review_insert_upserts_and_stamps_times() {
+        let store = FakeStorage::default();
+        store
+            .pending_review_insert("k1", &json!({ "title": "某番", "chatId": -100 }))
+            .unwrap();
+
+        let docs = store.docs("pendingReviews");
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["key"], json!("k1"));
+        assert_eq!(docs[0]["status"], json!(PENDING_REVIEW_STATUS));
+        assert_eq!(docs[0]["payload"]["title"], json!("某番"));
+        assert_eq!(docs[0]["payload"]["chatId"], json!(-100));
+        let created_at = docs[0]["createdAt"].clone();
+        assert!(
+            created_at.as_str().is_some(),
+            "createdAt 由 chrono 序列化成 RFC3339 字符串"
+        );
+        assert!(docs[0]["updatedAt"].as_str().is_some());
+
+        // 同一个 key 再写一次：还是一条，createdAt 保留、payload 刷新、状态回到 pending。
+        store
+            .pending_review_insert("k1", &json!({ "title": "新标题" }))
+            .unwrap();
+        let docs = store.docs("pendingReviews");
+        assert_eq!(docs.len(), 1, "同 key 必须 upsert，不能多一条");
+        assert_eq!(docs[0]["payload"]["title"], json!("新标题"));
+        assert_eq!(docs[0]["createdAt"], created_at, "createdAt 只写一次");
+        assert_eq!(docs[0]["status"], json!(PENDING_REVIEW_STATUS));
+    }
+
+    #[test]
+    fn pending_review_set_status_keeps_payload() {
+        let store = FakeStorage::default();
+        store
+            .pending_review_insert("k2", &json!({ "title": "某番" }))
+            .unwrap();
+
+        store.pending_review_set_status("k2", "approved").unwrap();
+
+        let docs = store.docs("pendingReviews");
+        assert_eq!(docs.len(), 1);
+        assert_eq!(docs[0]["status"], json!("approved"));
+        assert_eq!(
+            docs[0]["payload"]["title"],
+            json!("某番"),
+            "payload 不能被覆盖"
+        );
+        assert!(docs[0]["updatedAt"].as_str().is_some());
+
+        // 不存在的 key 不算错误：调用方先 get 再 set，0 条命中只说明记录没了。
+        store.pending_review_set_status("nope", "rejected").unwrap();
+    }
+
+    #[test]
+    fn pending_review_get_returns_document_and_never_leaks_id() {
+        let store = FakeStorage::default();
+        store
+            .pending_review_insert("k3", &json!({ "title": "某番" }))
+            .unwrap();
+
+        let doc = store
+            .pending_review_get("k3")
+            .unwrap()
+            .expect("应能取到待审核记录");
+        assert_eq!(doc["key"], json!("k3"));
+        assert_eq!(doc["status"], json!(PENDING_REVIEW_STATUS));
+        assert_eq!(doc["payload"]["title"], json!("某番"));
+        assert!(doc.get("_id").is_none(), "_id 不该漏给业务层");
+
+        let call = store.last_find();
+        assert_eq!(call.collection, "pendingReviews");
+        assert_eq!(call.filter, json!({ "key": "k3" }));
+        assert_eq!(call.projection, Some(json!({ "_id": 0 })));
+
+        assert!(store.pending_review_get("missing").unwrap().is_none());
+        assert!(store.pending_review_get("   ").unwrap().is_none());
+        assert_eq!(store.finds.borrow().len(), 2, "空 key 不该去查库");
+    }
+
+    #[test]
+    fn pending_review_rejects_blank_key_and_status() {
+        let store = FakeStorage::default();
+        let payload = json!({ "title": "某番" });
+
+        assert!(matches!(
+            store.pending_review_insert("  ", &payload),
+            Err(Error::Store(_))
+        ));
+        assert!(
+            store.pending_review_insert("k4", &payload).is_ok(),
+            "有 key 才允许写"
+        );
+        assert!(matches!(
+            store.pending_review_set_status("k4", "   "),
+            Err(Error::Store(_))
+        ));
+        assert!(matches!(
+            store.pending_review_set_status("  ", "approved"),
+            Err(Error::Store(_))
+        ));
     }
 }

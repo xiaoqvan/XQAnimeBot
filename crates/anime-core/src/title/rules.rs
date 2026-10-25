@@ -459,12 +459,10 @@ fn cut_at_episode_bracket(title: &str) -> Vec<String> {
 fn lolihouse(title: &str) -> Vec<String> {
     static PREFIX: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"^\[LoliHouse\]\s*").expect("内置正则必须合法"));
-    static CUT: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\s*-\s*\d+|\s*\[\d+\]").expect("内置正则必须合法")
-    });
-    static MARKS: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"\[[^\]]*\]|\([^)]*\)").expect("内置正则必须合法")
-    });
+    static CUT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\s*-\s*\d+|\s*\[\d+\]").expect("内置正则必须合法"));
+    static MARKS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\[[^\]]*\]|\([^)]*\)").expect("内置正则必须合法"));
 
     let t = PREFIX.replace(title, "").to_string();
     let names: Vec<String> = split_slash(&t)
@@ -489,9 +487,8 @@ fn lolihouse(title: &str) -> Vec<String> {
 /// 也正因为这个名字被单独取走、又以 `（日文名）` 的形式参与
 /// [`sort_names_by_priority`] 的检索用判定，日文名才会排在中文名前面。
 fn ming_y_sub(title: &str) -> Vec<String> {
-    static PREFIX: LazyLock<regex::Regex> = LazyLock::new(|| {
-        regex::Regex::new(r"^\[MingY[^\[\]]*\]\s*").expect("内置正则必须合法")
-    });
+    static PREFIX: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"^\[MingY[^\[\]]*\]\s*").expect("内置正则必须合法"));
     static PAREN: LazyLock<regex::Regex> =
         LazyLock::new(|| regex::Regex::new(r"（([^）]+)）").expect("内置正则必须合法"));
     static PAREN_ANY: LazyLock<regex::Regex> =

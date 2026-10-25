@@ -35,6 +35,16 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_about,
     },
     CommandSpec {
+        name: "animeblacklist",
+        summary: "查看 RSS 黑名单关键词",
+        handler: cmd_blacklist,
+    },
+    CommandSpec {
+        name: "canceltask",
+        summary: "取消下载（当前没有队列，仅报告状态）",
+        handler: cmd_canceltask,
+    },
+    CommandSpec {
         name: "help",
         summary: "看看我能做什么",
         handler: cmd_help,
@@ -58,6 +68,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "searchanime",
         summary: "按关键词搜库里的番剧",
         handler: cmd_search,
+    },
+    CommandSpec {
+        name: "setanimer18",
+        summary: "设置番剧的 r18 标记：/setanimer18 <id> <true|false>",
+        handler: cmd_set_r18,
     },
     CommandSpec {
         name: "status",
@@ -166,6 +181,60 @@ fn cmd_search(runtime: &Arc<Runtime>, command: &Command) {
     });
 }
 
+/// `/animeblacklist`：只读展示。增删改需要写 config 集合，等审核链路一起做。
+fn cmd_blacklist(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let text = match runtime.store.config_list("animeBlacklist") {
+        Ok(list) if list.is_empty() => "黑名单为空".to_owned(),
+        Ok(list) => format!("黑名单 {} 条：\n{}", list.len(), list.join("、")),
+        Err(error) => format!("读取黑名单失败：{error}"),
+    };
+    runtime.td.reply_text(target, text);
+}
+
+/// `/canceltask`：目前没有任务队列（下载是 detached 线程），只能报告在跑的条数。
+/// 真正的取消要等 checkpoint/队列落地——那时才可能「取消某一条」。
+fn cmd_canceltask(runtime: &Arc<Runtime>, command: &Command) {
+    let active = crate::chain::active();
+    let text = if active == 0 {
+        "当前没有下载中的任务".to_owned()
+    } else {
+        format!("有 {active} 条正在下载；暂不支持单独取消（等任务队列落地）")
+    };
+    runtime
+        .td
+        .reply_text(Target::new(command.chat_id, command.message_id), text);
+}
+
+/// `/setanimer18 <id> <true|false>`：只改标记，不动其它字段。
+fn cmd_set_r18(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let mut parts = command.args.split_whitespace();
+    let id = parts.next().and_then(|raw| raw.parse::<i64>().ok());
+    let flag = parts.next().and_then(|raw| match raw.to_ascii_lowercase().as_str() {
+        "true" | "1" | "on" => Some(true),
+        "false" | "0" | "off" => Some(false),
+        _ => None,
+    });
+    let (Some(id), Some(flag)) = (id, flag) else {
+        runtime.td.reply_text(
+            target,
+            "用法：/setanimer18 <番剧 id> <true|false>",
+        );
+        return;
+    };
+    let update = serde_json::json!({
+        "$set": { "r18": flag, "updatedAt": chrono::Utc::now() }
+    });
+    let text = match runtime
+        .store
+        .update("anime", serde_json::json!({ "id": id }), update, false, false)
+    {
+        Ok(_) => format!("已设置 r18={flag}（id {id}）"),
+        Err(error) => format!("更新失败：{error}"),
+    };
+    runtime.td.reply_text(target, text);
+}
 fn cmd_ping(runtime: &Arc<Runtime>, command: &Command) {
     // 这里**不报延迟**：TDLib 的投递是异步的，插件侧拿不到真实往返时间，
     // 硬编一个数字比不报更误导。回答「我还活着、活了多久」就够。

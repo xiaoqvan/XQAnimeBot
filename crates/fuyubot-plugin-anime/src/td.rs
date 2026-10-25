@@ -66,6 +66,17 @@ impl Td {
         self.send(target, SendMessageParams::media(media))
     }
 
+    /// 发一张本地图片（番剧卡片走这里）。
+    pub fn send_photo(
+        &self,
+        target: Target,
+        path: impl Into<String>,
+        caption: impl Into<String>,
+    ) -> bool {
+        let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
+        self.send(target, SendMessageParams::media(media))
+    }
+
     /// 底层出口：填好 `reply_to` 再交给 simplify。
     fn send(&self, target: Target, mut params: SendMessageParams) -> bool {
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
