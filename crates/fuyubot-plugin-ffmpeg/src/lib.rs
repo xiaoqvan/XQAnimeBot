@@ -8,6 +8,7 @@
 //! | `plan` | 给输入 + 意图，返回**选好的方案**（编码器 + 完整参数 + 为什么选它） |
 //! | `transcode` | 真跑：起任务立刻返回 id，进度走事件总线，也可以 `job_status` 轮询 |
 //! | `extract_subtitle` | 把内嵌字幕抽成外挂 `.ass`，给「烧录字幕」用 |
+//! | `split` | 按大小 `-c copy` 分段（TG 2GB 上限） |
 //!
 //! 「高度优化」落在三件事上：
 //!
@@ -42,6 +43,8 @@ const SERVICE: &str = "media.ffmpeg";
 const PLUGIN: &str = "ffmpeg";
 /// 抽字幕是同步小动作，但坏文件可能让 ffmpeg 卡住，给个上限。
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
+/// 分段是 `-c copy`，正常几十秒；给足余量避免大文件误判超时。
+const SPLIT_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// 启动配置：
 ///
@@ -72,6 +75,7 @@ impl Plugin for FfmpegPlugin {
                 ("plan", svc_plan as Handler),
                 ("transcode", svc_transcode as Handler),
                 ("extract_subtitle", svc_extract_subtitle as Handler),
+    ("split", svc_split as Handler),
                 ("job_status", svc_job_status as Handler),
                 ("job_list", svc_job_list as Handler),
                 ("job_cancel", svc_job_cancel as Handler),
@@ -373,6 +377,83 @@ unsafe extern "C" fn svc_extract_subtitle(
             "title": stream.title,
             "bytes": bytes,
         }))
+    })();
+    reply_result(result)
+}
+
+/// 按大小分段（TG 上传上限）。
+///
+/// 入参 `{ input, out_dir, max_bytes, duration_ms, min_segment_sec?, prefix? }`：
+/// 用 `-c copy` 切，不重新编码（秒级完成）。返回 `{ parts: [...], segment_sec }`。
+/// 调用方要自己检查每段是否仍超限：关键帧对齐会让某段略大于平均值。
+unsafe extern "C" fn svc_split(_ctx: *mut c_void, input: *const c_char) -> *const c_char {
+    let result = (|| -> Result<Value, String> {
+        let parsed = parse(input)?;
+        let input_path = require_str(&parsed, "input")?.to_owned();
+        let out_dir = require_str(&parsed, "out_dir")?.to_owned();
+        let max_bytes = opt_u64(&parsed, "max_bytes").unwrap_or(1_900_000_000);
+        let duration_ms = opt_u64(&parsed, "duration_ms").unwrap_or(0);
+        let min_sec = opt_u64(&parsed, "min_segment_sec").unwrap_or(10);
+        let size = std::fs::metadata(&input_path)
+            .map_err(|err| format!("读不到输入文件（{input_path}）：{err}"))?
+            .len();
+        let segment_sec = plan::segment_seconds(size, duration_ms, max_bytes, min_sec);
+
+        std::fs::create_dir_all(&out_dir)
+            .map_err(|err| format!("创建分段目录失败（{out_dir}）：{err}"))?;
+        let stem = std::path::Path::new(&input_path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("video");
+        // 前缀只留字母数字和 -_：文件名会被拼进 ffmpeg 参数。
+        let safe: String = stem
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+            .collect();
+        let prefix = format!("{safe}-part-");
+        let pattern = std::path::Path::new(&out_dir).join(format!("{prefix}%03d.mp4"));
+        let pattern_text = pattern.to_string_lossy().replace('\\', "/");
+
+        let (ffmpeg, _ffprobe) = with_caps(|caps| Ok((caps.ffmpeg.clone(), caps.ffprobe.clone())))?;
+        let segment_text = segment_sec.to_string();
+        let args = [
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            input_path.as_str(),
+            "-c",
+            "copy",
+            "-map",
+            "0",
+            "-f",
+            "segment",
+            "-segment_time",
+            segment_text.as_str(),
+            "-reset_timestamps",
+            "1",
+            pattern_text.as_str(),
+        ];
+        capability::run_ffmpeg(&ffmpeg, &args, SPLIT_TIMEOUT)?;
+
+        let mut parts: Vec<String> = std::fs::read_dir(&out_dir)
+            .map_err(|err| format!("读分段目录失败（{out_dir}）：{err}"))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.starts_with(&prefix))
+            })
+            .map(|entry| entry.path().to_string_lossy().replace('\\', "/"))
+            .collect();
+        parts.sort();
+        if parts.is_empty() {
+            return Err("未生成任何分段文件".to_owned());
+        }
+        Ok(json!({ "parts": parts, "segment_sec": segment_sec }))
     })();
     reply_result(result)
 }

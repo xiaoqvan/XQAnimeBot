@@ -150,6 +150,8 @@ pub struct MediaConfig {
     pub delete_source_after_remux: bool,
     /// 单个视频最长处理秒数。
     pub timeout_secs: u64,
+    /// 单条消息能发的最大字节数；超过就按大小分段（TG 约 2GB）。
+    pub max_upload_bytes: u64,
 }
 
 impl Default for MediaConfig {
@@ -160,6 +162,7 @@ impl Default for MediaConfig {
             work_dir: String::new(),
             delete_source_after_remux: true,
             timeout_secs: 60 * 60 * 2,
+            max_upload_bytes: 1_950_000_000,
         }
     }
 }

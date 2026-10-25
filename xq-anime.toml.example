@@ -68,6 +68,8 @@ work_dir = ""
 delete_source_after_remux = true
 # 单个视频最长处理秒数
 timeout_secs = 7200
+# 单条消息能发的最大字节数；超过就按大小分段（TG 约 2GB）
+max_upload_bytes = 1950000000
 
 [ai]
 enabled = false

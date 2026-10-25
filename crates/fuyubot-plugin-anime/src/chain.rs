@@ -82,6 +82,57 @@ pub fn active() -> usize {
         .len()
 }
 
+/// 超过上传上限就分段，否则原样返回单元素。
+///
+/// 分段失败只是「不分段」：宁可发一个可能超限的文件，也别什么都不发。
+fn split_for_upload(runtime: &Runtime, path: &Path) -> Vec<PathBuf> {
+    let max = runtime.config.media.max_upload_bytes;
+    let size = std::fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    if max == 0 || size <= max {
+        return vec![path.to_path_buf()];
+    }
+    let media = Media::new(runtime.host);
+    let duration_ms = media
+        .probe(path)
+        .ok()
+        .and_then(|info| info.get("duration_ms").and_then(Value::as_u64))
+        .unwrap_or(0);
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("video");
+    let out_dir = work_dir(&runtime.config.media.work_dir).join(format!("{stem}-parts"));
+    log!(
+        &runtime.logger,
+        Info,
+        "文件 {} MB 超过上限，开始分段：{}",
+        size / 1024 / 1024,
+        path.display()
+    );
+    match media.split(path, &out_dir, max, duration_ms) {
+        Ok(parts) => {
+            log!(&runtime.logger, Info, "已切成 {} 段", parts.len());
+            parts
+        }
+        Err(error) => {
+            log!(&runtime.logger, Warn, "分段失败，按原文件发送：{error}");
+            vec![path.to_path_buf()]
+        }
+    }
+}
+
+/// 发完就删分段文件和目录——它们只是上传用的中间产物。
+fn cleanup_parts(runtime: &Runtime, parts: &[PathBuf]) {
+    for part in parts {
+        if let Err(error) = std::fs::remove_file(part) {
+            log!(&runtime.logger, Warn, "删除分段失败（{}）：{error}", part.display());
+        }
+    }
+    if let Some(dir) = parts.first().and_then(|part| part.parent()) {
+        let _ = std::fs::remove_dir(dir);
+    }
+}
+
 /// 检查点主键：清理后的标题。同一条种子重复入队时只会更新同一条记录。
 pub fn checkpoint_key(item: &AnimeItem) -> String {
     anime_core::title::clean_title(&item.title)
@@ -163,14 +214,45 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
     let (send_path, transcoded) = prepare_video(runtime, &video);
 
     let _ = runtime.store.checkpoint_stage(&key, "发送");
-    // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）。
+    // 超过上传上限就按大小分段（TG 约 2GB）。分段是流复制，秒级。
+    let parts = split_for_upload(runtime, &send_path);
+    let total = parts.len();
     let target = Target::new(config.telegram.anime_channel, 0)
         .with_topic(config.telegram.anime_group_thread_id);
-    let mut message_id = runtime
-        .td
-        .send_video_wait(target, send_path.display().to_string(), caption(item));
+    let mut message_id = None;
+    let mut send_failed = false;
+    for (index, part) in parts.iter().enumerate() {
+        let text = if total > 1 {
+            format!("{}（{}/{}）", caption(item), index + 1, total)
+        } else {
+            caption(item)
+        };
+        // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）。
+        let sent = runtime
+            .td
+            .send_video_wait(target, part.display().to_string(), text);
+        if sent.is_none() {
+            send_failed = true;
+            log!(
+                &runtime.logger,
+                Warn,
+                "发送失败：{}（第 {}/{} 段）",
+                part.display(),
+                index + 1,
+                total
+            );
+            continue;
+        }
+        // 导航只记第一段：后续分段是同一条视频的续集，重复记会让列表翻倍。
+        if index == 0 {
+            message_id = sent;
+        }
+    }
+    if total > 1 {
+        cleanup_parts(runtime, &parts);
+    }
     // 转码产物发不出去时再试原文件：这一步也属于「尽力而为」的一环。
-    if message_id.is_none() && transcoded {
+    if send_failed && total == 1 && transcoded && message_id.is_none() {
         log!(
             &runtime.logger,
             Warn,

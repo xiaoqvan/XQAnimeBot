@@ -118,6 +118,45 @@ impl Media {
             })
     }
 
+    /// 按大小分段。返回各段路径（顺序即播放顺序）。
+    ///
+    /// `duration_ms` 只用来估算分段时长；传 0 会退化成最短 10 秒一段。
+    pub fn split(
+        &self,
+        input: &Path,
+        out_dir: &Path,
+        max_bytes: u64,
+        duration_ms: u64,
+    ) -> Result<Vec<PathBuf>> {
+        let reply = self.call(
+            "split",
+            json!({
+                "input": path_text(input),
+                "out_dir": path_text(out_dir),
+                "max_bytes": max_bytes,
+                "duration_ms": duration_ms,
+            }),
+        )?;
+        let parts = reply
+            .get("parts")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if parts.is_empty() {
+            return Err(Error::Service {
+                service: SERVICE.to_owned(),
+                message: "分段没有产出任何文件".to_owned(),
+            });
+        }
+        Ok(parts)
+    }
+
     /// 查任务状态。返回 `job` 对象，`state` 取值
     /// `running` / `done` / `failed` / `canceled`。
     pub fn job_status(&self, id: &str) -> Result<Value> {

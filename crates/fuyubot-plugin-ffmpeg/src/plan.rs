@@ -139,6 +139,24 @@ pub fn choose_subtitle_stream(streams: &[SubtitleStream]) -> Option<&SubtitleStr
 /// - **单引号** 会把后面的整段路径吞掉 → 落成「关引号 + 三个反斜杠 + 引号 +
 ///   重新开引号」。三个反斜杠是因为第一层解析吃掉两个、留下 `\'`，
 ///   第二层再把它还原成 `'`；少一个就会得到一个被悄悄丢掉的引号。
+/// 按大小上限算分段时长（秒）。
+///
+/// 对齐 TS `splitVideoByMaxSize`：按平均码率估算，留 2% 余量，最少 10 秒。
+/// 真正切的时候可能因为关键帧对齐而略超，调用方要检查每段大小。
+pub fn segment_seconds(size_bytes: u64, duration_ms: u64, max_bytes: u64, min_sec: u64) -> u64 {
+    if duration_ms == 0 || size_bytes == 0 || max_bytes == 0 {
+        return min_sec.max(1);
+    }
+    let duration_sec = (duration_ms as f64 / 1000.0).max(1.0);
+    let avg_bytes_per_sec = size_bytes as f64 / duration_sec;
+    if avg_bytes_per_sec <= 0.0 {
+        return min_sec.max(1);
+    }
+    let budget = (max_bytes as f64) * 0.98;
+    let seconds = (budget / avg_bytes_per_sec).floor() as u64;
+    seconds.max(min_sec.max(1))
+}
+
 pub fn escape_subtitles_path(path: &str) -> String {
     let mut escaped = String::with_capacity(path.len() + 8);
     for ch in path.chars() {
@@ -435,6 +453,20 @@ mod tests {
         Capabilities::from_encoders_for_test(encoders)
     }
 
+    #[test]
+    fn segment_seconds_respects_size_budget() {
+        // 2GB / 24 分钟 ≈ 1.39MB/s；1.9GB 的 98% 预算 ≈ 1340 秒。
+        let seconds = segment_seconds(2_000_000_000, 24 * 60 * 1000, 1_900_000_000, 10);
+        assert!((1200..=1400).contains(&seconds), "{seconds}");
+    }
+
+    #[test]
+    fn segment_seconds_falls_back_to_minimum() {
+        assert_eq!(segment_seconds(100, 0, 1000, 10), 10);
+        assert_eq!(segment_seconds(0, 1000, 1000, 10), 10);
+        // 预算比一分钟的码率还小 → 退到最小时长。
+        assert_eq!(segment_seconds(1_000_000, 1_000_000, 1_000, 10), 10);
+    }
     #[test]
     fn compatible_input_is_remuxed_without_reencoding() {
         let mut caps = caps_with(&["libx264", "libx265"]);
