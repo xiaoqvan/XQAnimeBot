@@ -9,7 +9,7 @@
 
 use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
-use fuyubot_simplify::{SendMessageParams, Simplify, Text};
+use fuyubot_simplify::{InputFile, Media, SendMessageParams, Simplify, Text};
 
 /// 一条消息的定位：发给哪个会话、回复哪条。
 #[derive(Debug, Clone, Copy)]
@@ -43,6 +43,27 @@ impl Td {
     /// 发纯文本。失败只记日志——一条回复发不出去不该带崩整条处理链。
     pub fn reply_text(&self, target: Target, text: impl Into<String>) -> bool {
         self.send(target, SendMessageParams::text(Text::plain(text)))
+    }
+
+    /// 发一个本地视频文件（带纯文本说明）。
+    ///
+    /// 尺寸/时长填 0：TDLib 会自己读文件头，插件侧再探一遍纯属浪费。
+    pub fn send_video(
+        &self,
+        target: Target,
+        path: impl Into<String>,
+        caption: impl Into<String>,
+    ) -> bool {
+        let media = Media::Video {
+            file: InputFile::local(path),
+            caption: Some(Text::plain(caption)),
+            duration: 0,
+            width: 0,
+            height: 0,
+            supports_streaming: true,
+            has_spoiler: false,
+        };
+        self.send(target, SendMessageParams::media(media))
     }
 
     /// 底层出口：填好 `reply_to` 再交给 simplify。

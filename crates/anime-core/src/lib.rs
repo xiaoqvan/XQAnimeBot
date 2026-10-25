@@ -45,6 +45,11 @@ pub enum Error {
     Command { program: String, message: String },
     #[error("配置无效：{0}")]
     Config(String),
+    /// 跨插件服务调用失败（qBittorrent / ffmpeg / 出图）。
+    ///
+    /// 单独一个变体是为了让日志一眼看出「是宿主里的服务坏了」而不是业务逻辑错。
+    #[error("服务调用失败（{service}）：{message}")]
+    Service { service: String, message: String },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

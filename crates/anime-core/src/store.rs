@@ -362,7 +362,7 @@ fn extjson_date_string(value: &Value) -> Option<String> {
 /// 只认 xt=urn:btih: 这个参数，不搜整串文本：dn 里也可能出现 urn:btih: 字样，
 /// 按参数解析才不会把文件名当哈希。前缀和哈希都做大小写折叠；长度不是 40 或含非 hex
 /// 字符时返回 None（base32 的 btih 不在当前数据里出现，不猜）。
-fn btih_from_magnet(magnet: &str) -> Option<String> {
+pub fn btih_from_magnet(magnet: &str) -> Option<String> {
     const PREFIX: &str = "urn:btih:";
 
     let query = magnet.split_once('?').map_or(magnet, |(_, query)| query);

@@ -15,8 +15,10 @@
 //! 「这条种子属于哪部番、该不该投」是 `anime-core` 的事——那边能纯 `cargo test`。
 
 mod bot;
+mod chain;
 mod fetch;
 mod poll;
+mod qb;
 mod runtime;
 mod store;
 mod td;

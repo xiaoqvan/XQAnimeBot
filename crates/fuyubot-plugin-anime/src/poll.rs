@@ -30,6 +30,7 @@ use anime_core::matching::{
 use anime_core::store::Storage;
 use anime_core::title;
 
+use crate::chain;
 use crate::fetch;
 use crate::runtime::Runtime;
 
@@ -247,7 +248,7 @@ pub struct Round {
 ///
 /// 这一层**不做业务决定**：命中之后要下载还是发审核，是 `anime` 主链的事。
 /// 这里只把「这条种子属于谁」判出来，让日志能回答「为什么没发」。
-fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
+fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     let logger = &runtime.logger;
     let summary = fetch::run(&runtime.config.rss, logger);
     let failures = summary
@@ -317,6 +318,8 @@ fn run_round(runtime: &Runtime, seen: &mut Seen) -> Round {
                 if outcome.is_ready() {
                     ready += 1;
                     log!(logger, Info, "可投放：{}｜{}", hit.matched_name, outcome.describe());
+                    // 下载可能要几十分钟：交给 chain 的限流线程，轮询继续跑。
+                    chain::spawn(Arc::clone(runtime), item.clone(), hit.anime_id);
                 } else {
                     log!(
                         logger,
