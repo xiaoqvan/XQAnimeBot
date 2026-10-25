@@ -10,7 +10,6 @@ use std::path::PathBuf;
 
 use anime_core::card::bangumi::BangumiCard;
 use anime_core::{Error, Result};
-use fuyubot_abi::HostApi;
 use fuyubot_service::call_service;
 use serde_json::json;
 
@@ -67,14 +66,6 @@ pub fn render(runtime: &Runtime, card: &BangumiCard) -> Result<PathBuf> {
 pub fn with_emoji(mut card: BangumiCard) -> BangumiCard {
     card.rating_emoji_idx = emoji_index(card.score);
     card.rating_emoji = Some(RATING_EMOJI.to_vec());
-    card
-}
-
-/// 给卡片补上「现在放到第几集」这类动态信息。
-pub fn with_progress(mut card: BangumiCard, current: u32, next: u32) -> BangumiCard {
-    card.current_ep = current;
-    card.next_ep = next;
-    card.aired_count = card.episodes.iter().filter(|ep| ep.sort <= current).count();
     card
 }
 

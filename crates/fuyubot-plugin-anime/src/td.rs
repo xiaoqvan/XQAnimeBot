@@ -11,17 +11,31 @@ use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
 use fuyubot_simplify::{InputFile, Media, ReplyButton, SendMessageParams, Simplify, Text};
 
-/// 一条消息的定位：发给哪个会话、回复哪条。
+/// 一条消息的定位：发给哪个会话、回复哪条、哪个话题。
 #[derive(Debug, Clone, Copy)]
 pub struct Target {
     pub chat_id: i64,
     /// 回复的消息 id；`0` 表示不回复（新发一条）。
     pub reply_to: i64,
+    /// 话题/楼层（TDLib 的 `topic_id`）；`None` = 主楼。
+    pub topic_id: Option<i64>,
 }
 
 impl Target {
     pub fn new(chat_id: i64, reply_to: i64) -> Self {
-        Self { chat_id, reply_to }
+        Self {
+            chat_id,
+            reply_to,
+            topic_id: None,
+        }
+    }
+
+    /// 指定话题（论坛式群组/TDLib 的 topic）。
+    pub fn with_topic(mut self, topic_id: i64) -> Self {
+        if topic_id != 0 {
+            self.topic_id = Some(topic_id);
+        }
+        self
     }
 }
 
@@ -43,27 +57,6 @@ impl Td {
     /// 发纯文本。失败只记日志——一条回复发不出去不该带崩整条处理链。
     pub fn reply_text(&self, target: Target, text: impl Into<String>) -> bool {
         self.send(target, SendMessageParams::text(Text::plain(text)))
-    }
-
-    /// 发一个本地视频文件（带纯文本说明）。
-    ///
-    /// 尺寸/时长填 0：TDLib 会自己读文件头，插件侧再探一遍纯属浪费。
-    pub fn send_video(
-        &self,
-        target: Target,
-        path: impl Into<String>,
-        caption: impl Into<String>,
-    ) -> bool {
-        let media = Media::Video {
-            file: InputFile::local(path),
-            caption: Some(Text::plain(caption)),
-            duration: 0,
-            width: 0,
-            height: 0,
-            supports_streaming: true,
-            has_spoiler: false,
-        };
-        self.send(target, SendMessageParams::media(media))
     }
 
     /// 发一张本地图片（番剧卡片走这里）。
@@ -89,9 +82,70 @@ impl Td {
         self.send(target, params)
     }
 
+    /// 发图并**等到**最终消息，返回 message_id。仅供后台线程调用（会阻塞）。
+    pub fn send_photo_wait(
+        &self,
+        target: Target,
+        path: impl Into<String>,
+        caption: impl Into<String>,
+    ) -> Option<i64> {
+        let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
+        let mut params = SendMessageParams::media(media);
+        params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
+        params.topic_id = target.topic_id;
+        self.wait_message_id(target.chat_id, &params)
+    }
+
+    /// 发视频并等到最终消息，返回 message_id（导航列表要用）。
+    pub fn send_video_wait(
+        &self,
+        target: Target,
+        path: impl Into<String>,
+        caption: impl Into<String>,
+    ) -> Option<i64> {
+        let media = Media::Video {
+            file: InputFile::local(path),
+            caption: Some(Text::plain(caption)),
+            duration: 0,
+            width: 0,
+            height: 0,
+            supports_streaming: true,
+            has_spoiler: false,
+        };
+        let mut params = SendMessageParams::media(media);
+        params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
+        params.topic_id = target.topic_id;
+        self.wait_message_id(target.chat_id, &params)
+    }
+
+    /// 发送并解析最终消息 id；失败只记日志（调用方据此降级）。
+    fn wait_message_id(&self, chat_id: i64, params: &SendMessageParams) -> Option<i64> {
+        match self.api.send_message_wait_success(chat_id, params) {
+            Ok(confirmation) if confirmation.confirmed => confirmation
+                .update
+                .pointer("/message/id")
+                .and_then(serde_json::Value::as_i64),
+            Ok(_) => {
+                self.host.log(
+                    LogLevel::Warn,
+                    &format!("发送未确认（chat {chat_id}）：等不到 messageSendSucceeded"),
+                );
+                None
+            }
+            Err(error) => {
+                self.host.log(
+                    LogLevel::Warn,
+                    &format!("发送失败（chat {chat_id}）：{error}"),
+                );
+                None
+            }
+        }
+    }
+
     /// 底层出口：填好 `reply_to` 再交给 simplify。
     fn send(&self, target: Target, mut params: SendMessageParams) -> bool {
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
+        params.topic_id = target.topic_id;
         match self.api.send_message(target.chat_id, &params) {
             Ok(_request) => true,
             Err(error) => {

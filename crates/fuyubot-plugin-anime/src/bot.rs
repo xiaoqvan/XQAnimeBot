@@ -136,17 +136,28 @@ fn cmd_addanime(runtime: &Arc<Runtime>, command: &Command) {
     };
     let runtime = Arc::clone(runtime);
     std::thread::spawn(move || {
-        let result = import_anime(&runtime, id);
-        let text = match result {
-            Ok((name, total)) => format!("已导入「{name}」（{id}），章节 {total} 条"),
+        let text = match import_and_publish(&runtime, id) {
+            Ok((name, total, nav)) => match nav {
+                Some(nav) => format!(
+                    "已导入「{name}」（{id}），章节 {total} 条；导航消息 {}（chat {}）",
+                    nav.message_id, nav.chat_id
+                ),
+                None => format!("已导入「{name}」（{id}），章节 {total} 条；导航频道未配置，跳过发卡"),
+            },
             Err(error) => format!("导入失败：{error}"),
         };
         runtime.td.reply_text(target, text);
     });
 }
 
-/// 拉 Bangumi 条目与章节，写入 anime / episodes_meta。返回（展示名, 章节数）。
-fn import_anime(runtime: &Runtime, id: u64) -> anime_core::Result<(String, usize)> {
+/// 拉 Bangumi 条目与章节写库，然后发/复用导航消息。
+///
+/// 返回（展示名, 章节数, 导航消息）。导航频道没配时返回 `None`——这不是失败，
+/// 只是这台机器上没开导航。
+fn import_and_publish(
+    runtime: &Runtime,
+    id: u64,
+) -> anime_core::Result<(String, usize, Option<crate::nav::NavRef>)> {
     let client = BgmClient::new(runtime.config.bangumi.clone());
     let subject = client.subject(id)?;
     let episodes = client.episodes(id)?;
@@ -154,7 +165,22 @@ fn import_anime(runtime: &Runtime, id: u64) -> anime_core::Result<(String, usize
     runtime.store.save_anime(&anime)?;
     let metas: Vec<_> = episodes.iter().map(|episode| episode.to_meta(id)).collect();
     let written = runtime.store.upsert_episodes(id as i64, &metas)?;
-    Ok((anime.display_name().to_owned(), written))
+
+    // 已经有导航消息就复用：重复 /addanime 不该在频道里刷第二张卡。
+    let nav = match runtime.store.anime_by_id(subject.id as i64)? {
+        Some(anime) => anime.nav_message,
+        None => None,
+    }
+    .map(|nav| crate::nav::NavRef {
+        chat_id: nav.chat_id,
+        message_id: nav.message_id,
+    });
+    let nav = match nav {
+        Some(nav) => Some(nav),
+        None if runtime.config.telegram.nav_channel == 0 => None,
+        None => Some(crate::nav::publish(runtime, &subject, &episodes)?),
+    };
+    Ok((anime.display_name().to_owned(), written, nav))
 }
 /// `/testbgimg <subject_id>`：拉 Bangumi 条目 → 出图 → 发回当前会话。
 /// 网络 + 渲染都是慢操作，放线程里跑。

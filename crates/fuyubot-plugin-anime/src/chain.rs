@@ -141,27 +141,35 @@ fn run(runtime: &Runtime, item: &AnimeItem, anime_id: i64, hash: &str) -> Result
     // 转码是**尽力而为**：任何一步失败都回退到原文件，不让「发不出去」成为结果。
     let (send_path, transcoded) = prepare_video(runtime, &video);
 
-    let target = Target::new(config.telegram.anime_channel, 0);
-    let mut sent = runtime
+    // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）。
+    let target = Target::new(config.telegram.anime_channel, 0)
+        .with_topic(config.telegram.anime_group_thread_id);
+    let mut message_id = runtime
         .td
-        .send_video(target, send_path.display().to_string(), caption(item));
+        .send_video_wait(target, send_path.display().to_string(), caption(item));
     // 转码产物发不出去时再试原文件：这一步也属于「尽力而为」的一环。
-    if !sent && transcoded {
+    if message_id.is_none() && transcoded {
         log!(
             &runtime.logger,
             Warn,
             "发送转码产物失败，回退原文件：{}",
             send_path.display()
         );
-        sent = runtime
+        message_id = runtime
             .td
-            .send_video(target, video.display().to_string(), caption(item));
+            .send_video_wait(target, video.display().to_string(), caption(item));
     }
-    if !sent {
+    let Some(message_id) = message_id else {
         return Err(Error::Service {
             service: "td".to_owned(),
-            message: "发视频失败".to_owned(),
+            message: "发视频失败或未确认".to_owned(),
         });
+    };
+    if anime_id > 0
+        && let Err(error) =
+            crate::nav::push_episode(runtime, anime_id, config.telegram.anime_channel, message_id)
+    {
+        log!(&runtime.logger, Warn, "记录 navVideoMessage 失败：{error}");
     }
     // 发送成功后再删源：发送失败时原始文件还要留着重试。
     if transcoded && config.media.delete_source_after_remux {

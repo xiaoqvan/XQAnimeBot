@@ -337,6 +337,12 @@ pub trait Storage {
         docs.into_iter().map(|doc| decode("anime", doc)).collect()
     }
 
+    /// 按 Bangumi id 取一部番剧。没命中返回 `Ok(None)`。
+    fn anime_by_id(&self, id: i64) -> Result<Option<Anime>> {
+        let doc = self.find_one("anime", json!({ "id": id }), None)?;
+        doc.map(|doc| decode("anime", doc)).transpose()
+    }
+
     /// 写入/更新一部番剧的章节（按 `subject_id + id` upsert）。
     ///
     /// TS 的 `replaceEpisodeMetas` 是先删后插；这个 trait 没有 delete（只有

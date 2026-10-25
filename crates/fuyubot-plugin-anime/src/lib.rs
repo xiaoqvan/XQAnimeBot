@@ -20,6 +20,7 @@ mod card;
 mod chain;
 mod fetch;
 mod media;
+mod nav;
 mod poll;
 mod qb;
 mod review;
