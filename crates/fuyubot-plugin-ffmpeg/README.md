@@ -24,8 +24,9 @@
 | `ping` | – | 版本 + 正在跑的任务数 |
 | `capabilities` | `probe_hardware?` | 编码器表；`probe_hardware:true` 会对每个硬件编码器真编一帧 |
 | `probe` | `input` | 时长/编码/分辨率/帧率（ffprobe，缺失时解析 `ffmpeg -i`） |
-| `plan` | `input, output, intent?, crf?, preset?, keep_audio?` | 只算方案，不执行（调试选路用） |
+| `plan` | `input, output, intent?, crf?, preset?, keep_audio?, subtitle?, subtitle_stream?` | 只算方案，不执行（调试选路用） |
 | `transcode` | 同上 | 起任务，立刻返回 `job_id` |
+| `extract_subtitle` | `input, output, stream?` | 把内嵌字幕抽成外挂 `.ass`；没有字幕流返回 `{extracted:false}` |
 | `job_status` | `id` | 单任务快照（percent/speed/fps/eta） |
 | `job_list` | – | 全部任务 |
 | `job_cancel` | `id` | 取消（下一个进度事件到达时生效，通常 <1s） |
@@ -77,8 +78,13 @@ cargo run -p fuyubot-plugin-ffmpeg --example plan_smoke
 生成 2 秒素材 → 探测硬件 → 给出 `compat`/`small` 两套方案 → **真跑一遍并打印进度**。
 本机结果：compat 走 copy（252ms）、small 走 `hevc_nvenc`（569ms），两者都落到 100%。
 
+`subtitle` 给一个外挂字幕路径就会烧进画面（`-vf subtitles=...`），此时**强制重编码**——
+`-c copy` 没法过滤镜。选流默认「简体中文优先，否则第一条」，也可以先用
+`extract_subtitle` 抽成 `.ass` 再传 `subtitle`；抽不出来或滤镜跑挂，调用方应回退成不烧字幕。
+
 ## 已知边界
 
-- 字幕：mp4 输出不保留字幕轨（要保留请输出 mkv，那里是 `-c:s copy`）；
+- 字幕：mp4 输出不保留字幕轨（要保留请输出 mkv，那里是 `-c:s copy`；要显示就烧录）；
+- 烧录依赖 ffmpeg 的 `--enable-libass`（字幕滤镜）。缺 libass 时滤镜会直接失败，业务侧要回退；
 - 10bit / HDR 没有专门处理，`hevc_nvenc` 会按 8bit 输出，需要 HDR 时要显式指定 `-pix_fmt p010le` 等参数；
 - 硬件探测是「能编一帧」，不保证长片稳定（过热降频、显存不足仍可能中途失败）。

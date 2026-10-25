@@ -7,6 +7,7 @@
 //! | `capabilities` | 这台机器的 ffmpeg 会什么：硬件编码器（**实测可用**）、版本、硬件加速 |
 //! | `plan` | 给输入 + 意图，返回**选好的方案**（编码器 + 完整参数 + 为什么选它） |
 //! | `transcode` | 真跑：起任务立刻返回 id，进度走事件总线，也可以 `job_status` 轮询 |
+//! | `extract_subtitle` | 把内嵌字幕抽成外挂 `.ass`，给「烧录字幕」用 |
 //!
 //! 「高度优化」落在三件事上：
 //!
@@ -27,17 +28,20 @@ pub mod plan;
 use std::ffi::{c_char, c_void};
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 
 use capability::{Capabilities, probe_media};
 use fuyubot_abi::{HostApi, LogLevel, Plugin};
 use fuyubot_service::{
     Handler, Service, Settings, error, ok, opt_bool, opt_str, opt_u64, parse, require_str,
 };
-use plan::{Intent, PlanOptions};
+use plan::{Intent, PlanOptions, SubtitleBurn};
 use serde_json::{Value, json};
 
 const SERVICE: &str = "media.ffmpeg";
 const PLUGIN: &str = "ffmpeg";
+/// 抽字幕是同步小动作，但坏文件可能让 ffmpeg 卡住，给个上限。
+const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// 启动配置：
 ///
@@ -67,6 +71,7 @@ impl Plugin for FfmpegPlugin {
                 ("probe", svc_probe as Handler),
                 ("plan", svc_plan as Handler),
                 ("transcode", svc_transcode as Handler),
+                ("extract_subtitle", svc_extract_subtitle as Handler),
                 ("job_status", svc_job_status as Handler),
                 ("job_list", svc_job_list as Handler),
                 ("job_cancel", svc_job_cancel as Handler),
@@ -282,6 +287,96 @@ unsafe extern "C" fn svc_transcode(_ctx: *mut c_void, input: *const c_char) -> *
     reply_result(result)
 }
 
+/// 抽字幕：把内嵌字幕导出成外挂 `.ass`，给「烧录」这一步用。
+///
+/// 入参 `{ input, output, stream? }`，`stream` 是字幕流序号（`0:s:N` 的 N），
+/// 不传就按「简体中文优先、否则第一条」自己挑。没有字幕流时返回
+/// `{"extracted": false}` 而**不是报错**——调用方据此走「不烧字幕」的 compat 方案。
+unsafe extern "C" fn svc_extract_subtitle(
+    _ctx: *mut c_void,
+    input: *const c_char,
+) -> *const c_char {
+    let result = (|| -> Result<Value, String> {
+        let parsed = parse(input)?;
+        let input_path = require_str(&parsed, "input")?.to_owned();
+        let output_path = require_str(&parsed, "output")?.to_owned();
+        if input_path == output_path {
+            return Err("输入与输出是同一个文件，拒绝执行".to_owned());
+        }
+        let requested = opt_u64(&parsed, "stream").map(|stream| stream as u32);
+
+        // 只借一下二进制路径：抽字幕要起子进程（几秒），不能一直占着能力锁，
+        // 否则同时来的 plan / transcode 都得排队。
+        let (ffmpeg, ffprobe) = with_caps(|caps| Ok((caps.ffmpeg.clone(), caps.ffprobe.clone())))?;
+        let media = probe_media(
+            ffprobe.as_deref(),
+            &ffmpeg,
+            std::path::Path::new(&input_path),
+        )?;
+        let stream = match requested {
+            Some(si) => media.subtitle_streams.iter().find(|stream| stream.si == si),
+            None => plan::choose_subtitle_stream(&media.subtitle_streams),
+        };
+        let Some(stream) = stream else {
+            return Ok(json!({
+                "extracted": false,
+                "reason": if media.has_subtitle {
+                    "指定的字幕流不存在"
+                } else {
+                    "没有字幕流"
+                },
+                "subtitle_streams": media
+                    .subtitle_streams
+                    .iter()
+                    .map(capability::SubtitleStream::to_json)
+                    .collect::<Vec<_>>(),
+            }));
+        };
+
+        if let Some(parent) = std::path::Path::new(&output_path).parent()
+            && !parent.as_os_str().is_empty()
+        {
+            std::fs::create_dir_all(parent)
+                .map_err(|err| format!("创建字幕目录失败（{}）：{err}", parent.display()))?;
+        }
+
+        // -map 用的是字幕流序号（si），不是 ffprobe 的全局 index。
+        let map = format!("0:s:{}", stream.si);
+        let args = [
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-i",
+            input_path.as_str(),
+            "-map",
+            map.as_str(),
+            "-c:s",
+            "ass",
+            output_path.as_str(),
+        ];
+        capability::run_ffmpeg(&ffmpeg, &args, EXTRACT_TIMEOUT)?;
+
+        let bytes = std::fs::metadata(&output_path)
+            .map(|meta| meta.len())
+            .unwrap_or(0);
+        if bytes == 0 {
+            return Err(format!("抽出的字幕是空文件：{output_path}"));
+        }
+        Ok(json!({
+            "extracted": true,
+            "output": output_path,
+            "si": stream.si,
+            "codec": stream.codec,
+            "language": stream.language,
+            "title": stream.title,
+            "bytes": bytes,
+        }))
+    })();
+    reply_result(result)
+}
+
 unsafe extern "C" fn svc_job_status(_ctx: *mut c_void, input: *const c_char) -> *const c_char {
     let result = (|| -> Result<Value, String> {
         let parsed = parse(input)?;
@@ -336,6 +431,15 @@ fn plan_options(input: &Value) -> PlanOptions {
         preset: opt_str(input, "preset").map(str::to_owned),
         target_ext,
         keep_audio: opt_bool(input, "keep_audio").unwrap_or(true),
+        subtitle: opt_str(input, "subtitle")
+            .filter(|path| !path.trim().is_empty())
+            .map(|path| {
+                let mut burn = SubtitleBurn::new(path);
+                if let Some(index) = opt_u64(input, "subtitle_stream") {
+                    burn = burn.with_stream(index as u32);
+                }
+                burn
+            }),
     }
 }
 
@@ -367,5 +471,29 @@ mod tests {
         assert_eq!(opts.crf, Some(51));
         assert!(!opts.keep_audio);
         assert_eq!(plan_options(&json!({})).intent, Intent::Compat);
+    }
+
+    #[test]
+    fn subtitle_parameters_are_passed_through() {
+        let opts = plan_options(&json!({
+            "output": "C:/work/第01集.mp4",
+            "subtitle": "C:/work/第01集-sub.ass",
+            "subtitle_stream": 1,
+        }));
+        let burn = opts.subtitle.expect("应当解析出字幕参数");
+        assert_eq!(burn.path, "C:/work/第01集-sub.ass");
+        assert_eq!(burn.stream_index, Some(1));
+        // 不传字幕时保持 None，方案仍然可以走 copy。
+        assert!(
+            plan_options(&json!({ "output": "a.mp4" }))
+                .subtitle
+                .is_none()
+        );
+        // 空白字符串不能当成路径。
+        assert!(
+            plan_options(&json!({ "subtitle": "   " }))
+                .subtitle
+                .is_none()
+        );
     }
 }

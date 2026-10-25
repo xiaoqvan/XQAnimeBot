@@ -8,6 +8,7 @@
 //! 3. ffprobe 用来读输入文件的真实参数（编码、时长），时长是算进度百分比的分母。
 
 use std::collections::{BTreeSet, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -150,6 +151,33 @@ impl Capabilities {
 
 // ─── 输入文件信息 ──────────────────────────────────────────────────────────
 
+/// 一条字幕流。烧录要先知道「烧哪条」，所以语言/标题都得留着。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SubtitleStream {
+    /// ffprobe 的**全局**流索引（`-map 0:<index>` 用）。
+    pub index: u32,
+    /// 在**字幕流**里的序号：`-map 0:s:<si>` 与滤镜 `si=` 都用它。
+    /// ffprobe 的 `index` 把音视频也算进去，直接拿去 `-map 0:s:N` 会选错。
+    pub si: u32,
+    pub codec: String,
+    /// ISO 639-2 语言码（`chi` / `zho` / `eng` / `jpn`…），没写就是空。
+    pub language: String,
+    /// 流标题。发布组经常把「简体 / 繁体」写在这里而语言码是 `und`。
+    pub title: String,
+}
+
+impl SubtitleStream {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "index": self.index,
+            "si": self.si,
+            "codec": self.codec,
+            "language": self.language,
+            "title": self.title,
+        })
+    }
+}
+
 /// 转码要用到的输入参数。
 #[derive(Debug, Clone, Default)]
 pub struct MediaInfo {
@@ -163,6 +191,8 @@ pub struct MediaInfo {
     pub container: String,
     pub has_audio: bool,
     pub has_subtitle: bool,
+    /// 字幕流明细，顺序就是文件里的顺序（`si` 也按这个排）。
+    pub subtitle_streams: Vec<SubtitleStream>,
 }
 
 impl MediaInfo {
@@ -178,6 +208,11 @@ impl MediaInfo {
             "container": self.container,
             "has_audio": self.has_audio,
             "has_subtitle": self.has_subtitle,
+            "subtitle_streams": self
+                .subtitle_streams
+                .iter()
+                .map(SubtitleStream::to_json)
+                .collect::<Vec<_>>(),
         })
     }
 
@@ -272,7 +307,33 @@ fn parse_probe_json(value: &Value) -> MediaInfo {
                         .to_owned();
                     info.has_audio = true;
                 }
-                Some("subtitle") => info.has_subtitle = true,
+                Some("subtitle") => {
+                    info.has_subtitle = true;
+                    // si 按「第几条字幕」递增，和 ffmpeg 的 0:s:N 一致。
+                    let si = info.subtitle_streams.len() as u32;
+                    let tags = stream.get("tags");
+                    let tag = |name: &str| {
+                        tags.and_then(|tags| tags.get(name))
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned()
+                    };
+                    info.subtitle_streams.push(SubtitleStream {
+                        index: stream
+                            .get("index")
+                            .and_then(Value::as_u64)
+                            .map(|index| index as u32)
+                            .unwrap_or(si),
+                        si,
+                        codec: stream
+                            .get("codec_name")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_owned(),
+                        language: tag("language"),
+                        title: tag("title"),
+                    });
+                }
                 _ => {}
             }
         }
@@ -302,9 +363,29 @@ fn parse_ffmpeg_info(text: &str) -> MediaInfo {
         } else if line.contains("Audio:") && !info.has_audio {
             info.audio_codec = codec_after(line, "Audio:");
             info.has_audio = true;
+        } else if line.contains("Subtitle:") {
+            // 退化路径拿不到 tags，只能从 `Stream #0:2(eng): Subtitle: ass` 里
+            // 抠语言码；标题就彻底没有了。
+            let si = info.subtitle_streams.len() as u32;
+            info.has_subtitle = true;
+            info.subtitle_streams.push(SubtitleStream {
+                index: si,
+                si,
+                codec: codec_after(line, "Subtitle:"),
+                language: stream_language(line),
+                title: String::new(),
+            });
         }
     }
     info
+}
+
+/// `Stream #0:2(eng): Subtitle: ass` → `eng`；没有语言标注时返回空。
+fn stream_language(line: &str) -> String {
+    line.split_once('(')
+        .and_then(|(_, rest)| rest.split_once(')'))
+        .map(|(language, _)| language.trim().to_owned())
+        .unwrap_or_default()
 }
 
 fn codec_after(line: &str, marker: &str) -> String {
@@ -432,6 +513,63 @@ fn run_capture_stderr(binary: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
+/// 同步跑一次 ffmpeg（带超时）：成功返回 `Ok`，失败把 stderr 的最后一句话带回来。
+///
+/// 用于「抽字幕」这类一次性小动作：没有进度可报，但必须等结果，
+/// 也不能因为坏文件把调用线程永远卡住。
+pub fn run_ffmpeg(binary: &Path, args: &[&str], timeout: Duration) -> Result<(), String> {
+    let mut child = Command::new(binary)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|err| format!("启动 {} 失败：{err}", binary.display()))?;
+
+    // stderr 必须在另一个线程里读：管道写满后 ffmpeg 会阻塞，而我们在等 try_wait，
+    // 两边一起等就是死锁。
+    let stderr = child.stderr.take().map(|mut pipe| {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            let _ = pipe.read_to_end(&mut buffer);
+            String::from_utf8_lossy(&buffer).into_owned()
+        })
+    });
+
+    let started = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let text = stderr
+                    .map(|handle| handle.join().unwrap_or_default())
+                    .unwrap_or_default();
+                if status.success() {
+                    return Ok(());
+                }
+                let reason = text.trim().lines().last().unwrap_or("没有输出");
+                return Err(format!(
+                    "{} 退出码 {}：{reason}",
+                    binary.display(),
+                    status.code().unwrap_or(-1)
+                ));
+            }
+            Ok(None) => {
+                if started.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!(
+                        "{} 超过 {}s 未返回，已终止",
+                        binary.display(),
+                        timeout.as_secs()
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+            Err(err) => return Err(format!("等待进程失败：{err}")),
+        }
+    }
+}
+
 /// 带超时地跑一个进程：超时就 kill，避免 GPU 初始化卡死拖住探测。
 fn run_with_timeout(
     binary: &Path,
@@ -530,6 +668,49 @@ Encoders:
         assert!(info.has_audio && info.has_subtitle);
         assert!((info.fps - 23.976).abs() < 0.01);
         assert!(info.is_mp4_ready());
+    }
+
+    #[test]
+    fn probe_collects_subtitle_streams_in_file_order() {
+        let value: Value = serde_json::from_str(
+            r#"{
+              "streams": [
+                { "index": 0, "codec_type": "video", "codec_name": "h264" },
+                { "index": 1, "codec_type": "audio", "codec_name": "aac" },
+                { "index": 2, "codec_type": "subtitle", "codec_name": "subrip",
+                  "tags": { "language": "eng" } },
+                { "index": 3, "codec_type": "subtitle", "codec_name": "ass",
+                  "tags": { "language": "chi", "title": "简体中文" } }
+              ]
+            }"#,
+        )
+        .unwrap();
+        let info = parse_probe_json(&value);
+        assert!(info.has_subtitle);
+        assert_eq!(info.subtitle_streams.len(), 2);
+        // si 是「第几条字幕」，不是全局流索引。
+        assert_eq!(
+            (info.subtitle_streams[1].index, info.subtitle_streams[1].si),
+            (3, 1)
+        );
+        assert_eq!(info.subtitle_streams[1].language, "chi");
+        assert_eq!(info.subtitle_streams[1].title, "简体中文");
+        assert_eq!(info.to_json()["subtitle_streams"][1]["si"], 1);
+        assert_eq!(info.to_json()["subtitle_streams"][0]["language"], "eng");
+    }
+
+    #[test]
+    fn ffmpeg_info_fallback_reads_subtitle_language() {
+        let text = "\
+    Stream #0:0: Video: h264 (High), yuv420p, 1920x1080, 23.98 fps
+    Stream #0:1: Audio: aac (LC), 48000 Hz, stereo
+    Stream #0:2(chi): Subtitle: ass
+";
+        let info = parse_ffmpeg_info(text);
+        assert!(info.has_subtitle);
+        assert_eq!(info.subtitle_streams.len(), 1);
+        assert_eq!(info.subtitle_streams[0].language, "chi");
+        assert_eq!(info.subtitle_streams[0].codec, "ass");
     }
 
     #[test]

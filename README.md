@@ -31,7 +31,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 | 模块 | TS 规模 | Rust 状态 |
 | --- | --- | --- |
 | 出图（Vue/satori/resvg → Ultralight） | ~1.1k | ✅ 独立插件，实测出图 |
-| ffmpeg 转码 | ~0.5k | ✅ 独立插件，实测 copy/NVENC 两条路 |
+| ffmpeg 转码 | ~0.5k | ✅ 独立插件，实测 copy/NVENC 两条路；MKV 简体中文字幕烧录已实测 |
 | qBittorrent 客户端 | ~1.1k | ✅ 独立插件（手写 5.0 API，真机联调通过） |
 | MongoDB 存储层 | ~2.5k | ✅ 独立插件（通用 CRUD，本机全链路联调通过） |
 | 标题解析 / 字幕组规则 | ~1.3k | ✅ 完成 |
@@ -60,7 +60,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 ```bash
 cargo build --workspace       # 全部插件（0 warning）
-cargo test --workspace        # 256 个单测（离线，不碰网络/数据库）
+cargo test --workspace        # 268 个单测（离线，不碰网络/数据库）
 cargo run -p ultralight-gen-image --example render_card          # 出图（含渲染器）
 cargo run -p fuyubot-plugin-ffmpeg --example plan_smoke         # 转码选路 + 真实转码
 cargo run -p anime-core --example rss_probe                     # RSS 三源抓取 + 合并 + 标题解析

@@ -10,7 +10,7 @@
 //! 选中的方案会带一句 `reason`，出问题时日志里能直接看出「为什么选它」，
 //! 不用回头读代码。
 
-use crate::capability::{Capabilities, MediaInfo};
+use crate::capability::{Capabilities, MediaInfo, SubtitleStream};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intent {
@@ -44,6 +44,29 @@ impl Intent {
     }
 }
 
+/// 要烧进画面的字幕：通常是先抽出来的外挂 `.ass` / `.srt`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubtitleBurn {
+    /// 外挂字幕文件路径，Windows 的盘符/反斜杠都行，转义交给本模块。
+    pub path: String,
+    /// 字幕文件内部的流序号，单流文件就是 `0`；多流时才需要 `si=`。
+    pub stream_index: Option<u32>,
+}
+
+impl SubtitleBurn {
+    pub fn new(path: impl Into<String>) -> Self {
+        Self {
+            path: path.into(),
+            stream_index: None,
+        }
+    }
+
+    pub fn with_stream(mut self, index: u32) -> Self {
+        self.stream_index = Some(index);
+        self
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PlanOptions {
     pub intent: Intent,
@@ -51,6 +74,8 @@ pub struct PlanOptions {
     pub preset: Option<String>,
     pub target_ext: String,
     pub keep_audio: bool,
+    /// 要烧录的字幕。`Some` 时**强制重编码**：`-c copy` 没法过滤镜。
+    pub subtitle: Option<SubtitleBurn>,
 }
 
 impl Default for PlanOptions {
@@ -61,8 +86,79 @@ impl Default for PlanOptions {
             preset: None,
             target_ext: "mp4".to_owned(),
             keep_audio: true,
+            subtitle: None,
         }
     }
+}
+
+/// 这条字幕是不是简体中文。语言和标题都看：MKV 的 `language` 经常是 `und`、
+/// 甚至干脆没写，标题里反而标了「简体 / 简中 / CHS」。
+///
+/// 繁体标记一票否决：语言只写 `zh` 时，标题里的「繁 / CHT / Hant」比语言码更可信。
+pub fn is_simplified_chinese(stream: &SubtitleStream) -> bool {
+    let language = stream.language.trim().to_ascii_lowercase();
+    let title = stream.title.trim().to_lowercase();
+    if language.contains("hant")
+        || language == "cht"
+        || title.contains('繁')
+        || title.contains("cht")
+        || title.contains("hant")
+        || title.contains("traditional")
+    {
+        return false;
+    }
+    matches!(
+        language.as_str(),
+        "chi" | "zho" | "zh" | "chs" | "zh-hans" | "zh-cn" | "zh-sg" | "zh-hans-cn"
+    ) || language.starts_with("zh-hans")
+        || title.contains('简')
+        || title.contains("chi")
+        || title.contains("zh")
+        || title.contains("chs")
+        || title.contains("simplified")
+}
+
+/// 挑要烧的那条字幕：优先简体中文，没有就第一条。
+///
+/// 返回的是 `si`（字幕流内的序号），因为 `-map 0:s:N` 和滤镜的 `si=`
+/// 都是按「第几条字幕」数，而不是 ffprobe 的全局 `index`。
+pub fn choose_subtitle_stream(streams: &[SubtitleStream]) -> Option<&SubtitleStream> {
+    streams
+        .iter()
+        .find(|stream| is_simplified_chinese(stream))
+        .or_else(|| streams.first())
+}
+
+/// 把字幕路径转成能塞进 `subtitles=` 滤镜的样子。
+///
+/// ffmpeg 的滤镜描述要过**两层**解析，坑都在这里（ffmpeg 7.1 实测）：
+///
+/// - **盘符冒号** `C:` 会被当成滤镜选项分隔符 → 写成 `C\:`；
+/// - **反斜杠** 在滤镜里是转义前缀，和 Windows 路径天然打架 → 统一换成 `/`
+///   （ffmpeg 在 Windows 上认正斜杠，省掉一层反斜杠转义）；
+/// - **单引号** 会把后面的整段路径吞掉 → 落成「关引号 + 三个反斜杠 + 引号 +
+///   重新开引号」。三个反斜杠是因为第一层解析吃掉两个、留下 `\'`，
+///   第二层再把它还原成 `'`；少一个就会得到一个被悄悄丢掉的引号。
+pub fn escape_subtitles_path(path: &str) -> String {
+    let mut escaped = String::with_capacity(path.len() + 8);
+    for ch in path.chars() {
+        match ch {
+            '\\' => escaped.push('/'),
+            ':' => escaped.push_str("\\:"),
+            '\'' => escaped.push_str("'\\\\\\''"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// 组装 `subtitles='…'[:si=N]`。
+pub fn subtitles_filter(burn: &SubtitleBurn) -> String {
+    let mut filter = format!("subtitles='{}'", escape_subtitles_path(&burn.path));
+    if let Some(index) = burn.stream_index {
+        filter.push_str(&format!(":si={index}"));
+    }
+    filter
 }
 
 #[derive(Debug, Clone)]
@@ -115,7 +211,9 @@ pub fn build(
     caps: &mut Capabilities,
 ) -> Plan {
     // ① 免转：容器能装下现有编码，且用户没有强制重编码。
-    if opts.intent != Intent::Fast
+    //    要烧字幕时不能走这条路：滤镜必须重编码，`-c copy` + `-vf` 会直接失败。
+    if opts.subtitle.is_none()
+        && opts.intent != Intent::Fast
         && media.is_mp4_ready()
         && !needs_reencode_for(opts.intent, media)
     {
@@ -201,16 +299,36 @@ pub fn build(
         args.push("-an".into());
     }
 
+    // 烧字幕：`-vf` 挂在视频输出上，上面已经显式 `-map 0:v:0`。
+    if let Some(burn) = &opts.subtitle {
+        args.push("-vf".into());
+        args.push(subtitles_filter(burn));
+    }
+
     push_container_flags(&mut args, &opts.target_ext, encoder);
     args.push(output.to_owned());
+
+    let subtitle_note = opts
+        .subtitle
+        .as_ref()
+        .map(|burn| format!("｜烧录字幕 {}", file_name_of(&burn.path)))
+        .unwrap_or_default();
 
     Plan {
         mode: "encode",
         encoder: encoder.to_owned(),
         hardware,
         args,
-        reason: format!("[{}] {reason}", opts.intent.as_str()),
+        reason: format!("[{}] {reason}{subtitle_note}", opts.intent.as_str()),
     }
+}
+
+/// 只取文件名部分，日志里不用把整条 Windows 路径刷出来。
+fn file_name_of(path: &str) -> &str {
+    path.rsplit(['/', '\\'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or(path)
 }
 
 /// `Remux` 意图下，即使容器能装也允许直通（它的存在就是「只要换个壳」）。
@@ -419,5 +537,121 @@ mod tests {
             &mut caps,
         );
         assert!(plan.args.iter().any(|arg| arg == "+faststart"));
+    }
+
+    #[test]
+    fn subtitle_path_escapes_drive_colon() {
+        assert_eq!(escape_subtitles_path("C:/a/b.ass"), r"C\:/a/b.ass");
+    }
+
+    #[test]
+    fn subtitle_path_keeps_spaces_because_filter_is_quoted() {
+        assert_eq!(
+            escape_subtitles_path("C:/a b/第 01 集.ass"),
+            r"C\:/a b/第 01 集.ass"
+        );
+        assert_eq!(
+            subtitles_filter(&SubtitleBurn::new("C:/a b/x.ass")),
+            r"subtitles='C\:/a b/x.ass'"
+        );
+    }
+
+    #[test]
+    fn subtitle_path_escapes_single_quote() {
+        // 三个反斜杠是 ffmpeg 的两层解析吃出来的：第一层留下反斜杠加引号，
+        // 第二层才还原成单个引号。只写一个会把引号弄丢（会导致文件打不开）。
+        assert_eq!(escape_subtitles_path("C:/it's.ass"), r"C\:/it'\\\''s.ass");
+        assert_eq!(
+            subtitles_filter(&SubtitleBurn::new("C:/it's.ass")),
+            r"subtitles='C\:/it'\\\''s.ass'"
+        );
+    }
+
+    #[test]
+    fn subtitle_path_normalizes_windows_separators() {
+        assert_eq!(escape_subtitles_path(r"C:\a\b.ass"), r"C\:/a/b.ass");
+    }
+
+    #[test]
+    fn subtitle_stream_index_is_appended_as_si() {
+        let burn = SubtitleBurn::new("C:/a.ass").with_stream(2);
+        assert_eq!(subtitles_filter(&burn), r"subtitles='C\:/a.ass':si=2");
+    }
+
+    fn subtitle(si: u32, language: &str, title: &str) -> SubtitleStream {
+        SubtitleStream {
+            index: si + 2,
+            si,
+            codec: "ass".to_owned(),
+            language: language.to_owned(),
+            title: title.to_owned(),
+        }
+    }
+
+    #[test]
+    fn simplified_chinese_subtitle_wins_over_the_first_one() {
+        let streams = [
+            subtitle(0, "jpn", ""),
+            subtitle(1, "chi", "简体中文"),
+            subtitle(2, "eng", ""),
+        ];
+        assert_eq!(
+            choose_subtitle_stream(&streams).map(|stream| stream.si),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn subtitle_title_can_mark_simplified_chinese() {
+        // 语言码是 und 时只能看标题。
+        let streams = [
+            subtitle(0, "und", "English"),
+            subtitle(1, "und", "[简中] 字幕"),
+        ];
+        assert_eq!(
+            choose_subtitle_stream(&streams).map(|stream| stream.si),
+            Some(1)
+        );
+        // 繁体不能抢：语言只写 zh 时，标题里的「繁」更可信。
+        let streams = [subtitle(0, "zh", "繁體"), subtitle(1, "und", "简体")];
+        assert_eq!(
+            choose_subtitle_stream(&streams).map(|stream| stream.si),
+            Some(1)
+        );
+        // 只有繁体 + 英文时，仍然退回第一条，而不是「不烧」。
+        let streams = [subtitle(0, "zh-Hant", "繁體"), subtitle(1, "eng", "")];
+        assert_eq!(
+            choose_subtitle_stream(&streams).map(|stream| stream.si),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn first_subtitle_is_used_when_no_chinese_one() {
+        let streams = [subtitle(0, "jpn", ""), subtitle(1, "eng", "")];
+        assert_eq!(
+            choose_subtitle_stream(&streams).map(|stream| stream.si),
+            Some(0)
+        );
+        assert!(choose_subtitle_stream(&[]).is_none());
+    }
+
+    #[test]
+    fn burning_subtitles_forces_reencode_even_when_remux_is_possible() {
+        let mut caps = caps_with(&["libx264"]);
+        let opts = PlanOptions {
+            subtitle: Some(SubtitleBurn::new("C:/work/第01集-sub.ass").with_stream(1)),
+            ..Default::default()
+        };
+        // h264 + aac 本来可以 -c copy，带字幕就必须重编码。
+        let plan = build(&media("h264", "aac"), "in.mkv", "out.mp4", &opts, &mut caps);
+        assert_eq!(plan.mode, "encode");
+        let text = plan.args.join(" ");
+        assert!(
+            text.contains(r"-vf subtitles='C\:/work/第01集-sub.ass':si=1"),
+            "{text}"
+        );
+        assert!(!text.contains("-c copy"), "{text}");
+        assert!(plan.reason.contains("烧录字幕"), "{}", plan.reason);
     }
 }

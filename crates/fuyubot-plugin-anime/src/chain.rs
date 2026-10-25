@@ -1,9 +1,10 @@
 //! 命中之后的那一段：下载 → 等完成 → 挑文件 → 转码 → 发频道。
 //!
 //! 对应 TS 的 `qBittorrent/download.ts` + `anime/sendAnime.ts` 里最小的一条直线。
-//! 转码只做「换个容器 / 转成兼容编码」这一层，具体参数由 `media.ffmpeg` 的
-//! compat 方案决定；**故意省掉了**：字幕烧录、分段上传、导航消息、审核按钮、
-//! 检查点。这些每一项都有自己的状态机，混进来会把「先跑通一条直线」这件事拖没。
+//! 转码只做「换个容器 / 转成兼容编码 / 烧中文字幕」这一层，具体参数由
+//! `media.ffmpeg` 的 compat 方案决定；**故意省掉了**：分段上传、导航消息、
+//! 审核按钮、检查点。这些每一项都有自己的状态机，混进来会把「先跑通一条直线」
+//! 这件事拖没。
 //!
 //! 线程模型：`poll` 发现可投放的条目就调 [spawn]，这里用固定槽位限流。
 //! 下载可能要几十分钟，绝不能占用轮询线程——否则下一轮 RSS 永远抓不到。
@@ -324,7 +325,8 @@ fn is_mp4(path: &Path) -> bool {
 /// 把「源文件」变成「能发给 Telegram 的文件」。
 ///
 /// 返回 `(要发的文件, 是否是转码产物)`。**任何一步失败都不让整条链失败**：
-/// 回退到原文件，宁可发一个 Telegram 可能不认的容器，也比什么都没发出去强。
+/// 字幕抽不出来 / 烧字幕转码失败 → 去掉字幕再转一次；再失败才回退原文件，
+/// 宁可发一个 Telegram 可能不认的容器，也比什么都没发出去强。
 fn prepare_video(runtime: &Runtime, source: &Path) -> (PathBuf, bool) {
     let original = || (source.to_path_buf(), false);
 
@@ -374,52 +376,30 @@ fn prepare_video(runtime: &Runtime, source: &Path) -> (PathBuf, bool) {
         return original();
     }
 
-    // 先出方案再起任务：`transcode` 内部会再算一遍，但把「为什么选它」写进
-    // 日志，比事后只看到「转码失败」有用得多。
-    match media.plan(source, &output, INTENT) {
-        Ok(reply) => {
-            let plan = &reply["plan"];
-            log!(
-                &runtime.logger,
-                Info,
-                "转码方案：{}｜{}｜{}",
-                plan["mode"].as_str().unwrap_or("?"),
-                plan["encoder"].as_str().unwrap_or("?"),
-                plan["reason"].as_str().unwrap_or("")
-            );
-        }
-        Err(error) => {
-            log!(
-                &runtime.logger,
-                Warn,
-                "转码方案计算失败，直接发原文件（{}）：{error}",
-                source.display()
-            );
-            return original();
-        }
+    // 内嵌字幕先抽成外挂 ass，再带着它转码。抽不出来只是「不烧字幕」，不是失败。
+    let subtitle = extract_subtitle(runtime, &media, &probe, source, &work_dir);
+
+    // 先烧字幕转一次；滤镜跑挂（缺 libass / 字体异常 / 抽出的文件坏了）就去掉
+    // 字幕再转一次——对齐 TS 的「失败回退 compat」，绝不让整条链失败。
+    let mut outcome = transcode_once(runtime, &media, source, &output, subtitle.as_deref());
+    if let Err(error) = &outcome
+        && subtitle.is_some()
+    {
+        log!(
+            &runtime.logger,
+            Warn,
+            "带字幕转码失败，去掉字幕重试（{}）：{error}",
+            source.display()
+        );
+        let _ = std::fs::remove_file(&output);
+        outcome = transcode_once(runtime, &media, source, &output, None);
+    }
+    // 抽出来的 .ass 是临时产物，不管成败都清掉。
+    if let Some(path) = &subtitle {
+        let _ = std::fs::remove_file(path);
     }
 
-    let job_id = match media.transcode(source, &output, INTENT) {
-        Ok(job_id) => job_id,
-        Err(error) => {
-            log!(
-                &runtime.logger,
-                Warn,
-                "起转码任务失败，直接发原文件（{}）：{error}",
-                source.display()
-            );
-            return original();
-        }
-    };
-    log!(
-        &runtime.logger,
-        Info,
-        "开始转码（{job_id}）：{} → {}",
-        source.display(),
-        output.display()
-    );
-
-    match wait_transcode(&media, &job_id, runtime.config.media.timeout_secs) {
+    match outcome {
         Ok(()) => (output, true),
         Err(error) => {
             // 失败留下的半成品可能占几百 MB，顺手清掉。
@@ -433,6 +413,105 @@ fn prepare_video(runtime: &Runtime, source: &Path) -> (PathBuf, bool) {
             original()
         }
     }
+}
+
+/// 出方案 → 起任务 → 等结束。任何一步失败都往上抛，由 [prepare_video] 决定回退。
+fn transcode_once(
+    runtime: &Runtime,
+    media: &Media,
+    source: &Path,
+    output: &Path,
+    subtitle: Option<&Path>,
+) -> Result<()> {
+    // 把「为什么选它」写进日志，比事后只看到「转码失败」有用得多。
+    let reply = media.plan(source, output, INTENT, subtitle)?;
+    let plan = &reply["plan"];
+    log!(
+        &runtime.logger,
+        Info,
+        "转码方案：{}｜{}｜{}",
+        plan["mode"].as_str().unwrap_or("?"),
+        plan["encoder"].as_str().unwrap_or("?"),
+        plan["reason"].as_str().unwrap_or("")
+    );
+
+    let job_id = media.transcode(source, output, INTENT, subtitle)?;
+    log!(
+        &runtime.logger,
+        Info,
+        "开始转码（{job_id}）{}：{} → {}",
+        subtitle
+            .map(|path| format!("，烧录字幕 {}", path.display()))
+            .unwrap_or_default(),
+        source.display(),
+        output.display()
+    );
+    wait_transcode(media, &job_id, runtime.config.media.timeout_secs)
+}
+
+/// 有内嵌字幕就先抽成外挂 ass。抽不出来只记日志并返回 `None`（不烧字幕）。
+fn extract_subtitle(
+    runtime: &Runtime,
+    media: &Media,
+    probe: &Value,
+    source: &Path,
+    work_dir: &Path,
+) -> Option<PathBuf> {
+    if !probe
+        .get("has_subtitle")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    let output = work_dir.join(subtitle_output_name(source));
+    match media.extract_subtitle(source, &output) {
+        Ok(Some(path)) => {
+            log!(&runtime.logger, Info, "已抽出内嵌字幕：{}", path.display());
+            Some(path)
+        }
+        Ok(None) => {
+            log!(
+                &runtime.logger,
+                Warn,
+                "没有可抽出的字幕流，按不烧字幕转码：{}",
+                source.display()
+            );
+            None
+        }
+        Err(error) => {
+            log!(
+                &runtime.logger,
+                Warn,
+                "抽字幕失败，按不烧字幕转码（{}）：{error}",
+                source.display()
+            );
+            None
+        }
+    }
+}
+
+/// 字幕产物名：只留字母数字和 `-`/`_`，其余全换成 `_`。
+///
+/// 这个名字会进 ffmpeg 的 `-vf subtitles=`，逗号/分号/方括号在滤镜语法里
+/// 都是元字符；先把能换的都换掉，剩下 work_dir 那一段才需要转义。
+fn subtitle_output_name(source: &Path) -> String {
+    let stem = source
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or("video");
+    let safe: String = stem
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || matches!(ch, '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{safe}-sub.ass")
 }
 
 /// 轮询到任务结束。失败 / 取消 / 超时都返回错误，由调用方决定回退。
@@ -556,6 +635,15 @@ mod tests {
                 output_name: "第01集-mp4.mp4".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn subtitle_output_name_avoids_filter_metacharacters() {
+        let name = subtitle_output_name(Path::new("D:/dl/[组] 第01集, it's.mkv"));
+        assert_eq!(name, "_组__第01集__it_s-sub.ass");
+        assert!(!name.contains([',', '[', ']', '\'', ' ']), "{name}");
+        // 没有文件名时也要能给出合法名字，不能 panic。
+        assert_eq!(subtitle_output_name(Path::new("")), "video-sub.ass");
     }
 
     #[test]

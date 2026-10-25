@@ -1,19 +1,20 @@
 //! `media.ffmpeg` 的薄客户端。
 //!
-//! 只包链路真的会用的五个动作：在不在、探测、出方案、起转码、查进度。
+//! 只包链路真的会用的六个动作：在不在、探测、出方案、抽字幕、起转码、查进度。
 //! 转码是**异步**的：`transcode` 起完线程立刻返回 job id，完成与否要轮询
 //! `job_status`（ffmpeg 插件同时会发 `ffmpeg.progress` 事件，但这条直线链路
 //! 一次只处理一个文件，轮询比订阅事件少一个状态机）。
 //!
 //! 响应形状由 ffmpeg 插件决定，这里不做二次建模：`probe` 平铺 `MediaInfo`，
-//! `plan` 是 `{plan, media}`，`job_status` 是 `{job}`。业务层要什么字段自己读，
-//! 避免两边各维护一份结构体、改一边忘一边。
+//! `plan` 是 `{plan, media}`，`extract_subtitle` 是 `{extracted, output?, ...}`，
+//! `job_status` 是 `{job}`。业务层要什么字段自己读，避免两边各维护一份结构体、
+//! 改一边忘一边。
 //!
 //! 调用约定与 `qb.rs` 一致：服务返回 `{"ok":true, ...}`，失败时
 //! `call_service` 已经把 `error` 提成 `String`，这里统一转成
 //! [`anime_core::Error::Service`]，日志里能一眼看出是宿主里的服务坏了。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anime_core::{Error, Result};
 use fuyubot_abi::HostApi;
@@ -39,34 +40,73 @@ impl Media {
     }
 
     /// 读输入文件的真实参数：`video_codec` / `audio_codec` / `has_audio` /
-    /// `duration_ms` / `has_subtitle` 等，形状见 ffmpeg 插件的
-    /// `MediaInfo::to_json`。
+    /// `duration_ms` / `has_subtitle` / `subtitle_streams` 等，形状见 ffmpeg
+    /// 插件的 `MediaInfo::to_json`。
     pub fn probe(&self, input: &Path) -> Result<Value> {
         self.call("probe", json!({ "input": path_text(input) }))
     }
 
     /// 问「这个输入转成那个输出该用什么参数」。返回 `{plan, media}`。
-    pub fn plan(&self, input: &Path, output: &Path, intent: &str) -> Result<Value> {
-        self.call(
-            "plan",
+    ///
+    /// `subtitle` 是已经抽出来的外挂字幕；非空时方案会带
+    /// `-vf subtitles=…`，并且**强制重编码**。
+    pub fn plan(
+        &self,
+        input: &Path,
+        output: &Path,
+        intent: &str,
+        subtitle: Option<&Path>,
+    ) -> Result<Value> {
+        let mut payload = json!({
+            "input": path_text(input),
+            "output": path_text(output),
+            "intent": intent,
+        });
+        if let Some(subtitle) = subtitle {
+            payload["subtitle"] = json!(path_text(subtitle));
+        }
+        self.call("plan", payload)
+    }
+
+    /// 把内嵌字幕抽成外挂 `.ass`。失败是错误，`Ok(None)` 只表示「没有字幕流」。
+    pub fn extract_subtitle(&self, input: &Path, output: &Path) -> Result<Option<PathBuf>> {
+        let reply = self.call(
+            "extract_subtitle",
             json!({
                 "input": path_text(input),
                 "output": path_text(output),
-                "intent": intent,
             }),
-        )
+        )?;
+        if reply.get("extracted").and_then(Value::as_bool) != Some(true) {
+            return Ok(None);
+        }
+        let path = reply
+            .get("output")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| output.to_path_buf());
+        Ok(Some(path))
     }
 
     /// 起一个转码任务，返回 job id。**立刻返回**，完成与否查 [Self::job_status]。
-    pub fn transcode(&self, input: &Path, output: &Path, intent: &str) -> Result<String> {
-        let reply = self.call(
-            "transcode",
-            json!({
-                "input": path_text(input),
-                "output": path_text(output),
-                "intent": intent,
-            }),
-        )?;
+    ///
+    /// `subtitle` 非空时 ffmpeg 会把字幕烧进画面。
+    pub fn transcode(
+        &self,
+        input: &Path,
+        output: &Path,
+        intent: &str,
+        subtitle: Option<&Path>,
+    ) -> Result<String> {
+        let mut payload = json!({
+            "input": path_text(input),
+            "output": path_text(output),
+            "intent": intent,
+        });
+        if let Some(subtitle) = subtitle {
+            payload["subtitle"] = json!(path_text(subtitle));
+        }
+        let reply = self.call("transcode", payload)?;
         reply
             .get("job_id")
             .and_then(Value::as_str)
