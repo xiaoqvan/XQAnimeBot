@@ -20,7 +20,7 @@
 //! enabled = true
 //! api_key = "..."
 //! base_url = "https://api.deepseek.com"
-//! model = "deepseek-v4-flash"
+//! model = "deepseek-flash"
 //! ```
 //!
 //! 为什么单独做一个 example 而不是走插件：`/aimatch` 要起宿主、装 TDLib、连数据库；

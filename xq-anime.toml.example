@@ -82,12 +82,18 @@ timeout_secs = 7200
 # 单条消息能发的最大字节数；超过就按大小分段（TG 约 2GB）
 max_upload_bytes = 1950000000
 
-# AI 兜底：集数抽取 + 章节匹配。关掉就完全走规则
+# LLM Agent：番剧/集数匹配（Responses API 工具调用）。关掉就完全走规则
+#
+# base_url 不要加 /v1：代码会拼成 `{base_url}/responses`。
+# DeepSeek 官方就是这个路径；换 OpenRouter 时填 https://openrouter.ai/api/v1。
+# model 用官方当前名 `deepseek-flash`（旧名 deepseek-v4-flash 已退役，但仍被接受）。
+# api_key 也可不写在这里、改走环境变量 DEEPSEEK_API_KEY / OPENAI_API_KEY
+# （仅当本项为空时才用环境变量，配置文件优先）。
 [plugin.xq.anime.ai]
 enabled = false
 api_key = ""
 base_url = "https://api.deepseek.com"
-model = "deepseek-v4-flash"
+model = "deepseek-flash"
 
 [plugin.xq.anime.http]
 # 管理 API 监听地址；空 = 不启动（只读接口，无前端）

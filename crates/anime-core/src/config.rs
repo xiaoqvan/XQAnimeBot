@@ -199,7 +199,9 @@ impl Default for AiConfig {
         Self {
             api_key: String::new(),
             base_url: "https://api.deepseek.com".to_owned(),
-            model: "deepseek-v4-flash".to_owned(),
+            // 官方当前推荐名（由 V4.1-Flash 提供服务）。旧名 `deepseek-v4-flash`
+            // 仍被接受但对应模型已退役，别再写它。
+            model: "deepseek-flash".to_owned(),
             enabled: false,
         }
     }
