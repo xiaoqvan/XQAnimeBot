@@ -70,7 +70,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "canceltask",
-        summary: "取消下载（当前没有队列，仅报告状态）",
+        summary: "取消任务：/canceltask <编号|标题|all>",
         handler: cmd_canceltask,
     },
     CommandSpec {
@@ -100,7 +100,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "progress",
-        summary: "轮询与下载进度",
+        summary: "轮询与下载进度（每条任务的阶段和百分比）",
         handler: cmd_progress,
     },
     CommandSpec {
@@ -591,11 +591,28 @@ fn cmd_web(runtime: &Arc<Runtime>, command: &Command) {
 /// `/progress`：轮询累计 + 当前在下载的条目数。
 fn cmd_progress(runtime: &Arc<Runtime>, command: &Command) {
     let (rounds, items, usable, failures) = runtime.poll_stats.snapshot();
-    let text = format!(
+    let (normal, mkv, heavy) = crate::tasks::usage();
+    let config = &runtime.config.rss;
+    let mut text = format!(
         "轮询：{rounds} 轮｜{items} 条｜可解析 {usable} 条｜源失败 {failures} 次\n\
-         下载中：{} 条（上限 3）",
-        crate::chain::active()
+         并发：普通 {normal}/{}｜MKV {mkv}/{}｜重型转码 {heavy}/1",
+        config.workers.max(1),
+        config.mkv_workers.max(1)
     );
+    let tasks = crate::tasks::snapshot();
+    if tasks.is_empty() {
+        text.push_str("\n\n当前没有排队或进行中的任务");
+    } else {
+        text.push_str("\n\n");
+        text.push_str(
+            &tasks
+                .iter()
+                .map(crate::tasks::TaskView::line)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        text.push_str("\n\n取消：/canceltask <编号|标题|all>");
+    }
     runtime
         .td
         .reply_text(Target::new(command.chat_id, command.message_id), text);
@@ -1171,15 +1188,43 @@ fn cmd_collect(runtime: &Arc<Runtime>, command: &Command) {
 /// `/canceltask`：目前没有任务队列（下载是 detached 线程），只能报告在跑的条数。
 /// 真正的取消要等 checkpoint/队列落地——那时才可能「取消某一条」。
 fn cmd_canceltask(runtime: &Arc<Runtime>, command: &Command) {
-    let active = crate::chain::active();
-    let text = if active == 0 {
-        "当前没有下载中的任务".to_owned()
+    let target = Target::new(command.chat_id, command.message_id);
+    let argument = command.args.trim();
+    if argument.is_empty() {
+        runtime.td.reply_text(
+            target,
+            "用法：/canceltask <编号 | 标题关键词 | all>\n\
+             编号见 /progress 每行开头的 #N\n\
+             示例：/canceltask 3　/canceltask 芙莉莲　/canceltask all",
+        );
+        return;
+    }
+
+    // 取消只是置个标志：下载线程在下一轮轮询里自己退出，所以这里不必开线程。
+    let text = if argument.eq_ignore_ascii_case("all") {
+        let count = crate::tasks::cancel_all();
+        if count == 0 {
+            "当前没有可取消的任务".to_owned()
+        } else {
+            format!("已请求取消全部 {count} 条任务")
+        }
+    } else if let Ok(id) = argument.parse::<u64>() {
+        match crate::tasks::cancel(id) {
+            Some(task) => format!(
+                "已请求取消 #{}：{}\n取消在下一轮轮询生效（下载中的种子会被删掉）",
+                id, task.title
+            ),
+            None => format!("没有编号为 #{id} 的活跃任务（用 /progress 看当前编号）"),
+        }
     } else {
-        format!("有 {active} 条正在下载；暂不支持单独取消（等任务队列落地）")
+        let count = crate::tasks::cancel_matching(argument);
+        if count == 0 {
+            format!("没有标题包含「{argument}」的活跃任务")
+        } else {
+            format!("已请求取消 {count} 条标题含「{argument}」的任务")
+        }
     };
-    runtime
-        .td
-        .reply_text(Target::new(command.chat_id, command.message_id), text);
+    runtime.td.reply_text(target, text);
 }
 
 /// `/selftest`：把「服务 / 库 / RSS / 匹配」四条线跑一遍，只在会话里回结果。

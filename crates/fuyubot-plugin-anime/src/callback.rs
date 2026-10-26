@@ -660,18 +660,28 @@ fn handle_anime_callback(runtime: &Arc<Runtime>, query: &CallbackQuery, command:
         .name("xq-anime-review".to_owned())
         .spawn(move || match command {
             AnimeCallback::Confirm(target) => confirm_anime(&worker, &query, target),
-            // `F_anime`：匹错了，请管理员给出正确条目。有 `r` 时上下文从待审核记录里捞。
+            // `F_anime`：匹错了，请管理员给出正确条目。有 `r` 时上下文从待审核记录里捞
+            // ——那条路资源已经在正片库，源章节也记在记录里。
             AnimeCallback::Reject(target) => {
-                let (cache_id, old_anime_id) = context_of(&worker, &target);
-                correct(&worker, &query, cache_id, old_anime_id, false);
+                let context = context_of(&worker, &target);
+                correct(&worker, &query, context, false);
             }
             // `N_anime`：搜不到番剧，提示是在**下载之前**发的——纠正完要重新走一遍下载。
             AnimeCallback::ProvideAnime { cache_id } => {
-                correct(&worker, &query, Some(cache_id), None, true)
+                let context = CorrectionContext {
+                    cache_id: Some(cache_id),
+                    ..Default::default()
+                };
+                correct(&worker, &query, context, true);
             }
             // `N_ep`：集数不对，视频已经在缓冲频道了——纠正完只搬资源，不重下。
             AnimeCallback::ProvideEpisode { cache_id, anime_id } => {
-                correct(&worker, &query, Some(cache_id), Some(anime_id), false)
+                let context = CorrectionContext {
+                    cache_id: Some(cache_id),
+                    old_anime_id: Some(anime_id),
+                    ..Default::default()
+                };
+                correct(&worker, &query, context, false);
             }
         });
     if let Err(error) = spawned {
@@ -741,27 +751,54 @@ fn confirm_anime(runtime: &Arc<Runtime>, query: &CallbackQuery, target: Callback
     }
 }
 
-/// 从待审核记录里捞回「缓存条目 id / 当前番剧 id」。
+/// 纠正需要的上下文：资源在哪、源章节是哪一章。
 ///
-/// `F_anime?r=<id>` 只带一个 id，而纠正要知道「原来挂在哪部番下」（资源迁移的
-/// 起点）——这个上下文只能回查记录拿。
-fn context_of(runtime: &Runtime, target: &CallbackTarget) -> (Option<i64>, Option<i64>) {
+/// 两个入口的形状不一样，所以不能只传一个 `cache_id`：
+/// - `N_ep`：资源在缓冲频道（`cache_resources`，按 `cache_id` 找），不知道源章节；
+/// - `F_anime`（带 `r`）：资源已经在正片库，源章节记在待审核记录的 `episodeId` 里。
+#[derive(Debug, Clone, Default)]
+struct CorrectionContext {
+    /// 缓冲频道那条缓存条目的 id。
+    cache_id: Option<i64>,
+    /// 原来挂着的番剧（`cacheAnime`，或待审核记录里的 `anime.id`）。
+    old_anime_id: Option<i64>,
+    /// 源章节 id：有它说明资源已经在正片库，走 `/jz` 那套迁移。
+    from_episode: Option<i64>,
+}
+
+/// 从待审核记录里捞回「缓存条目 id / 当前番剧 id / 当前章节 id」。
+///
+/// `F_anime?r=<id>` 只带一个 id，而纠正要知道「原来挂在哪部番的哪一集」——这个
+/// 上下文只能回查记录拿。
+fn context_of(runtime: &Runtime, target: &CallbackTarget) -> CorrectionContext {
+    let mut context = CorrectionContext {
+        cache_id: target.cache_id,
+        old_anime_id: None,
+        from_episode: target.episode_id,
+    };
     let Some(review_id) = target.review_id else {
-        return (target.cache_id, None);
+        return context;
     };
     let doc = match runtime.store.pending_review_get(review_id) {
         Ok(doc) => doc,
         Err(error) => {
             log!(&runtime.logger, Warn, "读待审核记录失败（#{review_id}）：{error}");
-            return (target.cache_id, None);
+            return context;
         }
     };
-    let anime_id = doc
-        .as_ref()
-        .and_then(|doc| doc.get("anime"))
+    let Some(doc) = doc else {
+        log!(&runtime.logger, Warn, "待审核记录不存在：#{review_id}");
+        return context;
+    };
+    context.old_anime_id = doc
+        .get("anime")
         .and_then(|anime| anime.get("id"))
         .and_then(Value::as_i64);
-    (target.cache_id, anime_id)
+    context.from_episode = doc
+        .get("episodeId")
+        .and_then(Value::as_i64)
+        .or(context.from_episode);
+    context
 }
 
 /// 一次纠正最多问几轮。
@@ -770,17 +807,16 @@ fn context_of(runtime: &Runtime, target: &CallbackTarget) -> (Option<i64>, Optio
 /// 但它没有线程成本概念——这里每一次等待都占着一条 OS 线程）。
 const MAX_CORRECTION_ROUNDS: usize = 5;
 
-/// 多轮纠正：问 → 等回复 → 解析 → 建档 → 迁移/重发。
+/// 多轮纠正：问 → 等回复 → 解析 → 建档 → 纠正（重发 / 迁移）。
 ///
 /// `redownload` 区分两种场景（这是本函数唯一不好看但必须存在的参数）：
 /// - `N_anime`（true）：提示发在**下载之前**，视频还没发过，纠正完要重新走下载+发送；
-/// - `N_ep` / `F_anime`（false）：视频已经在缓冲频道了，纠正完只需把资源从
-///   `cache_resources` 搬到 `resources`（改挂到正确的番剧下）。
+/// - `N_ep` / `F_anime`（false）：视频已经发过了，纠正的是「它属于哪部番的哪一集」，
+///   走 [`crate::correct`] 那一套（与 `/jz` 同一份迁移逻辑）。
 fn correct(
     runtime: &Arc<Runtime>,
     query: &CallbackQuery,
-    cache_id: Option<i64>,
-    old_anime_id: Option<i64>,
+    context: CorrectionContext,
     redownload: bool,
 ) {
     let target = Target::new(query.chat_id, query.message_id);
@@ -826,7 +862,7 @@ fn correct(
 
         if redownload {
             // 视频还没发过：按纠正后的条目重新走一遍下载 + 发正片频道。
-            let Some(item) = cache_id.and_then(|id| match runtime.store.cache_item_get(id) {
+            let Some(item) = context.cache_id.and_then(|id| match runtime.store.cache_item_get(id) {
                 Ok(item) => item,
                 Err(error) => {
                     log!(&runtime.logger, Warn, "读缓存条目失败（#{id}）：{error}");
@@ -840,7 +876,7 @@ fn correct(
             };
             let mut plan = crate::chain::Plan::channel(anime.id);
             plan.episode_id = episode_id;
-            plan.cache_id = cache_id.unwrap_or(0);
+            plan.cache_id = context.cache_id.unwrap_or(0);
             crate::chain::spawn_with(Arc::clone(runtime), item, plan);
             runtime.td.reply_text(
                 target,
@@ -853,35 +889,57 @@ fn correct(
             return;
         }
 
-        // 视频已经发过：把资源从缓存库搬到正片库，改挂到纠正后的条目下。
-        let moved = match (cache_id, old_anime_id) {
-            (Some(cache_id), Some(old)) if old != anime.id => {
-                rebind_resources(runtime, cache_id, old, anime.id, episode_id)
+        // 视频已经发过：交给 `/jz` 那套纠正逻辑。资源在哪决定了走哪条路——
+        // 正片库里按「源章节 → 目标章节」，缓冲库里按缓存条目转正。
+        let report = match context.from_episode {
+            Some(from_episode) => {
+                // 管理员只给了条目：按「同样是第 N 集」在目标番里反查章节 id。
+                let to_episode = match episode_id {
+                    Some(id) => Some(id),
+                    None => crate::correct::episode_id_in(runtime, anime.id, from_episode),
+                };
+                match to_episode {
+                    Some(to_episode) => {
+                        let request = crate::correct::CorrectRequest {
+                            from_episode,
+                            to_episode,
+                            // 纠正的是「这次投放的那一集」，不去猜字幕组。
+                            group: None,
+                        };
+                        match crate::correct::run(runtime, &request) {
+                            Ok(outcome) => outcome.render(&request),
+                            Err(error) => format!("❌ 纠正失败：{error}"),
+                        }
+                    }
+                    None => format!(
+                        "⚠️ 没能在「{}」里找到「第 {} 集」对应的章节\n请直接回复章节 id（bgm.tv/ep/<id>）",
+                        anime.display_name(),
+                        from_episode
+                    ),
+                }
             }
-            _ => 0,
+            None => match context.cache_id {
+                Some(cache_id) => match crate::correct::publish_cached(
+                    runtime,
+                    cache_id,
+                    anime.id,
+                    episode_id,
+                ) {
+                    Ok(outcome) => outcome.render_cached(cache_id),
+                    Err(error) => format!("❌ 纠正失败：{error}"),
+                },
+                None => "⚠️ 这条提示没有带缓存条目，也没有章节 id，无法定位资源\n请改用 /jz <源集数 id> <目标集数 id>".to_owned(),
+            },
         };
-        if let Some(old) = old_anime_id
+
+        if let Some(old) = context.old_anime_id
             && old != anime.id
         {
-            let _ = runtime.store.delete("cacheAnime", json!({ "id": old }), false);
+            let _ = runtime
+                .store
+                .delete("cacheAnime", json!({ "id": old }), false);
         }
-        let _ = crate::nav::refresh(runtime, anime.id);
-        runtime.td.reply_text(
-            target,
-            format!(
-                "✅ 已纠正为「{}」（{}）{}",
-                anime.display_name(),
-                anime.id,
-                episode_id
-                    .map(|id| format!("，章节 {id}"))
-                    .unwrap_or_default()
-                    + &if moved > 0 {
-                        format!("；迁移资源 {moved} 条")
-                    } else {
-                        String::new()
-                    }
-            ),
-        );
+        runtime.td.reply_text(target, report);
         return;
     }
     runtime
@@ -921,65 +979,6 @@ fn resolve_reference(
         .collect();
     runtime.store.upsert_episodes(subject_id as i64, &metas)?;
     Ok((anime, episode_id))
-}
-
-/// 把 `cache_resources` 里某个缓存条目的资源搬到 `resources`，改挂到新番剧下。
-///
-/// 这就是 TS 的 `rebindCacheResourceAnime`：视频消息没变（还在缓冲频道那条），
-/// 变的是「它属于哪部番」——不动数据只改归属，比重新下载一遍便宜得多。
-fn rebind_resources(
-    runtime: &Runtime,
-    cache_id: i64,
-    old_anime_id: i64,
-    new_anime_id: i64,
-    episode_id: Option<i64>,
-) -> usize {
-    let docs = match runtime.store.find(
-        "cache_resources",
-        json!({ "cache_id": cache_id }),
-        None,
-        None,
-        None,
-    ) {
-        Ok(docs) => docs,
-        Err(error) => {
-            log!(&runtime.logger, Warn, "读缓冲资源失败（{cache_id}）：{error}");
-            return 0;
-        }
-    };
-    let mut moved = 0usize;
-    for doc in docs {
-        let Ok(mut resource) =
-            serde_json::from_value::<anime_core::models::EpisodeResourceDoc>(doc)
-        else {
-            continue;
-        };
-        resource.anime_id = new_anime_id;
-        resource.episode_id = episode_id.or(resource.episode_id);
-        // 去掉 cache_id 是「搬出去」的动作：resource_upsert 见它为空就写 resources。
-        resource.cache_id = None;
-        resource.id = None;
-        match runtime.store.resource_upsert(&resource) {
-            Ok(true) => moved += 1,
-            Ok(false) => {}
-            Err(error) => log!(&runtime.logger, Warn, "写入正片资源失败：{error}"),
-        }
-    }
-    if moved > 0 {
-        // 搬完清掉缓存库里的旧记录：留着会让「已收录 N 集」double count。
-        if let Err(error) = runtime
-            .store
-            .delete("cache_resources", json!({ "cache_id": cache_id }), true)
-        {
-            log!(&runtime.logger, Warn, "清理缓冲资源失败：{error}");
-        }
-        log!(
-            &runtime.logger,
-            Info,
-            "资源归属已修正：{old_anime_id} → {new_anime_id}（{moved} 条）"
-        );
-    }
-    moved
 }
 
 /// 落库 + 通知管理群。

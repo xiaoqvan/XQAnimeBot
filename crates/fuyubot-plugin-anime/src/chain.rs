@@ -11,7 +11,7 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Condvar, LazyLock, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,20 +25,19 @@ use serde_json::Value;
 use crate::media::Media;
 use crate::qb::Qb;
 use crate::runtime::Runtime;
+use crate::tasks::{self, Kind, Stage, Task};
 use crate::td::{SentPart, Target, VideoMeta, VideoPart};
 
-/// 同时最多几条在下载。TS 的 `AnimeProcessorManager` 也是 3 个 worker。
-const WORKERS: usize = 3;
 /// qB 分类，方便在 qB 界面里一眼认出哪些是这个机器人加的。
 const CATEGORY: &str = "xq-anime";
 /// 封面取第几秒。太靠前的帧常常是黑场或制作委员会的 logo（TS 也是 10 秒）。
 const COVER_SECOND: u64 = 10;
 /// 认得出的视频后缀（小写）。
 const VIDEO_EXT: [&str; 5] = ["mkv", "mp4", "avi", "ts", "m2ts"];
-
-static SLOTS: LazyLock<(Mutex<usize>, Condvar)> =
-    LazyLock::new(|| (Mutex::new(0), Condvar::new()));
-static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+/// 下载前等 metadata 的上限（TS 的 `checkTorrentFormat` 也是 60 秒）。
+const METADATA_TIMEOUT: Duration = Duration::from_secs(60);
+/// 预检轮询间隔：qB 要先下 .torrent 才能算出文件列表。
+const METADATA_POLL: Duration = Duration::from_secs(2);
 
 /// 这一条投放「发到哪、发完之后干什么」。
 ///
@@ -137,6 +136,18 @@ pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
 }
 
 /// 按 [Plan] 起一个后台任务。
+///
+/// 线程里做的事顺序固定，每一步都有理由：
+///
+/// ```text
+/// 1. 预检容器（不占 worker 槽）→ 纯 MKV 改走 MKV 队列
+/// 2. 抢对应队列的槽位（容量来自 rss.workers / rss.mkv_workers）
+/// 3. run()：下载 → 转码（抢重型槽）→ 发送
+/// 4. 收尾：从任务表摘掉（槽位由 guard 在离开作用域时归还）
+/// ```
+///
+/// 预检放在抢槽之前：MKV 判定要在「开始下载」前完成，否则等下载完才知道
+/// 该走哪条队列，独立队列就没有意义了。
 pub fn spawn_with(runtime: Arc<Runtime>, item: AnimeItem, plan: Plan) {
     // dmhy 的 enclosure 往往是 .torrent 地址而不是 magnet:，拿不到 btih。
     // 这不影响下载（qB 自己能算 hash），只影响去重键——所以退化用标题当键。
@@ -145,42 +156,186 @@ pub fn spawn_with(runtime: Arc<Runtime>, item: AnimeItem, plan: Plan) {
         .clone()
         .unwrap_or_else(|| checkpoint_key(&item));
     // 同一条种子只下一次：轮询可能在同一秒里重复投递（Seen 失效、手动触发等）。
-    {
-        let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
-        if !in_flight.insert(task_key.clone()) {
-            return;
-        }
-    }
-    acquire_slot();
+    // 去重和入队在同一把锁里（`tasks::enqueue` 返回 None 就是已有人在跑）。
+    let Some(task) = tasks::enqueue(&task_key, &item.title, plan.anime_id) else {
+        return;
+    };
     let worker = Arc::clone(&runtime);
-    let title = item.title.clone();
-    let release_key = task_key.clone();
+    let running = Arc::clone(&task);
     let spawned = thread::Builder::new()
         .name("xq-anime-chain".to_owned())
-        .spawn(move || {
-            let result = run(&worker, &item, &plan, known_hash.as_deref());
-            if let Err(error) = result {
-                log!(&worker.logger, Error, "下载链路失败（{title}）：{error}");
-                let _ = worker.store.checkpoint_finish(
-                    &checkpoint_key(&item),
-                    anime_core::models::CheckpointStatus::Failed,
-                );
-            }
-            release(&release_key);
-        });
+        .spawn(move || run_task(&worker, item, plan, known_hash, running));
     if spawned.is_err() {
-        release(&task_key);
+        // 线程没起来：任务表里留一条「排队中」的幽灵，以后同一条种子再也进不来。
+        tasks::finish(&task);
     }
+}
+
+/// 一条任务的完整生命周期：预检 → 等槽 → 跑 → 收尾。
+fn run_task(
+    runtime: &Arc<Runtime>,
+    item: AnimeItem,
+    plan: Plan,
+    known_hash: Option<String>,
+    task: Arc<Task>,
+) {
+    task.set_stage(Stage::Checking);
+    task.progress(0, "等 qB 拿 metadata");
+    let precheck = precheck(runtime, &item, known_hash.as_deref(), &task);
+    if let Some(found) = &precheck {
+        task.set_kind(found.kind);
+    }
+    let caps = (
+        runtime.config.rss.workers,
+        runtime.config.rss.mkv_workers,
+    );
+    let Some(_slot) = tasks::acquire(&task, caps.0, caps.1) else {
+        // 排队期间被取消：不占槽、不记失败。预检已经加过种的话顺手删掉，
+        // 不然它会在 qB 里默默下完，占带宽占盘。
+        if let Some(found) = &precheck {
+            let _ = Qb::new(runtime.host).delete(&found.hash, true);
+        }
+        task.set_stage(Stage::Cancelled);
+        tasks::finish(&task);
+        return;
+    };
+    log!(
+        &runtime.logger,
+        Info,
+        "任务 #{} 进入{}队列：{}",
+        task.id,
+        task.kind().label(),
+        item.title
+    );
+
+    let result = run(runtime, &item, &plan, known_hash.as_deref(), precheck.as_ref(), &task);
+    match result {
+        Ok(()) => task.set_stage(Stage::Done),
+        Err(error) if task.cancelled() || matches!(error, Error::Cancelled(_)) => {
+            task.set_stage(Stage::Cancelled);
+            log!(&runtime.logger, Info, "任务 #{} 已取消：{}", task.id, item.title);
+        }
+        Err(error) => {
+            task.set_stage(Stage::Failed);
+            log!(
+                &runtime.logger,
+                Error,
+                "下载链路失败（{}）：{error}",
+                item.title
+            );
+            let _ = runtime.store.checkpoint_finish(
+                &checkpoint_key(&item),
+                anime_core::models::CheckpointStatus::Failed,
+            );
+        }
+    }
+    tasks::finish(&task);
 }
 
 /// 当前在下载/发送的条目数。
 ///
-/// 读的是「已占槽位」的集合，不是 qB 里的种子数：暂停在 qB 队列里的不算。
+/// 读的是任务表，不是 qB 里的种子数：暂停在 qB 队列里的不算。
 pub fn active() -> usize {
-    IN_FLIGHT
-        .lock()
-        .unwrap_or_else(|error| error.into_inner())
-        .len()
+    tasks::active_count()
+}
+
+/// 下载前预检：加种 → 等 qB 拿到 metadata → 看文件后缀判断要不要走 MKV 队列。
+///
+/// 返回 `None` 表示**没探出来**（qB 不可用、60 秒还没 metadata）：这时按普通队列
+/// 走，让 `run()` 自己加种——预检是优化，不能变成单点故障。
+struct Precheck {
+    hash: String,
+    kind: Kind,
+}
+
+fn precheck(
+    runtime: &Runtime,
+    item: &AnimeItem,
+    known_hash: Option<&str>,
+    task: &Task,
+) -> Option<Precheck> {
+    let qb = Qb::new(runtime.host);
+    if !qb.available() {
+        return None;
+    }
+    let hash = match known_hash {
+        Some(hash) => {
+            if let Err(error) = qb.add(&item.magnet, &runtime.config.qbittorrent.save_path, CATEGORY)
+            {
+                // 已经在 qB 里（重复投递）不算错，接着按已有种子预检。
+                log!(&runtime.logger, Debug, "预检加种失败（按已有种子继续）：{error}");
+            }
+            hash.to_owned()
+        }
+        None => match add_and_discover(runtime, &qb, item) {
+            Ok(hash) => hash,
+            Err(error) => {
+                log!(&runtime.logger, Warn, "预检加种失败：{error}");
+                return None;
+            }
+        },
+    };
+
+    let deadline = Instant::now() + METADATA_TIMEOUT;
+    while Instant::now() < deadline {
+        if task.cancelled() {
+            let _ = qb.delete(&hash, true);
+            return None;
+        }
+        match qb.files(&hash) {
+            Ok(files) if !files.is_empty() => {
+                let kind = if all_mkv(&files) { Kind::Mkv } else { Kind::Normal };
+                log!(
+                    &runtime.logger,
+                    Info,
+                    "预检：{} 个文件，{}{}",
+                    files.len(),
+                    if kind == Kind::Mkv { "纯 MKV" } else { "含非 MKV" },
+                    if kind == Kind::Mkv { "，走 MKV 队列" } else { "" }
+                );
+                return Some(Precheck { hash, kind });
+            }
+            Ok(_) => {}
+            Err(error) => log!(&runtime.logger, Debug, "预检读文件列表失败：{error}"),
+        }
+        thread::sleep(METADATA_POLL);
+    }
+    log!(
+        &runtime.logger,
+        Warn,
+        "预检等 metadata 超时（{}s），按普通队列继续：{}",
+        METADATA_TIMEOUT.as_secs(),
+        item.title
+    );
+    Some(Precheck {
+        hash,
+        kind: Kind::Normal,
+    })
+}
+
+/// 纯函数：种子里的视频文件是不是**全是** mkv（且至少有一个）。
+///
+/// 只认视频后缀：MKV 剧集常附赠 `.nfo` / 字体包，那些不影响容器判断。
+/// 一个种子里既有 mkv 又有 mp4 时返回 `false`——这种情况多半是合集，按普通队列更稳。
+pub fn all_mkv(files: &[Value]) -> bool {
+    let mut has_video = false;
+    for file in files {
+        let Some(name) = file.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        if !is_video(Path::new(name)) {
+            continue;
+        }
+        has_video = true;
+        let is_mkv = Path::new(name)
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("mkv"));
+        if !is_mkv {
+            return false;
+        }
+    }
+    has_video
 }
 
 /// 超过上传上限就分段，否则原样返回单元素。
@@ -237,26 +392,6 @@ fn cleanup_parts(runtime: &Runtime, parts: &[PathBuf]) {
 /// 检查点主键：清理后的标题。同一条种子重复入队时只会更新同一条记录。
 pub fn checkpoint_key(item: &AnimeItem) -> String {
     anime_core::title::clean_title(&item.title)
-}
-
-fn acquire_slot() {
-    let (lock, cvar) = &*SLOTS;
-    let mut active = lock.lock().unwrap_or_else(|e| e.into_inner());
-    while *active >= WORKERS {
-        active = cvar.wait(active).unwrap_or_else(|e| e.into_inner());
-    }
-    *active += 1;
-}
-
-fn release(hash: &str) {
-    {
-        let mut in_flight = IN_FLIGHT.lock().unwrap_or_else(|e| e.into_inner());
-        in_flight.remove(hash);
-    }
-    let (lock, cvar) = &*SLOTS;
-    let mut active = lock.lock().unwrap_or_else(|e| e.into_inner());
-    *active = active.saturating_sub(1);
-    cvar.notify_one();
 }
 
 /// 没有 btih 的种子（dmhy 给的是 .torrent 地址）：加种后从 qB 列表里找新出现的那条。
@@ -390,6 +525,8 @@ fn run(
     item: &AnimeItem,
     plan: &Plan,
     known_hash: Option<&str>,
+    precheck: Option<&Precheck>,
+    task: &Task,
 ) -> Result<()> {
     let qb = Qb::new(runtime.host);
     if !qb.available() {
@@ -416,13 +553,16 @@ fn run(
     {
         log!(&runtime.logger, Warn, "写入种子记录失败（继续下载）：{error}");
     }
-    // 有 btih 就直接用；没有（dmhy 的 .torrent 地址）就让 qB 算完再从列表里找出来。
-    let hash = match known_hash {
-        Some(hash) => {
-            qb.add(&item.magnet, &config.qbittorrent.save_path, CATEGORY)?;
-            hash.to_owned()
-        }
-        None => add_and_discover(runtime, &qb, item)?,
+    // 预检已经加过种了就不再加：重复 add 会被 qB 拒掉（同 hash 已存在）。
+    let hash = match precheck {
+        Some(pre) => pre.hash.clone(),
+        None => match known_hash {
+            Some(hash) => {
+                qb.add(&item.magnet, &config.qbittorrent.save_path, CATEGORY)?;
+                hash.to_owned()
+            }
+            None => add_and_discover(runtime, &qb, item)?,
+        },
     };
     log!(
         &runtime.logger,
@@ -432,7 +572,8 @@ fn run(
         plan.anime_id
     );
 
-    let torrent = wait_done(runtime, &qb, &hash)?;
+    task.set_stage(Stage::Downloading);
+    let torrent = wait_done(runtime, &qb, &hash, task)?;
     let _ = runtime.store.checkpoint_stage(&key, "转码");
     let base = torrent
         .get("content_path")
@@ -456,12 +597,18 @@ fn run(
     })?;
 
     // 转码是**尽力而为**：任何一步失败都回退到原文件，不让「发不出去」成为结果。
-    let (send_path, transcoded) = prepare_video(runtime, &video);
+    let (send_path, transcoded) = prepare_video(runtime, &video, task);
 
     let _ = runtime.store.checkpoint_stage(&key, "发送");
     // 上传中：从这里到「发送成功确认」可能要几十分钟（TG 上传 + 转码），
     // 状态停在「下载完成」会让 /progress 看起来像卡在下载。
     mark_status(runtime, item, TorrentStatus::Uploading);
+    // 上传是阻塞的（TDLib 要等每个分片），中途叫停不了——只能在开始前认一次。
+    if task.cancelled() {
+        return Err(Error::Cancelled("上传前已取消".to_owned()));
+    }
+    task.set_stage(Stage::Uploading);
+    task.progress(0, "上传中");
     // 超过上传上限就按大小分段（TG 约 2GB）。分段是流复制，秒级。
     let parts = split_for_upload(runtime, &send_path);
     let total = parts.len();
@@ -614,15 +761,31 @@ fn run(
 }
 
 /// 轮询到下载完成；超时或进入失败态就返回错误。
-fn wait_done(runtime: &Runtime, qb: &Qb, hash: &str) -> Result<Value> {
+///
+/// 每轮顺手做两件事：把进度写进任务表（`/progress` 要看），以及看有没有人
+/// 点了 `/canceltask`——取消没法直接杀线程，只能在这个循环里认输退出。
+fn wait_done(runtime: &Runtime, qb: &Qb, hash: &str, task: &Task) -> Result<Value> {
     let config = &runtime.config.qbittorrent;
     let deadline = Instant::now() + Duration::from_secs(config.download_timeout_secs.max(60));
     let interval = Duration::from_secs(config.poll_interval_secs.max(1));
     loop {
+        if task.cancelled() {
+            // 连种子一起删：不删它会继续下，白占带宽和磁盘。
+            let _ = qb.delete(hash, true);
+            return Err(Error::Cancelled(format!("下载已取消（{hash}）")));
+        }
         let torrents = qb.list(&[hash.to_owned()])?;
         if let Some(torrent) = torrents.into_iter().next() {
             let progress = torrent.get("progress").and_then(Value::as_f64).unwrap_or(0.0);
             let state = torrent.get("state").and_then(Value::as_str).unwrap_or("");
+            task.progress(
+                (progress * 100.0).round() as u8,
+                format!(
+                    "{}/{}",
+                    human_bytes(torrent.get("downloaded").and_then(Value::as_u64).unwrap_or(0)),
+                    human_bytes(torrent.get("total_size").and_then(Value::as_u64).unwrap_or(0))
+                ),
+            );
             if progress >= 1.0 {
                 return Ok(torrent);
             }
@@ -640,6 +803,20 @@ fn wait_done(runtime: &Runtime, qb: &Qb, hash: &str) -> Result<Value> {
             });
         }
         thread::sleep(interval);
+    }
+}
+
+/// 字节数转成人看的大小：`1.5 GB` / `820 MB`。
+fn human_bytes(bytes: u64) -> String {
+    const GB: f64 = 1024.0 * 1024.0 * 1024.0;
+    const MB: f64 = 1024.0 * 1024.0;
+    let value = bytes as f64;
+    if value >= GB {
+        format!("{:.1} GB", value / GB)
+    } else if value >= MB {
+        format!("{:.0} MB", value / MB)
+    } else {
+        format!("{bytes} B")
     }
 }
 
@@ -738,7 +915,7 @@ fn is_mp4(path: &Path) -> bool {
 /// 返回 `(要发的文件, 是否是转码产物)`。**任何一步失败都不让整条链失败**：
 /// 字幕抽不出来 / 烧字幕转码失败 → 去掉字幕再转一次；再失败才回退原文件，
 /// 宁可发一个 Telegram 可能不认的容器，也比什么都没发出去强。
-fn prepare_video(runtime: &Runtime, source: &Path) -> (PathBuf, bool) {
+fn prepare_video(runtime: &Runtime, source: &Path, task: &Task) -> (PathBuf, bool) {
     let original = || (source.to_path_buf(), false);
 
     let media = Media::new(runtime.host);
@@ -790,9 +967,15 @@ fn prepare_video(runtime: &Runtime, source: &Path) -> (PathBuf, bool) {
     // 内嵌字幕先抽成外挂 ass，再带着它转码。抽不出来只是「不烧字幕」，不是失败。
     let subtitle = extract_subtitle(runtime, &media, &probe, source, &work_dir);
 
+    // 转码是重型任务：抢全局独占槽（同一时刻只许一条在转），
+    // guard 在函数返回时自动归还——下面有 4 个错误分支，手动放会漏。
+    task.set_stage(Stage::Transcoding);
+    let _heavy = tasks::heavy();
+    task.progress(0, "准备转码");
+
     // 先烧字幕转一次；滤镜跑挂（缺 libass / 字体异常 / 抽出的文件坏了）就去掉
     // 字幕再转一次——对齐 TS 的「失败回退 compat」，绝不让整条链失败。
-    let mut outcome = transcode_once(runtime, &media, source, &output, subtitle.as_deref());
+    let mut outcome = transcode_once(runtime, &media, source, &output, subtitle.as_deref(), task);
     if let Err(error) = &outcome
         && subtitle.is_some()
     {
@@ -803,7 +986,7 @@ fn prepare_video(runtime: &Runtime, source: &Path) -> (PathBuf, bool) {
             source.display()
         );
         let _ = std::fs::remove_file(&output);
-        outcome = transcode_once(runtime, &media, source, &output, None);
+        outcome = transcode_once(runtime, &media, source, &output, None, task);
     }
     // 抽出来的 .ass 是临时产物，不管成败都清掉。
     if let Some(path) = &subtitle {
@@ -833,6 +1016,7 @@ fn transcode_once(
     source: &Path,
     output: &Path,
     subtitle: Option<&Path>,
+    task: &Task,
 ) -> Result<()> {
     // 把「为什么选它」写进日志，比事后只看到「转码失败」有用得多。
     let reply = media.plan(source, output, INTENT, subtitle)?;
@@ -857,7 +1041,7 @@ fn transcode_once(
         source.display(),
         output.display()
     );
-    wait_transcode(media, &job_id, runtime.config.media.timeout_secs)
+    wait_transcode(media, &job_id, runtime.config.media.timeout_secs, task)
 }
 
 /// 有内嵌字幕就先抽成外挂 ass。抽不出来只记日志并返回 `None`（不烧字幕）。
@@ -926,13 +1110,16 @@ fn subtitle_output_name(source: &Path) -> String {
 }
 
 /// 轮询到任务结束。失败 / 取消 / 超时都返回错误，由调用方决定回退。
-fn wait_transcode(media: &Media, job_id: &str, timeout_secs: u64) -> Result<()> {
+fn wait_transcode(media: &Media, job_id: &str, timeout_secs: u64, task: &Task) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(timeout_secs.max(1));
     loop {
         let status = media.job_status(job_id)?;
         let state = status.get("state").and_then(Value::as_str).unwrap_or("");
         match state {
-            "done" => return Ok(()),
+            "done" => {
+                task.progress(100, "转码完成");
+                return Ok(());
+            }
             "failed" | "canceled" => {
                 let reason = status
                     .get("error")
@@ -944,6 +1131,13 @@ fn wait_transcode(media: &Media, job_id: &str, timeout_secs: u64) -> Result<()> 
                 });
             }
             _ => {}
+        }
+        if task.cancelled() {
+            return Err(Error::Cancelled(format!("转码已取消（{job_id}）")));
+        }
+        // ffmpeg 插件给的进度是 0..1；没给就保持上一轮的百分比（只增不减）。
+        if let Some(percent) = status.get("progress").and_then(Value::as_f64) {
+            task.progress((percent * 100.0).round() as u8, "转码中");
         }
         if Instant::now() >= deadline {
             return Err(Error::Service {
@@ -1001,8 +1195,34 @@ mod tests {
     }
 
     #[test]
-    fn single_file_content_path_is_used_directly() {
-        let dir = std::env::temp_dir().join("xq-chain-test");
+    fn only_all_video_files_mkv_counts_as_mkv() {
+        let mkv = vec![
+            json!({ "name": "第01集.mkv", "size": 900 }),
+            json!({ "name": "字体.ttf", "size": 3 }),
+            json!({ "name": "info.nfo", "size": 1 }),
+        ];
+        assert!(all_mkv(&mkv), "非视频的附属文件不影响判断");
+
+        let mixed = vec![
+            json!({ "name": "第01集.mkv", "size": 900 }),
+            json!({ "name": "第02集.mp4", "size": 300 }),
+        ];
+        assert!(!all_mkv(&mixed), "有 mp4 就走普通队列");
+
+        let no_video = vec![json!({ "name": "readme.txt", "size": 1 })];
+        assert!(!all_mkv(&no_video), "没有视频不算 MKV 种子");
+        assert!(!all_mkv(&[]));
+    }
+
+    #[test]
+    fn human_bytes_switches_units() {
+        assert_eq!(human_bytes(512), "512 B");
+        assert_eq!(human_bytes(5 * 1024 * 1024), "5 MB");
+        assert_eq!(human_bytes(3 * 1024 * 1024 * 1024 / 2), "1.5 GB");
+    }
+
+    #[test]
+    fn single_file_content_path_is_used_directly() {        let dir = std::env::temp_dir().join("xq-chain-test");
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("movie.mkv");
         std::fs::write(&file, b"x").unwrap();

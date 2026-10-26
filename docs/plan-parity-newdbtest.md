@@ -417,5 +417,31 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
   目标番的（`edit_caption`）。同番只改章节 id 也允许，此时只刷一次导航。
   不做确认按钮：`callback_data` 上限 64 字节，塞不下中文字幕组名。
 
-- **阶段 6 剩余**：`checkTorrentFormat`（MKV 预检）属于阶段 5 的并发管理器，
-  未在 `/addanime` 里做 MKV 分流；`getTokenStatus` 已实现但没有命令用它。
+- **阶段 5（并发管理器 + MKV 队列 + 进度/取消）已完成**（`tasks.rs` + `chain.rs` 改造）：
+  - `tasks.rs` 是 TS `AnimeProcessorManager` 的对位：任务表（`Vec<Arc<Task>>`，
+    `/progress` 按入队顺序列）+ 两条队列槽位（普通 `rss.workers`、MKV
+    `rss.mkv_workers`，容量来自配置，改动即时生效）+ 重型转换全局独占槽 1
+    （`tasks::heavy()`，RAII guard，转码进出自动归还）。
+  - 槽位也是 RAII（`tasks::acquire` 返回 `Slot`，drop 归还）：`run()` 里错误分支
+    多，手动 release 漏一条就是永久少一个 worker。
+  - `progressMap` 落在 `Task` 上：阶段（排队/预检/下载/转码/上传）、百分比（只增
+    不减，qB 重新校验时的回退不会让进度条往回跳）、附注（`1.2/4.5 GB`、`第 2/3 段`）。
+  - `/progress` 列出每条任务：`#3 [下载中 42%] 标题…｜1.2/4.5 GB（12 分 3 秒）`，
+    外加三行队列占用；`/canceltask <编号|标题关键词|all>` 置取消标志，任务在
+    下一轮轮询（≤1 个 poll 间隔）自己退出并删种，槽位由 guard 释放。
+  - `checkTorrentFormat`（`chain::precheck`）：加种后等 qB 拿到 metadata（最多
+    60 秒，`all_mkv` 只看视频文件后缀），纯 MKV 的任务改挂 MKV 队列——预检在抢槽
+    **之前**做，否则等下载完才知道走哪条队列，独立队列就没意义了。预检失败/超时
+    按普通队列继续（预检是优化，不能变成单点故障）。
+  - 取消只覆盖「可中断点」：等槽、预检、下载轮询、转码轮询都会检查标志；
+    TDLib 上传是阻塞调用，只能在开始前认一次（`Error::Cancelled` 区分「取消」和
+    「失败」，取消不写检查点失败态）。
+  - `N_ep` / `F_anime` 同步改成走 `correct` 那套：资源在正片库时按「源章节 →
+    目标章节」调用 `correct::run`（源章节来自待审核记录的 `episodeId`），在缓冲库时
+    调用新增的 `correct::publish_cached`（按 `cache_id` 找资源、改 `episodeId` 与集数
+    字符串、`cache_id` 清空即发布到 `resources`）；旧的 `rebind_resources` 删除。
+    管理员只回复条目时用 `correct::episode_id_in` 按「同为第 N 集」反查章节 id。
+  - 测试 137 → 152 全绿；插件 clippy 干净。
+
+- **阶段 6 剩余**：`checkTorrentFormat` 已在阶段 5 落地（`/addanime` 的手工补种
+  也可以吃到 MKV 分流）；`getTokenStatus` 已实现但没有命令用它。

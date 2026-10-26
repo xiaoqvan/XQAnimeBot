@@ -60,7 +60,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 3. 导入第一部番：`/addanime 400602`（会自动发导航卡）；
 4. 之后 RSS 轮询命中就会自动下载 → 转码 → 发番剧频道。
 
-常用命令：`/selftest`（一条命令自检服务/库/RSS/匹配）`/addanime` `/testbgimg` `/searchanime` `/progress` `/status` `/web` `/help`。
+常用命令：`/selftest`（一条命令自检服务/库/RSS/匹配）`/addanime` `/testbgimg` `/searchanime` `/progress` `/canceltask` `/status` `/web` `/help`。
 
 ## 构建与验证
 

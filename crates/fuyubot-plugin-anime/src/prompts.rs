@@ -112,7 +112,7 @@ pub fn confirm_episodes(
             )]],
         ),
         None => (
-            format!("{base}请提供正确的集数id"),
+            format!("{base}请提供正确的集数 id（章节 id，见 bgm.tv/ep/<id>）"),
             vec![vec![ReplyButton::callback(
                 "提供正确",
                 callback::data::provide_episode(cache_id, anime.id),

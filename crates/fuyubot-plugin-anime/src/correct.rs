@@ -217,6 +217,67 @@ pub fn resolve_episode(runtime: &Runtime, id: i64) -> Result<ResolvedEpisode, St
     })
 }
 
+/// 按**集数字符串**在章节表里找章节 id。
+///
+/// 只在「管理员只给了条目、没给章节」时才用（`F_anime` 很常见：他只知道自己选
+/// 错了番）。集数字符串先按 [`crate::text::parse_episode`] 归一（与导航排序同一套
+/// 理解），再按 `sort` 找；`SP1` 这类去 `type = 1` 里找。
+///
+/// 找不到返回 `None`——调用方据此决定要不要留着原来的 `episodeId`。
+pub fn episode_id_of(episodes: &[EpisodeMeta], episode: &str) -> Option<i64> {
+    let find = |number: f64, kind: i32| -> Option<i64> {
+        let hit = |meta: &&EpisodeMeta| {
+            let own = if meta.sort > 0.0 { meta.sort } else { meta.ep };
+            (own - number).abs() < f64::EPSILON && meta.r#type.unwrap_or(0) == kind
+        };
+        episodes
+            .iter()
+            .find(hit)
+            .map(|meta| meta.id)
+            .filter(|id| *id != 0)
+    };
+
+    match crate::text::parse_episode(episode) {
+        crate::text::ParsedEpisode::Num { number, .. } => find(number, 0),
+        crate::text::ParsedEpisode::Sp { number } => find(number as f64, 1),
+        // 剧场版之类没有编号，章节表里也对不上任何一条。
+        crate::text::ParsedEpisode::Other => None,
+    }
+}
+
+/// 目标番的章节表（库里没有就现拉一次并写回，与 [`resolve_episode`] 同一策略）。
+fn chapters_of(runtime: &Runtime, subject_id: i64) -> Vec<EpisodeMeta> {
+    let local = runtime
+        .store
+        .episodes_by_subject(subject_id)
+        .unwrap_or_default();
+    if !local.is_empty() {
+        return local;
+    }
+    let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+    let Ok(fresh) = client.episodes(subject_id as u64) else {
+        return Vec::new();
+    };
+    let metas: Vec<EpisodeMeta> = fresh
+        .iter()
+        .map(|episode| episode.to_meta(subject_id as u64))
+        .collect();
+    if let Err(error) = runtime.store.upsert_episodes(subject_id, &metas) {
+        log!(&runtime.logger, Warn, "写章节失败：{error}");
+    }
+    metas
+}
+
+/// 管理员只给了**条目**（没给章节）时，把源章节的集数映射到目标番的章节 id。
+///
+/// `F_anime` 常见这种回复：管理员只知道「这条挂错番了」，说不出正确章节。那就按
+/// 「同样是第 N 集」去目标番的章节表里找——找不到返回 `None`，调用方提示他补章节 id。
+pub fn episode_id_in(runtime: &Runtime, subject_id: i64, from_episode: i64) -> Option<i64> {
+    let from = resolve_episode(runtime, from_episode).ok()?;
+    let label = from.label();
+    episode_id_of(&chapters_of(runtime, subject_id), &label)
+}
+
 /// 一条资源是否挂在给定章节上。
 ///
 /// **有 `episodeId` 就只认 id**：写着别的章节 id 的资源是别的那一集，哪怕集数
@@ -296,6 +357,28 @@ impl CorrectOutcome {
         out
     }
 
+    /// 缓冲频道纠正（`N_ep` / `F_anime`）的结果文案。
+    ///
+    /// 与 [`Self::render`] 的差别：这里没有「源章节 id」（缓存条目的 `episodeId`
+    /// 本来就可能是空的），主体是「这条缓存条目已经落到哪里」。
+    pub fn render_cached(&self, cache_id: i64) -> String {
+        let mut out = if self.to_label.is_empty() {
+            format!(
+                "已把缓存条目 {cache_id} 的「{}」第 {} 集改挂到「{}」",
+                self.from_name, self.from_label, self.to_name
+            )
+        } else {
+            format!(
+                "已把缓存条目 {cache_id} 的「{}」第 {} 集改挂到「{}」第 {} 集",
+                self.from_name, self.from_label, self.to_name, self.to_label
+            )
+        };
+        out.push_str(&format!("\n发布 {moved} 条资源到正片库", moved = self.moved));
+        if self.overwritten > 0 {
+            out.push_str(&format!("；覆盖了目标番原有的 {} 条", self.overwritten));
+        }
+        out
+    }
 }
 
 /// 执行一次纠正。
@@ -531,6 +614,172 @@ pub fn run(runtime: &Runtime, request: &CorrectRequest) -> Result<CorrectOutcome
     })
 }
 
+/// 缓冲频道里的资源「转正」并改挂到目标章节（`N_ep` / `F_anime` 走这条）。
+///
+/// 与 [`run`] 的区别只有两点：
+/// - 资源在 `cache_resources` 里，按 `cache_id` 找——不看「源章节 id」，因为缓存
+///   条目的 `episodeId` 是自动匹配来的，本来就可能是空的或错的；
+/// - 落地时清掉 `cache_id` → 写进 `resources`，所以这次纠正顺带完成了发布
+///   （TS 的 `rebindCacheResourceAnime` 也是这个语义，只是它没有集数重写和覆盖处理）。
+///
+/// `to_episode` 为 `None` 表示管理员只给了条目（`F_anime` 常见）：这时按资源自己的
+/// 集数字符串去目标番的章节表里反查章节 id，查不到就留空（宁可没有链接，也不能
+/// 指向旧番的章节）。
+pub fn publish_cached(
+    runtime: &Runtime,
+    cache_id: i64,
+    to_subject: i64,
+    to_episode: Option<i64>,
+) -> Result<CorrectOutcome, String> {
+    let docs = runtime
+        .store
+        .find(
+            "cache_resources",
+            json!({ "cache_id": cache_id }),
+            None,
+            None,
+            None,
+        )
+        .map_err(|error| format!("读缓冲资源失败：{error}"))?;
+    let matched: Vec<EpisodeResourceDoc> = docs.into_iter().filter_map(decode_resource).collect();
+    if matched.is_empty() {
+        return Err(format!("缓存条目 {cache_id} 没有资源记录，没法纠正"));
+    }
+
+    // 目标章节：给了 id 就解析（顺带把番剧定下来），只给了条目才按集数反查。
+    let to = to_episode
+        .map(|id| resolve_episode(runtime, id))
+        .transpose()?;
+    let subject_id = to
+        .as_ref()
+        .map(ResolvedEpisode::subject_id)
+        .unwrap_or(to_subject);
+    let chapters = if to.is_some() {
+        Vec::new()
+    } else {
+        chapters_of(runtime, subject_id)
+    };
+
+    let from_anime_id = matched[0].anime_id;
+    let from_name = anime_name(runtime, from_anime_id);
+    let to_name = anime_name(runtime, subject_id);
+    let from_label = matched[0].episode.clone();
+
+    // 目标番这一侧现有的资源：同集同组会被顶掉，先数清楚。
+    let to_rows: Vec<EpisodeResourceDoc> = runtime
+        .store
+        .find(
+            "resources",
+            json!({ "anime_id": subject_id }),
+            None,
+            None,
+            None,
+        )
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(decode_resource)
+        .collect();
+
+    let mut moved = 0usize;
+    let mut overwritten = 0usize;
+    let mut to_label = String::new();
+    for resource in &matched {
+        let new_episode = match &to {
+            Some(to) => target_episode(&resource.episode, to),
+            None => resource.episode.clone(),
+        };
+        let target_id = match &to {
+            Some(to) => Some(to.meta.id),
+            None => episode_id_of(&chapters, &new_episode),
+        };
+        if to_label.is_empty() {
+            to_label = new_episode.clone();
+        }
+
+        let same_cell: Vec<&EpisodeResourceDoc> = to_rows
+            .iter()
+            .filter(|row| row.episode == new_episode && row.groups == resource.groups)
+            .collect();
+        if from_anime_id != subject_id {
+            overwritten += same_cell.len();
+        }
+        let stale: Vec<&EpisodeResourceDoc> = same_cell
+            .into_iter()
+            .filter(|row| row.episode_id != target_id)
+            .collect();
+
+        let mut fresh = resource.clone();
+        fresh.anime_id = subject_id;
+        fresh.episode = new_episode;
+        // 反查不到就留空：留着旧 `episodeId` 只会指向错番的章节。
+        fresh.episode_id = target_id;
+        // 清掉 cache_id = 发布，`resource_upsert` 见它为空就写 `resources`。
+        fresh.cache_id = None;
+        fresh.id = None;
+        if let Err(error) = runtime.store.resource_upsert(&fresh) {
+            log!(&runtime.logger, Warn, "写入正片资源失败：{error}");
+            continue;
+        }
+        moved += 1;
+
+        for row in stale {
+            let mut filter = json!({
+                "anime_id": subject_id,
+                "episode": row.episode,
+                "groups": row.groups,
+            });
+            filter["episodeId"] = episode_id_filter(row.episode_id);
+            if let Err(error) = runtime.store.delete("resources", filter, true) {
+                log!(&runtime.logger, Warn, "删目标侧旧资源失败：{error}");
+            }
+        }
+
+        // 缓存库里的这条旧记录：留着会让「已收录 N 集」double count。
+        let mut filter = json!({
+            "cache_id": cache_id,
+            "anime_id": resource.anime_id,
+            "episode": resource.episode,
+            "groups": resource.groups,
+        });
+        filter["episodeId"] = episode_id_filter(resource.episode_id);
+        if let Err(error) = runtime.store.delete("cache_resources", filter, true) {
+            log!(&runtime.logger, Warn, "清理缓冲资源失败：{error}");
+        }
+    }
+    if moved == 0 {
+        return Err("写入正片资源失败，没有改动".to_owned());
+    }
+
+    // 导航只刷「正片库里真有这部番」的那一边：缓存番剧通常还没建档，
+    // 刷它只会多一条 warn。
+    let mut refreshed: Vec<i64> = Vec::new();
+    for id in [from_anime_id, subject_id] {
+        if refreshed.contains(&id) {
+            continue;
+        }
+        refreshed.push(id);
+        if !matches!(runtime.store.anime_by_id(id), Ok(Some(_))) {
+            continue;
+        }
+        if let Err(error) = crate::nav::refresh(runtime, id) {
+            log!(&runtime.logger, Warn, "刷新导航失败（{id}）：{error}");
+        }
+    }
+
+    Ok(CorrectOutcome {
+        from_name,
+        to_name,
+        from_label,
+        to_label,
+        from_origin: "缓存条目",
+        to_origin: if to.is_some() { "指定章节" } else { "按集数反查" },
+        moved,
+        captions: 0,
+        overwritten,
+        same_subject: from_anime_id == subject_id,
+    })
+}
+
 /// 反序列化一条资源（脏数据直接跳过，不让一条坏记录挡住整次纠正）。
 fn decode_resource(row: serde_json::Value) -> Option<EpisodeResourceDoc> {
     serde_json::from_value::<EpisodeResourceDoc>(row).ok()
@@ -666,6 +915,22 @@ mod tests {
             1001,
             &labels
         ));
+    }
+
+    #[test]
+    fn episode_id_matches_by_sort_and_type() {
+        let list = vec![
+            meta(1001, 1, 1.0, 0),
+            meta(1003, 1, 3.0, 0),
+            meta(1010, 1, 1.0, 1),
+        ];
+        assert_eq!(episode_id_of(&list, "03"), Some(1003));
+        assert_eq!(episode_id_of(&list, "3"), Some(1003), "前导零不影响");
+        assert_eq!(episode_id_of(&list, "SP1"), Some(1010), "SP 走 type=1");
+        assert_eq!(episode_id_of(&list, "99"), None);
+        // 剧场版没有编号，章节表里也对不上：按「没找到」处理，不是错误。
+        assert_eq!(episode_id_of(&list, "剧场版"), None);
+        assert_eq!(episode_id_of(&[], "01"), None);
     }
 
     #[test]

@@ -34,6 +34,7 @@ mod qb;
 mod review;
 mod runtime;
 mod store;
+mod tasks;
 mod td;
 mod text;
 mod web;

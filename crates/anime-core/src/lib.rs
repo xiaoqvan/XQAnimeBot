@@ -67,6 +67,12 @@ pub enum Error {
     /// 单独一个变体是为了让日志一眼看出「是宿主里的服务坏了」而不是业务逻辑错。
     #[error("服务调用失败（{service}）：{message}")]
     Service { service: String, message: String },
+    /// 管理员取消了这条任务（`/canceltask`）。
+    ///
+    /// 单独一个变体：取消是**预期内**的结束，不该按失败记日志、写检查点失败态，
+    /// 也不该在频道里报错——调用方按 `matches!` 区分。
+    #[error("任务已取消：{0}")]
+    Cancelled(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
