@@ -42,6 +42,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         handler: cmd_addanime,
     },
     CommandSpec {
+        name: "aimatch",
+        summary: "用 LLM Agent 匹配番剧（调试用）：/aimatch <标题> [集数]",
+        handler: cmd_aimatch,
+    },
+    CommandSpec {
         name: "animeblacklist",
         summary: "RSS 黑名单关键词（list/add/remove/clear）",
         handler: cmd_blacklist,
@@ -516,6 +521,81 @@ fn cmd_bgm(runtime: &Arc<Runtime>, command: &Command) {
         runtime.td.reply_text(target, text);
     });
 }
+/// `/aimatch <标题> [集数]`：拿 LLM Agent 实跑一次番剧匹配（调试用）。
+///
+/// 为什么要这条命令：Agent 的匹配质量只有真跑才知道（规则命中率、LLM 迭代几轮、
+/// 置信度分布），而这些在没有真 RSS 数据时看不出来。它同时也是「给了 API key 之后
+/// 第一件事」——一条命令就能确认链路通不通。
+fn cmd_aimatch(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let args = command.args.trim().to_owned();
+    if args.is_empty() {
+        runtime
+            .td
+            .reply_text(target, "用法：/aimatch <BT 标题> [集数]");
+        return;
+    }
+
+    // 最后一个参数如果是纯数字，当成集数（其余都是标题）。
+    let mut pieces: Vec<&str> = args.split_whitespace().collect();
+    let trailing_is_number = pieces
+        .last()
+        .is_some_and(|last| !last.is_empty() && last.chars().all(|ch| ch.is_ascii_digit()));
+    let explicit_episode = if trailing_is_number {
+        pieces.pop().map(str::to_owned)
+    } else {
+        None
+    };
+    let title = pieces.join(" ");
+
+    let runtime = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        use anime_core::ai::{BangumiAgent, MatchInput};
+        use anime_core::bangumi::{BgmClient, BgmTools};
+
+        // 番名候选：按字幕组规则解析；没有组标签（或组不在规则表里）就退回整条标题。
+        let team = anime_core::rss::fansub_of(&title).into_iter().next();
+        let (names, episode) = match anime_core::title::parse_info(&title, team.as_deref()) {
+            Some(info) if info.is_usable() => {
+                let episode = (info.episode != "未知").then_some(info.episode);
+                (info.names, episode)
+            }
+            _ => (vec![title.clone()], None),
+        };
+        let episode = explicit_episode.or(episode);
+
+        let tools = BgmTools::new(BgmClient::new(runtime.config.bangumi.clone()));
+        let agent = BangumiAgent::new(runtime.config.ai.clone(), tools);
+        let input = MatchInput {
+            title: title.clone(),
+            names,
+            episode: episode.clone(),
+        };
+        let result = agent.match_subject(&input, 1);
+
+        let text = format!(
+            "标题：{title}\n番名：{}\n集数：{}\n── 结果 ──\n条目：{}\n章节：{}（第 {} 集）\n置信度：{:.2}\n理由：{}",
+            input.names.join("、"),
+            episode.as_deref().unwrap_or("(未解析)"),
+            result
+                .subject_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "(无)".to_owned()),
+            result
+                .episode_id
+                .map(|id| id.to_string())
+                .unwrap_or_else(|| "(无)".to_owned()),
+            result
+                .episode_sort
+                .map(|sort| sort.to_string())
+                .unwrap_or_else(|| "-".to_owned()),
+            result.confidence,
+            result.reason
+        );
+        runtime.td.reply_text(target, text);
+    });
+}
+
 /// `/animeblacklist`：黑名单关键词增删查。存在 MongoDB 的 config 集合
 /// `{key:"animeBlacklist", list:[...]}`，与 TS 版完全一致，接老库直接互通。
 fn cmd_blacklist(runtime: &Arc<Runtime>, command: &Command) {

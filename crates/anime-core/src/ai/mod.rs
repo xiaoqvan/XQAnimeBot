@@ -1,11 +1,16 @@
-//! AI 兜底：集数抽取与章节匹配。
+//! AI 相关的两个层次。
 //!
-//! 对应 TS 的 `utils/animeParser.ts::extractEpisodeByAI` 与
-//! `bangumi/bangumiAgent.ts::aiEpisodeSearch`。区别只有一处：TS 把调用埋在两个
-//! 大函数里，这里抽成独立模块，**关掉 AI 时整条链路完全不受影响**。
+//! - [`agent`]：Bangumi 匹配 Agent（OpenAI **Responses API** + 工具调用）。
+//!   这是 TS `bangumiAgent.ts` 的照搬，负责「这条 BT 属于哪部番、第几集」。
+//! - [`AiClient`]：AI **兜底**（chat/completions 两次单发），只做集数抽取与章节匹配，
+//!   关掉时整条链路完全不受影响。
 //!
-//! 原则：AI 只做「兜底」，永远不是唯一判断。任何异常（没配 key、超时、返回不是
-//! JSON、模型给了不存在的章节）都返回 `None`，调用方继续走规则逻辑。
+//! 两者刻意分开：Agent 是主匹配器（有工具、有迭代循环、有置信度），
+//! AiClient 是规则失败后的补丁。别让它们互相调用。
+
+pub mod agent;
+
+pub use agent::{BangumiAgent, MatchInput, MatchResult};
 
 use serde_json::{Value, json};
 

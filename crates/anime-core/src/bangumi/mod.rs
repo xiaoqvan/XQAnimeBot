@@ -40,6 +40,7 @@
 
 pub mod oauth;
 pub mod subject;
+pub mod tools;
 
 use std::time::Duration;
 
@@ -55,6 +56,7 @@ pub use subject::{
     Collection, Episode, Images, Infobox, InfoboxItem, InfoboxValue, Rating, STAFF_KEYS, Subject,
     Tag,
 };
+pub use tools::{AnimeCandidate, BgmTools, EpisodeDetail, RelatedSubject};
 
 /// Bangumi 主站 API（**不是** bangumi.moe）。
 const API_BASE: &str = "https://api.bgm.tv";
@@ -112,6 +114,12 @@ impl BgmClient {
 
     pub fn config(&self) -> &BangumiConfig {
         &self.config
+    }
+
+    /// 共享的 [`Http`]。给 [`crate::bangumi::tools::BgmTools`] 这类「同一个连接池上的
+    /// 补充查询」用；业务主链应当直接调 `subject` / `episodes` / `search`。
+    pub fn http(&self) -> &Http {
+        &self.http
     }
 
     /// 配置里的用户 token。公开接口用不到，留给后续的用户收藏/`/v0/me`。
