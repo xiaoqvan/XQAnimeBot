@@ -331,7 +331,6 @@ fn run(
                 anime_id,
                 config.telegram.anime_channel,
                 message_id,
-                item.episode.as_deref(),
             )
     {
         log!(&runtime.logger, Warn, "记录 navVideoMessage 失败：{error}");

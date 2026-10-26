@@ -21,13 +21,13 @@ pub struct MessageRef {
 }
 
 /// 单集资源消息引用（TS 的 `navMessageType`，带 `page` 页码）。
+///
+/// `page` 是导航里的分页序号（指向导航频道里的文本消息）；集数资源本身在
+/// `resources` 集合，不在这里。字段与 TS 逐字对齐，没有 `episode`。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct NavMessage {
     #[serde(default)]
     pub page: i64,
-    /// 这一条对应第几集（`01` / `SP`…）。TS 的导航文本按它排序展示。
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub episode: Option<String>,
     #[serde(default)]
     pub chat_id: i64,
     #[serde(default)]
@@ -384,24 +384,43 @@ impl CheckpointStatus {
 }
 
 /// `bangumi_users` 集合：Telegram 用户 ↔ Bangumi 账号的绑定。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// 字段与 TS 版逐字对齐（camelCase）：`id` 是**内部自增序列**（`getNextSequence`），
+/// Bangumi 用户 id 放在 `bgmUserId`；`tgUserId` 用于「这个 Telegram 用户绑的是哪个
+/// BGM 账号」。OAuth 凭证（access/refresh token、过期时间）也都在这里。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct BangumiUserDoc {
-    #[serde(rename = "tgUserId")]
-    pub tg_user_id: i64,
-    /// Bangumi 用户 id。
-    pub id: i64,
-    pub username: String,
-    pub nickname: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub avatar: Option<String>,
-    /// 该用户的 Bangumi access token（收藏操作要用它代表用户本人）。
-    /// 与 TS 版一致：token 存在 `bangumi_users` 里，不写进日志。
+    /// 内部自增 id（唯一主键，用于 oauth state）。
     #[serde(default)]
-    pub access_token: String,
-    #[serde(rename = "createdAt")]
-    pub created_at: DateTime<Utc>,
-    #[serde(rename = "updatedAt")]
-    pub updated_at: DateTime<Utc>,
+    pub id: i64,
+    /// Telegram 用户 id（绑定用，必需）。
+    pub tg_user_id: i64,
+    /// OAuth 访问凭证。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_token: Option<String>,
+    /// OAuth 刷新凭证。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// 过期时间（秒）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_in: Option<i64>,
+    /// OAuth token 类型（如 `"Bearer"`）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_type: Option<String>,
+    /// Bangumi 平台返回的用户 id（bgm.tv 的 user id）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bgm_user_id: Option<i64>,
+    /// OAuth scope 字符串。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    /// 最近一次授权（或刷新）时间。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_time: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 /// `cacheItem` 集合：待审核的新番缓存。
@@ -411,6 +430,113 @@ pub struct CacheItem {
     pub item: AnimeItem,
     #[serde(rename = "createdAt")]
     pub created_at: DateTime<Utc>,
+}
+
+/// 分段/相册上传时每条视频消息的引用（TS 的 `albumMessageType`）。
+///
+/// 字段与 TS 逐字对齐（全是 snake_case：`chat_id` / `message_id` / `videoid`…）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct AlbumMessage {
+    #[serde(default)]
+    pub chat_id: i64,
+    #[serde(default)]
+    pub message_id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thread_id: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic_id: Option<serde_json::Value>,
+    /// TG 视频远程 ID。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub videoid: Option<String>,
+    /// TG 视频唯一 ID。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_id: Option<String>,
+}
+
+/// `resources` / `cache_resources` 集合：某部番某集的资源（字幕组、消息、视频）。
+///
+/// TS 的 `EpisodeResourceDoc`——导航正文、内联取视频、集数纠正都从这张表读。
+/// 字段名与 TS 逐字对齐（`anime_id` / `unique_id` / `cache_id` 是 snake_case，
+/// `episodeId` / `createdAt` 是 camelCase，TS 本来就这么混排）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EpisodeResourceDoc {
+    /// Mongo ObjectId（字符串形态，读老库时可能有，写入时留空让驱动生成）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// 所属动漫（Bangumi subject id）。
+    pub anime_id: i64,
+    /// 集数（字符串，如 `"01"` / `"SP"`）。
+    pub episode: String,
+    /// 对应 eps.id（章节 id）。
+    #[serde(rename = "episodeId", default, skip_serializing_if = "Option::is_none")]
+    pub episode_id: Option<i64>,
+    /// 字幕组列表。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<String>,
+    /// 标题。
+    pub title: String,
+    /// 名称（解析用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub names: Option<Vec<String>>,
+    /// TG 单条消息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<MessageRef>,
+    /// TG 分段消息。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub messages: Option<Vec<AlbumMessage>>,
+    /// 单视频 videoid。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub videoid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_id: Option<String>,
+    /// 缓存 id（cache_resources 用，指向 cacheItem.id）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_id: Option<serde_json::Value>,
+    /// 来源。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(rename = "createdAt", default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+/// `pendingReviews` 集合：待审核番剧文档。
+///
+/// TS 用自增 `id` 当主键（回调只带 `r=<id>`，详情回查文档）；结构化字段取代旧版
+/// 的 `payload` blob。`matchDetail` / `episodeMatch` 是 LLM 与集数匹配的结论，阶段 3/7
+/// 填充，这里先用 `Value` 承载（保持与 TS 的字段名一致，便于双向互通）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingReviewDoc {
+    /// 自增 id（回调数据里携带）。
+    #[serde(default)]
+    pub id: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    /// 审核状态。
+    #[serde(default)]
+    pub status: String,
+    /// 原始 RSS 条目数据。
+    pub item: Option<AnimeItem>,
+    /// 匹配到的番剧信息。
+    pub anime: Option<Anime>,
+    /// 匹配到的章节 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_id: Option<i64>,
+    /// 展示用的集数编号（sort 字段）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_sort: Option<f64>,
+    /// 已发送到动漫频道的消息数据。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sent_messages: Option<Vec<AlbumMessage>>,
+    /// 发送的主消息 id。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_message: Option<MessageRef>,
+    /// LLM 匹配详情。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_detail: Option<serde_json::Value>,
+    /// 集数匹配结果。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub episode_match: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -464,5 +590,91 @@ mod tests {
         assert!(CheckpointStatus::Running.is_resumable());
         assert!(!CheckpointStatus::Failed.is_resumable());
         assert!(!CheckpointStatus::Done.is_resumable());
+    }
+
+    #[test]
+    fn bangumi_user_reads_ts_camelcase_shape() {
+        // newdbtest 真实形状：camelCase、id 是内部自增、bgmUserId 存 Bangumi 用户 id，
+        // 没有 username/nickname。旧代码会报 missing field 'username'，这里必须能读。
+        let raw = r#"{
+            "id": 7,
+            "tgUserId": 123456,
+            "accessToken": "tok",
+            "refreshToken": "ref",
+            "expiresIn": 604800,
+            "tokenType": "Bearer",
+            "bgmUserId": 88888,
+            "scope": "read",
+            "authTime": "2026-10-27T00:00:00Z"
+        }"#;
+        let user: BangumiUserDoc = serde_json::from_str(raw).unwrap();
+        assert_eq!(user.id, 7);
+        assert_eq!(user.tg_user_id, 123456);
+        assert_eq!(user.access_token.as_deref(), Some("tok"));
+        assert_eq!(user.refresh_token.as_deref(), Some("ref"));
+        assert_eq!(user.expires_in, Some(604800));
+        assert_eq!(user.token_type.as_deref(), Some("Bearer"));
+        assert_eq!(user.bgm_user_id, Some(88888));
+
+        // 反向序列化也是 TS 认得的 camelCase 字段名。
+        let back = serde_json::to_value(&user).unwrap();
+        assert!(back.get("accessToken").is_some());
+        assert!(back.get("bgmUserId").is_some());
+        assert!(back.get("username").is_none(), "TS 不存 username");
+    }
+
+    #[test]
+    fn episode_resource_reads_ts_camelcase_shape() {
+        let raw = r#"{
+            "anime_id": 400602,
+            "episode": "01",
+            "episodeId": 12345,
+            "groups": ["喵萌奶茶屋"],
+            "title": "[喵萌奶茶屋] 葬送的芙莉莲 [01]",
+            "names": ["葬送的芙莉莲"],
+            "message": {"chat_id": -100, "message_id": 5, "link": "https://t.me/c/1/5"},
+            "messages": [{"chat_id": -100, "message_id": 6}],
+            "videoid": "v1",
+            "unique_id": "u1",
+            "cache_id": 99,
+            "source": "Baha",
+            "createdAt": "2026-10-27T00:00:00Z"
+        }"#;
+        let res: EpisodeResourceDoc = serde_json::from_str(raw).unwrap();
+        assert_eq!(res.anime_id, 400602);
+        assert_eq!(res.episode, "01");
+        assert_eq!(res.episode_id, Some(12345));
+        assert_eq!(res.groups, vec!["喵萌奶茶屋".to_owned()]);
+        assert_eq!(res.message.as_ref().unwrap().message_id, 5);
+        assert_eq!(res.messages.as_ref().unwrap()[0].message_id, 6);
+
+        let back = serde_json::to_value(&res).unwrap();
+        assert!(back.get("anime_id").is_some());
+        assert!(back.get("episodeId").is_some());
+        assert!(back.get("cache_id").is_some());
+    }
+
+    #[test]
+    fn pending_review_reads_ts_camelcase_shape() {
+        let raw = r#"{
+            "id": 3,
+            "createdAt": "2026-10-27T00:00:00Z",
+            "status": "pending",
+            "item": {"title": "某番 [01]", "pubDate": "x", "magnet": "m", "link": "l", "team": "t", "fansub": ["t"], "names": ["某番"]},
+            "anime": {"id": 400602, "name": "某番", "name_cn": "某番"},
+            "episodeId": 12345,
+            "episodeSort": 1.0,
+            "sentMessages": [{"chat_id": -100, "message_id": 6}],
+            "primaryMessage": {"chat_id": -100, "message_id": 6}
+        }"#;
+        let review: PendingReviewDoc = serde_json::from_str(raw).unwrap();
+        assert_eq!(review.id, 3);
+        assert_eq!(review.status, "pending");
+        assert_eq!(review.item.as_ref().unwrap().title, "某番 [01]");
+        assert_eq!(review.anime.as_ref().unwrap().id, 400602);
+        assert_eq!(review.episode_id, Some(12345));
+        assert_eq!(review.episode_sort, Some(1.0));
+        assert_eq!(review.sent_messages.as_ref().unwrap()[0].message_id, 6);
+        assert_eq!(review.primary_message.as_ref().unwrap().message_id, 6);
     }
 }

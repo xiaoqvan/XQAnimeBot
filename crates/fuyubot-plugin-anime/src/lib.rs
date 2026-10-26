@@ -72,14 +72,20 @@ impl Plugin for AnimePlugin {
     }
 
     fn start(&mut self, config_json: &str) -> Result<(), String> {
-        let (config, source) = Bootstrap::parse(config_json).resolve().map_err(|error| {
-            // 宿主只会说「plugin_start 返回 -1」，把真正的原因写进日志。
-            self.host.log(
-                LogLevel::Error,
-                &format!("[{TAG}] 启动失败（配置）：{error}"),
-            );
-            error
-        })?;
+        // 配置三层来源：内联 config_toml → 宿主全局 [plugin.xq.anime] → 内置默认值。
+        // 全局配置经 host.get_config 读整段 JSON，再用环境变量覆盖凭据。
+        let global_json = self.host.get_config("xq.anime", "");
+        let (config, source) =
+            Bootstrap::parse(config_json)
+                .resolve_with_env(global_json.as_deref())
+                .map_err(|error| {
+                    // 宿主只会说「plugin_start 返回 -1」，把真正的原因写进日志。
+                    self.host.log(
+                        LogLevel::Error,
+                        &format!("[{TAG}] 启动失败（配置）：{error}"),
+                    );
+                    error
+                })?;
         let runtime = Runtime::new(self.host, config, source);
         runtime.log_boot();
 
@@ -160,7 +166,7 @@ fn configure_storage(runtime: Arc<Runtime>) {
                     let input = serde_json::json!({
                         "uri": mongo.uri,
                         "db": mongo.database,
-                        "timeout_ms": 10_000u64,
+                        "timeout_ms": mongo.timeout_ms,
                     });
                     let _ = call_service(&runtime.host, "storage.mongo", "configure", &input);
                     // 读回真实状态：mongo 插件自己的 start 可能晚一步把库改回去，

@@ -1,7 +1,7 @@
 //! 配置。TS 版把这些放在 `database/set.json` + 环境变量里；这里统一成一份 TOML，
 //! 字段名改成更自然的 snake_case（**这是配置，不是数据库文档，不需要兼容老格式**）。
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +92,12 @@ impl QbConfig {
 pub struct MongoConfig {
     pub uri: String,
     pub database: String,
+    /// 连接/选择超时（毫秒）。云端抖动时宁可快速失败，默认 10 秒。
+    ///
+    /// 之前这个字段在 `xq-anime.toml.example` 里有、但结构体没有，照抄样例会被
+    /// `deny_unknown_fields` 拒掉起不来；下发 `storage.mongo` 时又写死 `10_000`。
+    /// 现在把它接成真正的可配值。
+    pub timeout_ms: u64,
 }
 
 impl Default for MongoConfig {
@@ -101,6 +107,7 @@ impl Default for MongoConfig {
         Self {
             uri: "mongodb://127.0.0.1:27017".to_owned(),
             database: "fuyubot".to_owned(),
+            timeout_ms: 10_000,
         }
     }
 }
@@ -240,22 +247,12 @@ impl Config {
         Self::parse(&text)
     }
 
-    /// 配置定位顺序：显式路径 → 环境变量 `XQ_ANIME_CONFIG` → 当前目录 `xq-anime.toml`。
+    /// 从 JSON 值解析——宿主全局配置的 `[plugin.xq.anime]` 段给的是 JSON 不是 TOML。
     ///
-    /// 全都没有就返回默认配置 + `None`，让调用方能选择「按默认跑」还是「拒绝启动」。
-    pub fn discover(explicit: Option<&Path>) -> Result<(Self, Option<PathBuf>)> {
-        let candidates: Vec<PathBuf> = explicit
-            .map(Path::to_path_buf)
-            .into_iter()
-            .chain(std::env::var_os("XQ_ANIME_CONFIG").map(PathBuf::from))
-            .chain(std::iter::once(PathBuf::from("xq-anime.toml")))
-            .collect();
-        for path in candidates {
-            if path.is_file() {
-                return Ok((Self::load(&path)?, Some(path)));
-            }
-        }
-        Ok((Self::default(), None))
+    /// `deny_unknown_fields` 对 JSON 同样生效：字段对齐的约束不变，拼错照样炸出来。
+    pub fn from_json(value: &serde_json::Value) -> Result<Self> {
+        serde_json::from_value(value.clone())
+            .map_err(|e| Error::Config(format!("解析 [plugin.xq.anime] JSON 失败：{e}")))
     }
 
     /// 环境变量覆盖：凭据一律允许走环境变量，避免写进仓库里的配置文件。
@@ -313,5 +310,29 @@ mod tests {
     fn missing_file_reports_the_path() {
         let err = Config::load("definitely-not-here.toml").unwrap_err();
         assert!(err.to_string().contains("definitely-not-here.toml"));
+    }
+
+    #[test]
+    fn from_json_accepts_timeout_ms_and_full_section() {
+        // 全局配置给的是 JSON（TOML 转过来的）。`timeout_ms` 之前在样例里存在但结构体
+        // 没有，照抄样例会被 deny_unknown_fields 拒掉——这条测试钉住它现在是合法字段。
+        let json = serde_json::json!({
+            "telegram": { "anime_channel": -100123 },
+            "mongodb": { "uri": "mongodb://x", "timeout_ms": 3000 },
+            "rss": { "workers": 5, "mkv_workers": 2 }
+        });
+        let config = Config::from_json(&json).unwrap();
+        assert_eq!(config.mongodb.timeout_ms, 3000);
+        assert_eq!(config.mongodb.uri, "mongodb://x");
+        assert_eq!(config.rss.workers, 5);
+        assert_eq!(config.rss.mkv_workers, 2);
+        assert_eq!(config.telegram.anime_channel, -100123);
+    }
+
+    #[test]
+    fn from_json_rejects_unknown_field_like_toml() {
+        let json = serde_json::json!({ "telegram": { "anime_channle": 1 } });
+        let err = Config::from_json(&json).unwrap_err();
+        assert!(err.to_string().contains("anime_channle"), "{err}");
     }
 }

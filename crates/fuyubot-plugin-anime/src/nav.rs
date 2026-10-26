@@ -84,16 +84,17 @@ pub fn publish(runtime: &Runtime, subject: &Subject, episodes: &[Episode]) -> Re
     })
 }
 
-/// 把一条已发送的视频记进 navVideoMessage（导航里的资源列表）。
+/// 把一条导航分页消息记进 navVideoMessage（导航里的资源列表）。
 ///
-/// page 是导航里的分页序号：TS 每页放固定条数，这里先按「第几条」自增。
-/// 顺手取一次消息链接（getMessageLink）：导航文案里点得动比只有集数有用。
+/// `page` 是导航里的分页序号（指向导航频道里的文本消息）。**注意**：集数资源
+/// （哪部番第几集、哪个字幕组）进 `resources` 集合，不在这里——`navVideoMessage`
+/// 只存「导航频道里的分页文本消息」定位，字段与 TS 的 `navMessageType` 一致，
+/// 没有 `episode`。视频资源写 `resources` 在阶段 4 接。
 pub fn push_episode(
     runtime: &Runtime,
     anime_id: i64,
     chat_id: i64,
     message_id: i64,
-    episode: Option<&str>,
 ) -> Result<()> {
     let anime = runtime.store.anime_by_id(anime_id)?;
     let page = anime
@@ -107,7 +108,6 @@ pub fn push_episode(
         "chat_id": chat_id,
         "message_id": message_id,
         "thread_id": runtime.config.telegram.anime_group_thread_id,
-        "episode": episode,
         "link": link,
     });
     runtime.store.update(
@@ -140,36 +140,16 @@ fn message_link(runtime: &Runtime, chat_id: i64, message_id: i64) -> Option<Stri
     }
 }
 
-/// 导航卡文案：名字｜已收录 N 集 + 最近几条的资源行。
+/// 导航卡文案：名字｜已收录 N 集。
 ///
-/// 只列最近 8 条：导航卡有高度限制，列全了会撑爆版面；完整列表留给后续分页。
+/// 完整正文（`navmegtext`，含每集资源、按字幕组分组、页码导航）在阶段 4 接：
+/// 它从 `resources` 集合读集数资源，而不是从 `navVideoMessage`（那里只存分页消息）。
 pub fn caption_for(anime: &anime_core::models::Anime) -> String {
-    let mut text = format!(
+    format!(
         "{}｜已收录 {} 集",
         anime.display_name(),
         anime.nav_video_message.len()
-    );
-    let recent: Vec<String> = anime
-        .nav_video_message
-        .iter()
-        .rev()
-        .take(8)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|entry| {
-            let episode = entry.episode.as_deref().unwrap_or("?");
-            match entry.link.as_deref() {
-                Some(link) if !link.is_empty() => format!("第{episode}集 {link}"),
-                _ => format!("第{episode}集"),
-            }
-        })
-        .collect();
-    if !recent.is_empty() {
-        text.push('\n');
-        text.push_str(&recent.join("\n"));
-    }
-    text
+    )
 }
 
 /// 刷新导航卡的标题（已收录集数）。
@@ -203,44 +183,22 @@ mod tests {
     }
 
     #[test]
-    fn caption_lists_recent_episodes_with_links() {
+    fn caption_counts_nav_video_messages() {
         use anime_core::models::{Anime, NavMessage};
         let anime = Anime {
             id: 1,
             name_cn: Some("某番".to_owned()),
             nav_message: Some(Default::default()),
             nav_video_message: vec![
-                NavMessage { page: 1, episode: Some("01".to_owned()), link: Some("https://t.me/c/1/10".to_owned()), ..Default::default() },
-                NavMessage { page: 2, episode: Some("02".to_owned()), link: None, ..Default::default() },
+                NavMessage { page: 1, link: Some("https://t.me/c/1/10".to_owned()), ..Default::default() },
+                NavMessage { page: 2, ..Default::default() },
             ],
             ..Default::default()
         };
         let text = caption_for(&anime);
-        assert!(text.contains("已收录 2 集"), "{text}");
-        assert!(text.contains("第01集 https://t.me/c/1/10"), "{text}");
-        assert!(text.contains("第02集"), "{text}");
+        assert_eq!(text, "某番｜已收录 2 集", "{text}");
     }
 
-    #[test]
-    fn caption_keeps_only_the_last_eight_episodes() {
-        use anime_core::models::{Anime, NavMessage};
-        let anime = Anime {
-            id: 1,
-            name_cn: Some("某番".to_owned()),
-            nav_video_message: (1..=10)
-                .map(|index| NavMessage {
-                    page: index,
-                    episode: Some(format!("{index:02}")),
-                    ..Default::default()
-                })
-                .collect(),
-            ..Default::default()
-        };
-        let text = caption_for(&anime);
-        assert!(!text.contains("第01集"), "最早的应被挤掉：{text}");
-        assert!(text.contains("第10集"), "{text}");
-        assert_eq!(text.lines().count(), 9, "标题 + 8 条：{text}");
-    }
     #[test]
     fn caption_uses_cn_name_platform_and_episode_count() {
         assert_eq!(caption(&subject(28)), "葬送的芙莉莲｜TV｜全 28 集");

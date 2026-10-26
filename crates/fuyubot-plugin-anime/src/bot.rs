@@ -43,7 +43,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "animeblacklist",
-        summary: "查看 RSS 黑名单关键词",
+        summary: "RSS 黑名单关键词（list/add/remove/clear）",
         handler: cmd_blacklist,
     },
     CommandSpec {
@@ -446,18 +446,16 @@ fn cmd_bindbangumi(runtime: &Arc<Runtime>, command: &Command) {
         let client = BgmClient::new(config);
         let text = match client.me() {
             Ok(user) => {
+                // `id` 是内部自增主键（由 store 分配），Bangumi 用户 id 放 `bgmUserId`；
+                // username/nickname/avatar 是 API 返回值，TS 不落库，这里也不存。
                 let doc = anime_core::models::BangumiUserDoc {
                     tg_user_id,
-                    id: user.id as i64,
-                    username: user.username.clone(),
-                    nickname: user.nickname.clone(),
-                    avatar: Some(user.avatar.best().to_owned()).filter(|url| !url.is_empty()),
-                    access_token: token.clone(),
-                    created_at: chrono::Utc::now(),
-                    updated_at: chrono::Utc::now(),
+                    bgm_user_id: Some(user.id as i64),
+                    access_token: Some(token.clone()),
+                    ..Default::default()
                 };
                 match runtime.store.bangumi_user_upsert(&doc) {
-                    Ok(()) => format!(
+                    Ok(_) => format!(
                         "已绑定 Bangumi 账号：{}（{}）",
                         if user.nickname.is_empty() { &user.username } else { &user.nickname },
                         user.id
@@ -518,13 +516,49 @@ fn cmd_bgm(runtime: &Arc<Runtime>, command: &Command) {
         runtime.td.reply_text(target, text);
     });
 }
-/// `/animeblacklist`：只读展示。增删改需要写 config 集合，等审核链路一起做。
+/// `/animeblacklist`：黑名单关键词增删查。存在 MongoDB 的 config 集合
+/// `{key:"animeBlacklist", list:[...]}`，与 TS 版完全一致，接老库直接互通。
 fn cmd_blacklist(runtime: &Arc<Runtime>, command: &Command) {
+    use anime_core::store::Storage;
     let target = Target::new(command.chat_id, command.message_id);
-    let text = match runtime.store.config_list("animeBlacklist") {
-        Ok(list) if list.is_empty() => "黑名单为空".to_owned(),
-        Ok(list) => format!("黑名单 {} 条：\n{}", list.len(), list.join("、")),
-        Err(error) => format!("读取黑名单失败：{error}"),
+
+    let mut parts = command.args.split_whitespace();
+    let sub = parts.next().unwrap_or("").to_lowercase();
+    let keyword = parts.collect::<Vec<_>>().join(" ");
+
+    let text = match sub.as_str() {
+        "list" | "" => match runtime.store.config_list("animeBlacklist") {
+            Ok(list) if list.is_empty() => "黑名单为空".to_owned(),
+            Ok(list) => format!("黑名单 {} 条：\n{}", list.len(), list.join("、")),
+            Err(error) => format!("读取黑名单失败：{error}"),
+        },
+        "add" => {
+            if keyword.is_empty() {
+                "用法：/animeblacklist add <关键词>".to_owned()
+            } else {
+                match runtime.store.config_list_add("animeBlacklist", &keyword) {
+                    Ok(true) => format!("已添加黑名单关键词：{keyword}"),
+                    Ok(false) => format!("关键词「{keyword}」已在黑名单中"),
+                    Err(error) => format!("添加失败：{error}"),
+                }
+            }
+        }
+        "remove" | "delete" => {
+            if keyword.is_empty() {
+                "用法：/animeblacklist remove <关键词>".to_owned()
+            } else {
+                match runtime.store.config_list_remove("animeBlacklist", &keyword) {
+                    Ok(true) => format!("已移除黑名单关键词：{keyword}"),
+                    Ok(false) => format!("关键词「{keyword}」不在黑名单中"),
+                    Err(error) => format!("移除失败：{error}"),
+                }
+            }
+        }
+        "clear" => match runtime.store.config_list_clear("animeBlacklist") {
+            Ok(()) => "已清空黑名单".to_owned(),
+            Err(error) => format!("清空失败：{error}"),
+        },
+        _ => "未知子命令。可用：list / add / remove / clear".to_owned(),
     };
     runtime.td.reply_text(target, text);
 }
@@ -686,10 +720,7 @@ fn cmd_ping(runtime: &Arc<Runtime>, command: &Command) {
 
 fn cmd_status(runtime: &Arc<Runtime>, command: &Command) {
     let config = &runtime.config;
-    let source = runtime.config_source.as_ref().map_or_else(
-        || "内置默认值".to_owned(),
-        |path| path.display().to_string(),
-    );
+    let source = runtime.config_source.describe();
 
     // 依赖服务是否已在宿主里注册——比任何自检都直接：缺了就说明对应插件没装/没起来。
     let services = [

@@ -216,26 +216,8 @@ pub trait Storage {
     }
 
     /// 新增一条待审核缓存，返回分配到的自增 id。
-    ///
-    /// 宿主接口没有 findOneAndUpdate，拿不到原子自增序列，这里退一步用「当前最大 id + 1」。
-    /// 单写者（插件只有一个轮询线程）下与 TS 的 getNextSequence 等价；多写者并发时
-    /// 可能撞 id，这是当前 trait 能力的已知边界，等宿主补原子序列后再换。
     fn cache_item_add(&self, item: &AnimeItem) -> Result<i64> {
-        let latest = self.find(
-            "cacheItem",
-            json!({}),
-            Some(json!({ "_id": 0, "id": 1 })),
-            Some(json!({ "id": -1 })),
-            Some(1),
-        )?;
-        let next_id = latest
-            .first()
-            .and_then(|doc| doc.get("id"))
-            .and_then(value_as_i64)
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or_else(|| Error::Store("cacheItem 的 id 已用尽（i64 溢出）".to_owned()))?;
-
+        let next_id = self.next_sequence("cacheItemId")?;
         self.insert(
             "cacheItem",
             json!({
@@ -245,6 +227,43 @@ pub trait Storage {
             }),
         )?;
         Ok(next_id)
+    }
+
+    /// 从 `config` 集合取一个自增序列的下一个值（TS 的 `getNextSequence`）。
+    ///
+    /// 序列文档是 `{ type: name, seq: N }`（与黑名单的 `{ key, list }` 共存于 `config`，
+    /// 用 `type` 字段区分）。三个序列与 TS 对齐：`cacheItemId` / `bangumi_user_id` /
+    /// `pendingReviewId`——两边读写**同一个**序列文档，接老库后 id 不会撞号。
+    ///
+    /// ## 已知边界
+    ///
+    /// 宿主没有 `findOneAndUpdate`（拿不到原子递增后的返回值），这里用读-改-写：
+    /// 单写者（插件只有一个轮询线程 + 命令线程）下与 TS 的 `$inc` 等价；多写者并发
+    /// 可能撞号。等宿主补原子序列再换。
+    fn next_sequence(&self, name: &str) -> Result<i64> {
+        let doc = self.find_one(
+            "config",
+            json!({ "type": name }),
+            Some(json!({ "_id": 0, "seq": 1 })),
+        )?;
+        let current = doc
+            .and_then(|doc| doc.get("seq").cloned())
+            .and_then(|seq| value_as_i64(&seq))
+            .unwrap_or(0);
+        let next = current
+            .checked_add(1)
+            .ok_or_else(|| Error::Store(format!("序列 {name} 已用尽（i64 溢出）")))?;
+        self.update(
+            "config",
+            json!({ "type": name }),
+            json!({
+                "$set": { "seq": next },
+                "$setOnInsert": { "type": name },
+            }),
+            true,
+            false,
+        )?;
+        Ok(next)
     }
 
     /// 取 config 集合里某个 key 的 list 字段。
@@ -268,6 +287,54 @@ pub trait Storage {
                 Error::Store(format!("config[{key}] 的 list 不是字符串数组：{err}"))
             }),
         }
+    }
+
+    /// 往 config 集合某个 key 的 list 里**幂等**加一个词（已存在就不重复加）。
+    ///
+    /// 与 TS 的 `$addToSet` 语义一致；这里用读-改-写实现，因为 `Storage::update`
+    /// 的宿主实现不保证透传 `$addToSet`。黑名单是管理员手动操作、低并发，读-改-写
+    /// 的竞态窗口可接受（同 `cache_item_add` 的单写者假设）。
+    fn config_list_add(&self, key: &str, value: &str) -> Result<bool> {
+        let mut list = self.config_list(key)?;
+        if list.iter().any(|item| item == value) {
+            return Ok(false);
+        }
+        list.push(value.to_owned());
+        self.config_list_write(key, &list)?;
+        Ok(true)
+    }
+
+    /// 从 config 集合某个 key 的 list 里移除一个词；不存在返回 `false`。
+    fn config_list_remove(&self, key: &str, value: &str) -> Result<bool> {
+        let mut list = self.config_list(key)?;
+        let before = list.len();
+        list.retain(|item| item != value);
+        if list.len() == before {
+            return Ok(false);
+        }
+        self.config_list_write(key, &list)?;
+        Ok(true)
+    }
+
+    /// 清空 config 集合某个 key 的 list。
+    fn config_list_clear(&self, key: &str) -> Result<()> {
+        self.config_list_write(key, &[])?;
+        Ok(())
+    }
+
+    /// 把整个 list 写回 config 集合（`$set` + upsert），是上面三个方法共用的落盘动作。
+    fn config_list_write(&self, key: &str, list: &[String]) -> Result<()> {
+        self.update(
+            "config",
+            json!({ "key": key }),
+            json!({
+                "$set": { "list": list },
+                "$setOnInsert": { "key": key },
+            }),
+            true,
+            false,
+        )?;
+        Ok(())
     }
 
     /// 按 id upsert 一部番剧，并刷新 updatedAt。
@@ -306,6 +373,112 @@ pub trait Storage {
         Ok(())
     }
 
+    /// 把一部番剧写进 `cacheAnime` 集合（TS 的 `saveAnime(anime, cache=true)`）。
+    ///
+    /// 用于「拿不准、先缓存待审核」的番剧：等管理员确认后再从 `cacheAnime` 提升到
+    /// `anime`。与 [Self::save_anime] 对称，只是落的目标集合不同。
+    fn save_cached_anime(&self, anime: &Anime) -> Result<()> {
+        if anime.id <= 0 {
+            return Err(Error::Store(format!(
+                "save_cached_anime 需要有效的 anime.id，收到 {}",
+                anime.id
+            )));
+        }
+        let now = json!(Utc::now());
+        let mut doc = serde_json::to_value(anime)
+            .map_err(|err| Error::Store(format!("cacheAnime 文档序列化失败：{err}")))?;
+        let fields = doc
+            .as_object_mut()
+            .ok_or_else(|| Error::Store("cacheAnime 序列化结果不是 JSON 对象".to_owned()))?;
+        fields.remove("createdAt");
+        fields.insert("updatedAt".to_owned(), now.clone());
+        self.update(
+            "cacheAnime",
+            json!({ "id": anime.id }),
+            json!({
+                "$set": doc,
+                "$setOnInsert": { "createdAt": now },
+            }),
+            true,
+            false,
+        )?;
+        Ok(())
+    }
+
+    /// 从 `cacheAnime` 取一部番剧（按 id）。
+    fn cached_anime_by_id(&self, id: i64) -> Result<Option<Anime>> {
+        let doc = self.find_one("cacheAnime", json!({ "id": id }), None)?;
+        doc.map(|doc| decode("cacheAnime", doc)).transpose()
+    }
+
+    /// 把一条集数资源 upsert 进 `resources`（`cache=false`）或 `cache_resources`。
+    ///
+    /// 主键是 `anime_id + episode + groups (+ episodeId)`；`cache` 版还带 `cache_id`。
+    /// 返回「是否真的写进去了」（匹配到但字段没变时宿主回 0，语义上不算新增）。
+    fn resource_upsert(&self, resource: &crate::models::EpisodeResourceDoc) -> Result<bool> {
+        let collection = if resource.cache_id.is_some() {
+            "cache_resources"
+        } else {
+            "resources"
+        };
+
+        let mut filter = json!({
+            "anime_id": resource.anime_id,
+            "episode": resource.episode,
+            "groups": resource.groups,
+        });
+        if let Some(episode_id) = resource.episode_id {
+            filter["episodeId"] = json!(episode_id);
+        }
+        if resource.cache_id.is_some() {
+            let cache_key = resource
+                .cache_id
+                .clone()
+                .unwrap_or_else(|| json!(format!("{}-{}", resource.anime_id, resource.episode)));
+            filter["cache_id"] = cache_key;
+        }
+
+        let now = json!(Utc::now());
+        let mut doc = serde_json::to_value(resource)
+            .map_err(|err| Error::Store(format!("资源文档序列化失败：{err}")))?;
+        if let Some(fields) = doc.as_object_mut() {
+            fields.remove("createdAt");
+            fields.insert("updatedAt".to_owned(), now.clone());
+        }
+
+        let affected = self.update(
+            collection,
+            filter,
+            json!({
+                "$set": doc,
+                "$setOnInsert": { "createdAt": now },
+            }),
+            true,
+            false,
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// 查一部番剧的某集资源（`resources`，`cache=false`；`cache_resources`，`cache=true`）。
+    fn resource_find(
+        &self,
+        cache: bool,
+        anime_id: i64,
+        episode: &str,
+    ) -> Result<Vec<crate::models::EpisodeResourceDoc>> {
+        let collection = if cache { "cache_resources" } else { "resources" };
+        let docs = self.find(
+            collection,
+            json!({ "anime_id": anime_id, "episode": episode }),
+            Some(json!({ "_id": 0 })),
+            None,
+            None,
+        )?;
+        docs.into_iter()
+            .map(|doc| decode("resources", doc))
+            .collect()
+    }
+
     /// 按关键词模糊搜番剧（对应 TS 的 `searchAnime`）。
     ///
     /// 先搜 name / name_cn，没结果再搜 names 数组——TS 也是这个顺序，
@@ -342,11 +515,21 @@ pub trait Storage {
 
 // ── Bangumi 账号绑定（bangumi_users）──────────────────────────────
 
-    /// 写入/更新一条绑定（按 `tgUserId` upsert，createdAt 只写一次）。
-    fn bangumi_user_upsert(&self, user: &crate::models::BangumiUserDoc) -> Result<()> {
+    /// 写入/更新一条绑定（按 `tgUserId` upsert，`createdAt` 只写一次）。
+    ///
+    /// `id` 是内部自增主键：新绑定时分配 `bangumi_user_id` 序列，已绑定时保留原 id
+    /// （更新凭证 / 刷新 token 不该换主键）。Bangumi 用户 id 存在 `bgmUserId`。
+    fn bangumi_user_upsert(&self, user: &crate::models::BangumiUserDoc) -> Result<i64> {
+        // 已绑定则沿用原内部 id，否则分配新序列。
+        let id = match self.bangumi_user_by_tg(user.tg_user_id)? {
+            Some(existing) => existing.id,
+            None => self.next_sequence("bangumi_user_id")?,
+        };
+
         let mut doc = serde_json::to_value(user)
             .map_err(|err| Error::Store(format!("绑定文档序列化失败：{err}")))?;
         if let Some(fields) = doc.as_object_mut() {
+            fields.insert("id".to_owned(), json!(id));
             fields.remove("createdAt");
             fields.insert("updatedAt".to_owned(), json!(Utc::now()));
         }
@@ -357,7 +540,7 @@ pub trait Storage {
             true,
             false,
         )?;
-        Ok(())
+        Ok(id)
     }
 
     /// 按 Telegram 用户 id 取绑定。
@@ -416,63 +599,40 @@ pub trait Storage {
 
     // ── 待审核（pendingReviews）──────────────────────────────────────────
 
-    /// 写入一条待审核记录（按 `key` upsert），初始状态固定 [PENDING_REVIEW_STATUS]。
+    /// 写入一条待审核记录，返回分配到的自增 id（TS 的 `createPendingReview`）。
     ///
-    /// ## 与 TS 的差异
-    ///
-    /// TS 的 `pendingReviews` 用自增 `id` 当主键（`getNextSequence`）；宿主接口没有
-    /// 原子自增（见 [Self::cache_item_add] 的说明），这里先用业务侧生成的 `key`
-    /// 字符串当主键，也不返回自增 id。等宿主补上 `findOneAndUpdate` 再换回自增；
-    /// 在那之前 `key` 才是稳定的定位方式。
-    ///
-    /// 同一个 key 重复写不会多一条：`createdAt` 只在插入时写，`payload` / `updatedAt`
-    /// 每次刷新，状态也回到 pending——用户重新排队审核时，旧的批准/驳回结论作废。
-    fn pending_review_insert(&self, key: &str, payload: &Value) -> Result<()> {
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(Error::Store(
-                "pending_review_insert 拒绝空 key（key 是主键）".to_owned(),
-            ));
+    /// 主键是自增 `id`（`pendingReviewId` 序列），回调只带 `r=<id>`，详情回查文档。
+    /// `id` / `status` / `createdAt` 由本方法补，调用方只需给业务字段（item/anime/…）。
+    fn pending_review_insert(&self, doc: &crate::models::PendingReviewDoc) -> Result<i64> {
+        let id = self.next_sequence("pendingReviewId")?;
+        let mut value = serde_json::to_value(doc)
+            .map_err(|err| Error::Store(format!("待审核文档序列化失败：{err}")))?;
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert("id".to_owned(), json!(id));
+            fields.insert("status".to_owned(), json!(PENDING_REVIEW_STATUS));
+            fields.insert("createdAt".to_owned(), json!(Utc::now()));
         }
-
-        let now = Utc::now();
-        self.update(
-            "pendingReviews",
-            json!({ "key": key }),
-            json!({
-                "$set": { "status": PENDING_REVIEW_STATUS, "payload": payload, "updatedAt": now },
-                "$setOnInsert": { "createdAt": now },
-            }),
-            true,
-            false,
-        )?;
-        Ok(())
+        self.insert("pendingReviews", value)?;
+        Ok(id)
     }
 
-    /// 改一条待审核记录的状态，并刷新 `updatedAt`。
+    /// 改一条待审核记录的状态（按自增 `id`），并刷新 `updatedAt`。
     ///
     /// 状态取值由调用方约定（审核动作就是 `"approved"` / `"rejected"`）；这里只拒绝
     /// 空串，不维护白名单——集合里可能还有别的业务写进来的历史状态。
     ///
     /// **返回 `Ok(())` 不代表一定命中**：宿主回的是「真正改动」的条数，状态没变化
-    /// 时也是 0，和「key 不存在」区分不开。要确认存在，先调 [Self::pending_review_get]。
-    fn pending_review_set_status(&self, key: &str, status: &str) -> Result<()> {
-        let key = key.trim();
+    /// 时也是 0，和「id 不存在」区分不开。要确认存在，先调 [Self::pending_review_get]。
+    fn pending_review_set_status(&self, id: i64, status: &str) -> Result<()> {
         let status = status.trim();
-        if key.is_empty() {
-            return Err(Error::Store(
-                "pending_review_set_status 拒绝空 key".to_owned(),
-            ));
-        }
         if status.is_empty() {
             return Err(Error::Store(format!(
-                "pending_review_set_status 拒绝空状态（key={key}）"
+                "pending_review_set_status 拒绝空状态（id={id}）"
             )));
         }
-
         self.update(
             "pendingReviews",
-            json!({ "key": key }),
+            json!({ "id": id }),
             json!({ "$set": { "status": status, "updatedAt": Utc::now() } }),
             false,
             false,
@@ -480,18 +640,17 @@ pub trait Storage {
         Ok(())
     }
 
-    /// 按 key 取一条待审核记录（整份文档：key / status / payload / 时间戳）。
+    /// 按自增 `id` 取一条待审核记录（整份文档）。
     ///
-    /// 空 key 直接当「没有」返回，不去查库——空 key 不可能命中（写入时就被拒了）。
-    /// 投影掉 `_id`：业务层不该拿宿主的主键当定位方式，`key` 才是。
-    fn pending_review_get(&self, key: &str) -> Result<Option<Value>> {
-        let key = key.trim();
-        if key.is_empty() {
+    /// `id <= 0` 直接当「没有」返回，不去查库——自增序列从 1 起，非正数不可能是主键。
+    /// 投影掉 `_id`：业务层不该拿宿主的主键当定位方式，自增 `id` 才是。
+    fn pending_review_get(&self, id: i64) -> Result<Option<Value>> {
+        if id <= 0 {
             return Ok(None);
         }
         self.find_one(
             "pendingReviews",
-            json!({ "key": key }),
+            json!({ "id": id }),
             Some(json!({ "_id": 0 })),
         )
     }
@@ -1188,6 +1347,49 @@ mod tests {
     }
 
     #[test]
+    fn config_list_add_is_idempotent() {
+        let store = FakeStorage::with_docs(&[(
+            "config",
+            vec![json!({ "key": "animeBlacklist", "list": ["甲"] })],
+        )]);
+
+        // 新词加进去，返回 true。
+        assert!(store.config_list_add("animeBlacklist", "乙").unwrap());
+        assert_eq!(
+            store.config_list("animeBlacklist").unwrap(),
+            vec!["甲".to_owned(), "乙".to_owned()]
+        );
+
+        // 重复词不加，返回 false。
+        assert!(!store.config_list_add("animeBlacklist", "乙").unwrap());
+        assert_eq!(
+            store.config_list("animeBlacklist").unwrap(),
+            vec!["甲".to_owned(), "乙".to_owned()]
+        );
+
+        // 不存在的 key：先 upsert 出文档再加词。
+        assert!(store.config_list_add("newKey", "词").unwrap());
+        assert_eq!(store.config_list("newKey").unwrap(), vec!["词".to_owned()]);
+    }
+
+    #[test]
+    fn config_list_remove_and_clear() {
+        let store = FakeStorage::with_docs(&[(
+            "config",
+            vec![json!({ "key": "animeBlacklist", "list": ["甲", "乙"] })],
+        )]);
+
+        assert!(store.config_list_remove("animeBlacklist", "乙").unwrap());
+        assert_eq!(store.config_list("animeBlacklist").unwrap(), vec!["甲".to_owned()]);
+
+        // 不存在的词返回 false，列表不变。
+        assert!(!store.config_list_remove("animeBlacklist", "丙").unwrap());
+
+        store.config_list_clear("animeBlacklist").unwrap();
+        assert!(store.config_list("animeBlacklist").unwrap().is_empty());
+    }
+
+    #[test]
     fn has_torrent_title_matches_after_cleaning() {
         let raw = "  [组]\u{3000}某番  [01] ";
         let store =
@@ -1447,105 +1649,110 @@ mod tests {
         assert!(store.checkpoint_start("  ", crate::models::CheckpointKind::Rss, "下载", &json!({})).is_err());
     }
     #[test]
-    fn pending_review_insert_upserts_and_stamps_times() {
+    fn pending_review_insert_allocates_id_and_stamps_times() {
         let store = FakeStorage::default();
-        store
-            .pending_review_insert("k1", &json!({ "title": "某番", "chatId": -100 }))
-            .unwrap();
+        let doc = crate::models::PendingReviewDoc {
+            item: Some(AnimeItem {
+                title: "某番 [01]".to_owned(),
+                pub_date: String::new(),
+                magnet: format!("magnet:?xt=urn:btih:{HASH}"),
+                link: String::new(),
+                team: String::new(),
+                fansub: vec![],
+                names: vec![],
+                source: None,
+                episode: Some("01".to_owned()),
+            }),
+            ..Default::default()
+        };
+
+        let id1 = store.pending_review_insert(&doc).unwrap();
+        let id2 = store.pending_review_insert(&doc).unwrap();
+        assert_eq!(id1, 1, "自增 id 从 1 起");
+        assert_eq!(id2, 2, "每次插入分配新 id");
 
         let docs = store.docs("pendingReviews");
-        assert_eq!(docs.len(), 1);
-        assert_eq!(docs[0]["key"], json!("k1"));
+        assert_eq!(docs.len(), 2);
+        assert_eq!(docs[0]["id"], json!(1));
         assert_eq!(docs[0]["status"], json!(PENDING_REVIEW_STATUS));
-        assert_eq!(docs[0]["payload"]["title"], json!("某番"));
-        assert_eq!(docs[0]["payload"]["chatId"], json!(-100));
-        let created_at = docs[0]["createdAt"].clone();
-        assert!(
-            created_at.as_str().is_some(),
-            "createdAt 由 chrono 序列化成 RFC3339 字符串"
-        );
-        assert!(docs[0]["updatedAt"].as_str().is_some());
-
-        // 同一个 key 再写一次：还是一条，createdAt 保留、payload 刷新、状态回到 pending。
-        store
-            .pending_review_insert("k1", &json!({ "title": "新标题" }))
-            .unwrap();
-        let docs = store.docs("pendingReviews");
-        assert_eq!(docs.len(), 1, "同 key 必须 upsert，不能多一条");
-        assert_eq!(docs[0]["payload"]["title"], json!("新标题"));
-        assert_eq!(docs[0]["createdAt"], created_at, "createdAt 只写一次");
-        assert_eq!(docs[0]["status"], json!(PENDING_REVIEW_STATUS));
+        assert_eq!(docs[0]["item"]["title"], json!("某番 [01]"));
+        assert!(docs[0]["createdAt"].as_str().is_some(), "createdAt 是 RFC3339 字符串");
     }
 
     #[test]
-    fn pending_review_set_status_keeps_payload() {
+    fn pending_review_set_status_by_id_keeps_payload() {
         let store = FakeStorage::default();
-        store
-            .pending_review_insert("k2", &json!({ "title": "某番" }))
-            .unwrap();
+        let doc = crate::models::PendingReviewDoc {
+            item: Some(AnimeItem {
+                title: "某番 [01]".to_owned(),
+                pub_date: String::new(),
+                magnet: format!("magnet:?xt=urn:btih:{HASH}"),
+                link: String::new(),
+                team: String::new(),
+                fansub: vec![],
+                names: vec![],
+                source: None,
+                episode: Some("01".to_owned()),
+            }),
+            ..Default::default()
+        };
+        let id = store.pending_review_insert(&doc).unwrap();
 
-        store.pending_review_set_status("k2", "approved").unwrap();
+        store.pending_review_set_status(id, "approved").unwrap();
 
         let docs = store.docs("pendingReviews");
-        assert_eq!(docs.len(), 1);
         assert_eq!(docs[0]["status"], json!("approved"));
-        assert_eq!(
-            docs[0]["payload"]["title"],
-            json!("某番"),
-            "payload 不能被覆盖"
-        );
+        assert_eq!(docs[0]["item"]["title"], json!("某番 [01]"), "业务字段不能被覆盖");
         assert!(docs[0]["updatedAt"].as_str().is_some());
 
-        // 不存在的 key 不算错误：调用方先 get 再 set，0 条命中只说明记录没了。
-        store.pending_review_set_status("nope", "rejected").unwrap();
+        // 不存在的 id 不算错误：调用方先 get 再 set，0 条命中只说明记录没了。
+        store.pending_review_set_status(999, "rejected").unwrap();
     }
 
     #[test]
-    fn pending_review_get_returns_document_and_never_leaks_id() {
+    fn pending_review_get_by_id_and_never_leaks_mongo_id() {
         let store = FakeStorage::default();
-        store
-            .pending_review_insert("k3", &json!({ "title": "某番" }))
-            .unwrap();
+        let doc = crate::models::PendingReviewDoc::default();
+        let id = store.pending_review_insert(&doc).unwrap();
 
-        let doc = store
-            .pending_review_get("k3")
+        let got = store
+            .pending_review_get(id)
             .unwrap()
             .expect("应能取到待审核记录");
-        assert_eq!(doc["key"], json!("k3"));
-        assert_eq!(doc["status"], json!(PENDING_REVIEW_STATUS));
-        assert_eq!(doc["payload"]["title"], json!("某番"));
-        assert!(doc.get("_id").is_none(), "_id 不该漏给业务层");
+        assert_eq!(got["id"], json!(id));
+        assert_eq!(got["status"], json!(PENDING_REVIEW_STATUS));
+        assert!(got.get("_id").is_none(), "_id 不该漏给业务层");
 
         let call = store.last_find();
         assert_eq!(call.collection, "pendingReviews");
-        assert_eq!(call.filter, json!({ "key": "k3" }));
+        assert_eq!(call.filter, json!({ "id": id }));
         assert_eq!(call.projection, Some(json!({ "_id": 0 })));
 
-        assert!(store.pending_review_get("missing").unwrap().is_none());
-        assert!(store.pending_review_get("   ").unwrap().is_none());
-        assert_eq!(store.finds.borrow().len(), 2, "空 key 不该去查库");
+        assert!(store.pending_review_get(999).unwrap().is_none());
+        assert!(store.pending_review_get(0).unwrap().is_none());
+        assert!(store.pending_review_get(-1).unwrap().is_none());
     }
 
     #[test]
-    fn pending_review_rejects_blank_key_and_status() {
+    fn pending_review_rejects_blank_status() {
         let store = FakeStorage::default();
-        let payload = json!({ "title": "某番" });
+        let doc = crate::models::PendingReviewDoc::default();
+        let id = store.pending_review_insert(&doc).unwrap();
 
         assert!(matches!(
-            store.pending_review_insert("  ", &payload),
+            store.pending_review_set_status(id, "   "),
             Err(Error::Store(_))
         ));
-        assert!(
-            store.pending_review_insert("k4", &payload).is_ok(),
-            "有 key 才允许写"
-        );
-        assert!(matches!(
-            store.pending_review_set_status("k4", "   "),
-            Err(Error::Store(_))
-        ));
-        assert!(matches!(
-            store.pending_review_set_status("  ", "approved"),
-            Err(Error::Store(_))
-        ));
+    }
+
+    #[test]
+    fn sequence_is_shared_between_cache_item_and_pending_review() {
+        // 三个序列各自独立：cacheItemId / bangumi_user_id / pendingReviewId 互不干扰，
+        // 但同名序列在多次调用间单调递增（对齐 TS 的 getNextSequence）。
+        let store = FakeStorage::default();
+        assert_eq!(store.next_sequence("cacheItemId").unwrap(), 1);
+        assert_eq!(store.next_sequence("cacheItemId").unwrap(), 2);
+        assert_eq!(store.next_sequence("pendingReviewId").unwrap(), 1);
+        assert_eq!(store.next_sequence("bangumi_user_id").unwrap(), 1);
     }
 }

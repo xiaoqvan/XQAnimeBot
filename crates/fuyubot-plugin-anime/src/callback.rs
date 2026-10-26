@@ -91,17 +91,13 @@ impl ReviewAction {
     }
 }
 
-/// 解析按钮数据：只认 `review:approve:<key>` / `review:reject:<key>`。
+/// 解析按钮数据：只认 `review:approve:<id>` / `review:reject:<id>`。
 ///
-/// 返回 `None` 的情况都在测试里钉住了：
+/// `id` 是 pendingReviews 的自增主键（数字）。返回 `None` 的情况都在测试里钉住了：
 /// - 前缀不对（别的插件/别的按钮发来的回调）——调用方应静默放过，别抢别人的；
 /// - 动作名不认识；
-/// - key 为空（空白也算空）；
-/// - key 里还有 `:`（多出来的冒号说明格式不对，不能把半截字符串当 key）。
-///
-/// key 会去掉首尾空白后返回；其余字符原样保留（key 可以是数字 id，也可以是
-/// 业务自己拼的字符串）。
-pub fn parse(data: &str) -> Option<(ReviewAction, String)> {
+/// - id 不是正整数。
+pub fn parse(data: &str) -> Option<(ReviewAction, i64)> {
     let rest = data.strip_prefix("review:")?;
     let (action, key) = rest.split_once(':')?;
     let action = match action {
@@ -109,23 +105,23 @@ pub fn parse(data: &str) -> Option<(ReviewAction, String)> {
         "reject" => ReviewAction::Reject,
         _ => return None,
     };
-    let key = key.trim();
-    if key.is_empty() || key.contains(':') {
+    let id = key.trim().parse::<i64>().ok()?;
+    if id <= 0 {
         return None;
     }
-    Some((action, key.to_owned()))
+    Some((action, id))
 }
 
 /// 审核键盘（类型化）：直接挂到 [SendMessageParams::reply_markup]，不用再解析 JSON。
-pub fn review_buttons(key: &str) -> Vec<Vec<ReplyButton>> {
+pub fn review_buttons(id: i64) -> Vec<Vec<ReplyButton>> {
     vec![vec![
         ReplyButton::callback(
             ReviewAction::Approve.label(),
-            callback_data(ReviewAction::Approve, key),
+            callback_data(ReviewAction::Approve, id),
         ),
         ReplyButton::callback(
             ReviewAction::Reject.label(),
-            callback_data(ReviewAction::Reject, key),
+            callback_data(ReviewAction::Reject, id),
         ),
     ]]
 }
@@ -139,16 +135,16 @@ pub fn review_buttons(key: &str) -> Vec<Vec<ReplyButton>> {
 /// [SendMessageParams::reply_markup]。
 // 审核提示消息的发送方还没接（下一步）；接上以后删掉这个 allow。
 #[allow(dead_code)]
-pub fn review_keyboard(key: &str) -> Value {
+pub fn review_keyboard(id: i64) -> Value {
     let params = SendMessageParams {
         reply_markup: vec![vec![
             ReplyButton::callback(
                 ReviewAction::Approve.label(),
-                callback_data(ReviewAction::Approve, key),
+                callback_data(ReviewAction::Approve, id),
             ),
             ReplyButton::callback(
                 ReviewAction::Reject.label(),
-                callback_data(ReviewAction::Reject, key),
+                callback_data(ReviewAction::Reject, id),
             ),
         ]],
         ..SendMessageParams::default()
@@ -162,9 +158,9 @@ pub fn review_keyboard(key: &str) -> Value {
     payload.get("reply_markup").cloned().unwrap_or(Value::Null)
 }
 
-/// 按钮数据：`review:<action>:<key>`。真正的 base64 编码由 simplify 做。
-fn callback_data(action: ReviewAction, key: &str) -> String {
-    format!("review:{}:{key}", action.prefix())
+/// 按钮数据：`review:<action>:<id>`。真正的 base64 编码由 simplify 做。
+fn callback_data(action: ReviewAction, id: i64) -> String {
+    format!("review:{}:{id}", action.prefix())
 }
 
 /// 一条 `updateNewCallbackQuery` 里我们关心的字段。
@@ -392,18 +388,23 @@ fn apply_collection(
         Ok(binding) => binding,
         Err(error) => return format!("读取绑定失败：{error}"),
     };
-    let Some(binding) = binding.filter(|user| !user.access_token.trim().is_empty()) else {
+    let Some(binding) = binding.filter(|user| {
+        user.access_token
+            .as_deref()
+            .is_some_and(|token| !token.trim().is_empty())
+    }) else {
         return "请先 /bindbangumi 绑定 Bangumi 账号".to_owned();
     };
+    let access_token = binding.access_token.as_deref().unwrap_or_default();
     let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
     if let Err(error) =
-        client.set_subject_collection(&binding.access_token, request.subject_id, request.kind)
+        client.set_subject_collection(access_token, request.subject_id, request.kind)
     {
         return format!("修改收藏失败：{error}");
     }
     if let Some((episode_id, ep_kind)) = request.episode {
         // 章节失败不报错：条目状态已经改成功，章节可能因为未收藏而 400。
-        let _ = client.set_episode_collection(&binding.access_token, episode_id, ep_kind);
+        let _ = client.set_episode_collection(access_token, episode_id, ep_kind);
     }
     let label = COLLECTION_STATUSES
         .iter()
@@ -419,7 +420,7 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
         handle_collection(runtime, query, request);
         return;
     }
-    let Some((action, key)) = parse(&query.data) else {
+    let Some((action, id)) = parse(&query.data) else {
         log!(
             &runtime.logger,
             Debug,
@@ -447,12 +448,11 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
 
     // 读/写 pendingReviews 是同步服务调用，不能堵住宿主的投递线程（HANDOFF §6.10）。
     let worker = Arc::clone(runtime);
-    let key = key.clone();
     let operator = query.sender_user_id;
     let message_id = query.message_id;
     let spawned = thread::Builder::new()
         .name("xq-anime-review".to_owned())
-        .spawn(move || settle(&worker, action, &key, operator, message_id));
+        .spawn(move || settle(&worker, action, id, operator, message_id));
     if let Err(error) = spawned {
         log!(&runtime.logger, Error, "审核回调线程启动失败：{error}");
     }
@@ -465,28 +465,28 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
 fn settle(
     runtime: &Arc<Runtime>,
     action: ReviewAction,
-    key: &str,
+    id: i64,
     operator: i64,
     message_id: i64,
 ) {
-    let existing = match runtime.store.pending_review_get(key) {
+    let existing = match runtime.store.pending_review_get(id) {
         Ok(existing) => existing,
         Err(error) => {
             log!(
                 &runtime.logger,
                 Error,
-                "读取待审核记录失败（{key}）：{error}"
+                "读取待审核记录失败（#{id}）：{error}"
             );
-            notify_admin(runtime, format!("⚠️ 读取待审核记录失败：{key}\n{error}"));
+            notify_admin(runtime, format!("⚠️ 读取待审核记录失败：#{id}\n{error}"));
             return;
         }
     };
 
     let Some(existing) = existing else {
-        log!(&runtime.logger, Warn, "审核的 key 不存在：{key}");
+        log!(&runtime.logger, Warn, "审核的 id 不存在：{id}");
         notify_admin(
             runtime,
-            format!("⚠️ 审核记录不存在：{key}\n可能已被删除，按钮已经过期。"),
+            format!("⚠️ 审核记录不存在：#{id}\n可能已被删除，按钮已经过期。"),
         );
         return;
     };
@@ -499,52 +499,49 @@ fn settle(
         log!(
             &runtime.logger,
             Info,
-            "审核回调被忽略：{key} 当前状态是 {status}"
+            "审核回调被忽略：#{id} 当前状态是 {status}"
         );
         notify_admin(
             runtime,
-            format!("ℹ️ 已经处理过：{key}（当前状态：{status}），本次点击被忽略。"),
+            format!("ℹ️ 已经处理过：#{id}（当前状态：{status}），本次点击被忽略。"),
         );
         return;
     }
 
-    if let Err(error) = runtime
-        .store
-        .pending_review_set_status(key, action.status())
-    {
+    if let Err(error) = runtime.store.pending_review_set_status(id, action.status()) {
         log!(
             &runtime.logger,
             Error,
-            "更新待审核状态失败（{key}）：{error}"
+            "更新待审核状态失败（#{id}）：{error}"
         );
-        notify_admin(runtime, format!("❌ 写待审核状态失败：{key}\n{error}"));
+        notify_admin(runtime, format!("❌ 写待审核状态失败：#{id}\n{error}"));
         return;
     }
 
     log!(
         &runtime.logger,
         Info,
-        "审核{}：{key}（操作人 {operator}，消息 {message_id}）",
+        "审核{}：#{id}（操作人 {operator}，消息 {message_id}）",
         action.label()
     );
-    notify_admin(runtime, report(action, key, operator, message_id));
+    notify_admin(runtime, report(action, id, operator, message_id));
 
     // 通过 = 真去下载；驳回就到此为止。
     if action == ReviewAction::Approve && !crate::review::start_approved_download(runtime, &existing) {
         notify_admin(
             runtime,
-            format!("⚠️ 审核通过但没能开始下载：{key}（记录缺 magnet/title）"),
+            format!("⚠️ 审核通过但没能开始下载：#{id}（记录缺 magnet/title）"),
         );
     }
 }
 
 /// 管理群里的结果文案。带 emoji 是为了在一屏消息里一眼扫到结论。
-fn report(action: ReviewAction, key: &str, operator: i64, message_id: i64) -> String {
+fn report(action: ReviewAction, id: i64, operator: i64, message_id: i64) -> String {
     let (icon, verb) = match action {
         ReviewAction::Approve => ("✅", "审核通过"),
         ReviewAction::Reject => ("❌", "审核驳回"),
     };
-    format!("{icon} {verb}：{key}\n操作人：{operator}｜消息：{message_id}")
+    format!("{icon} {verb}：#{id}\n操作人：{operator}｜消息：{message_id}")
 }
 
 /// 往管理群发结果文本。
@@ -638,26 +635,26 @@ mod tests {
     #[test]
     fn parse_accepts_both_review_actions() {
         assert_eq!(
-            parse("review:approve:abc123"),
-            Some((ReviewAction::Approve, "abc123".to_owned()))
+            parse("review:approve:123"),
+            Some((ReviewAction::Approve, 123))
         );
         assert_eq!(
-            parse("review:reject:某番-01"),
-            Some((ReviewAction::Reject, "某番-01".to_owned()))
+            parse("review:reject:42"),
+            Some((ReviewAction::Reject, 42))
         );
-        // key 的首尾空白不算 key 的一部分。
+        // id 的首尾空白不算 id 的一部分。
         assert_eq!(
-            parse("review:approve:  k-1  "),
-            Some((ReviewAction::Approve, "k-1".to_owned()))
+            parse("review:approve:  7  "),
+            Some((ReviewAction::Approve, 7))
         );
     }
 
     #[test]
     fn parse_rejects_missing_prefix() {
         for data in [
-            "approve:abc",
+            "approve:123",
             "Y_anime?id=1&c=2",
-            "reviewx:approve:abc",
+            "reviewx:approve:1",
             "review:",
             "",
         ] {
@@ -666,24 +663,27 @@ mod tests {
     }
 
     #[test]
-    fn parse_rejects_empty_key() {
+    fn parse_rejects_non_numeric_or_non_positive_id() {
         for data in [
             "review:approve:",
             "review:reject:",
             "review:approve:   ",
             "review:reject:\u{3000}",
+            "review:approve:abc",
+            "review:approve:0",
+            "review:approve:-1",
         ] {
-            assert_eq!(parse(data), None, "{data:?} 的 key 是空的");
+            assert_eq!(parse(data), None, "{data:?} 的 id 非法");
         }
     }
 
     #[test]
     fn parse_rejects_extra_colons_and_unknown_actions() {
         for data in [
-            "review:approve:a:b",
+            "review:approve:1:2",
             "review:reject::x",
-            "review:approve:key:",
-            "review:delete:abc",
+            "review:approve:1:",
+            "review:delete:1",
         ] {
             assert_eq!(parse(data), None, "{data:?} 不是约定格式");
         }
@@ -718,7 +718,7 @@ mod tests {
     }
     #[test]
     fn review_keyboard_is_one_row_of_two_callback_buttons() {
-        let markup = review_keyboard("abc123");
+        let markup = review_keyboard(123);
         assert_eq!(markup["@type"], json!("replyMarkupInlineKeyboard"));
 
         let rows = markup["rows"].as_array().expect("rows 必须是数组");
@@ -739,8 +739,8 @@ mod tests {
         );
         assert_eq!(
             approve["type"]["data"],
-            json!("cmV2aWV3OmFwcHJvdmU6YWJjMTIz"),
-            "通过按钮的 callback_data 是 review:approve:abc123 的 base64"
+            json!("cmV2aWV3OmFwcHJvdmU6MTIz"),
+            "通过按钮的 callback_data 是 review:approve:123 的 base64"
         );
 
         let reject = &buttons[1];
@@ -751,8 +751,8 @@ mod tests {
         );
         assert_eq!(
             reject["type"]["data"],
-            json!("cmV2aWV3OnJlamVjdDphYmMxMjM="),
-            "驳回按钮的 callback_data 是 review:reject:abc123 的 base64"
+            json!("cmV2aWV3OnJlamVjdDoxMjM="),
+            "驳回按钮的 callback_data 是 review:reject:123 的 base64"
         );
     }
 

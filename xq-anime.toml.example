@@ -1,11 +1,16 @@
-# XQAnimeBot（Rust 版）配置示例
+# XQAnimeBot（Rust 版）全局配置段样例
 #
-# 用法：复制成 xq-anime.toml 放到工作目录（或让插件配置里指定 config_path）。
-# 环境变量可以覆盖凭据：XQ_MONGO_URI / XQ_MONGO_DB / XQ_QB_HOST / XQ_QB_USERNAME /
-# XQ_QB_PASSWORD / DEEPSEEK_API_KEY（或 OPENAI_API_KEY）。
-# 字段名写错会直接报错（deny_unknown_fields），不会静默忽略。
+# 用法：把下面的 `[plugin.xq.anime]` 段（含所有子段）**原样粘进宿主 `fuyubot.toml`**。
+# 插件启动时经 `host.get_config("xq.anime", "")` 读这一整段（JSON），所以字段名
+# 必须和下面的 snake_case 完全一致——写错会直接报错（deny_unknown_fields），不会静默忽略。
+#
+# 环境变量可以覆盖凭据（不写进配置文件）：
+#   XQ_MONGO_URI / XQ_MONGO_DB / XQ_QB_HOST / XQ_QB_USERNAME / XQ_QB_PASSWORD /
+#   DEEPSEEK_API_KEY（或 OPENAI_API_KEY）
+#
+# 测试 / 回放仍可走 `plugin_start` 的内联 `config_toml`（优先级最高，见 runtime.rs）。
 
-[telegram]
+[plugin.xq.anime.telegram]
 # 导航频道：番剧卡发这里
 nav_channel = -1000000000000
 # 番剧频道：每集视频发这里
@@ -16,10 +21,10 @@ admin_group_id = -1000000000000
 anime_group_thread_id = 0
 nav_group_thread_id = 0
 error_group_thread_id = 0
-# 主人 user id（预留给权限校验；目前命令还没强制校验）
+# 主人 user id（预留给权限校验）
 owner_id = 0
 
-[qbittorrent]
+[plugin.xq.anime.qbittorrent]
 host = "http://127.0.0.1:8080"
 username = "admin"
 password = ""
@@ -31,7 +36,7 @@ download_timeout_secs = 21600
 delete_torrent_after_send = true
 poll_interval_secs = 5
 
-[mongodb]
+[plugin.xq.anime.mongodb]
 # 本插件的 [mongodb] 会通过 storage.mongo 的 configure 方法**真正生效**（启动时下发）。
 # 本地示例：
 uri = "mongodb://127.0.0.1:27017"
@@ -39,10 +44,10 @@ uri = "mongodb://127.0.0.1:27017"
 # uri = "mongodb+srv://user:password@cluster0.xxxxx.mongodb.net/?retryWrites=true&w=majority"
 # 与 TS 版一致：TS 从 MONGODB_URL 取库名，缺省 fuyubot
 database = "fuyubot"
-# 连接/选择超时（毫秒）。云端抖动时宁可快速失败，默认 10 秒（驱动默认 30 秒会卡线程）
+# 连接/选择超时（毫秒）。云端抖动时宁可快速失败，默认 10 秒
 timeout_ms = 10000
 
-[rss]
+[plugin.xq.anime.rss]
 # 0 = 按北京时间自动分时段（21-次日2 点 1 分钟一轮，白天 15 分钟）
 # 非 0 = 固定间隔（秒）
 interval_secs = 0
@@ -57,14 +62,14 @@ blacklist = []
 # 是否用 AI 兜底解析集数（还没接）
 ai_episode_fallback = false
 
-[bangumi]
+[plugin.xq.anime.bangumi]
 app_id = ""
 app_secret = ""
 access_token = ""
 # Bangumi 要求带可识别 UA（公开接口目前用通用 UA）
 user_agent = "XQAnimeBot/0.1 (https://github.com/xiaoqvan/XQAnimeBot)"
 
-[media]
+[plugin.xq.anime.media]
 # ffmpeg / ffprobe 路径；只写文件名表示走 PATH
 ffmpeg = "ffmpeg"
 ffprobe = "ffprobe"
@@ -78,13 +83,13 @@ timeout_secs = 7200
 max_upload_bytes = 1950000000
 
 # AI 兜底：集数抽取 + 章节匹配。关掉就完全走规则
-[ai]
+[plugin.xq.anime.ai]
 enabled = false
 api_key = ""
 base_url = "https://api.deepseek.com"
 model = "deepseek-v4-flash"
 
-[http]
+[plugin.xq.anime.http]
 # 管理 API 监听地址；空 = 不启动（只读接口，无前端）
 # 例：127.0.0.1:8787
 listen = ""

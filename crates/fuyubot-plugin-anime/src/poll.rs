@@ -326,7 +326,7 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
                     item.title
                 );
                 // 提示发给管理群，点按钮后走 callback.rs 那条路。
-                review::prompt(runtime, item, &decision);
+                let _ = review::prompt(runtime, item, &decision);
             }
             SeasonDecision::New => {
                 new_anime += 1;
