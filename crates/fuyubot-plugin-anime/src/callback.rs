@@ -862,7 +862,7 @@ fn correct(
         {
             let _ = runtime.store.delete("cacheAnime", json!({ "id": old }), false);
         }
-        let _ = crate::nav::refresh_caption(runtime, anime.id);
+        let _ = crate::nav::refresh(runtime, anime.id);
         runtime.td.reply_text(
             target,
             format!(

@@ -265,7 +265,9 @@ fn save_subject(
     let client = BgmClient::new(runtime.config.bangumi.clone());
     let subject = client.subject(id)?;
     let episodes = client.episodes(id)?;
-    let anime = subject.to_anime();
+    let mut anime = subject.to_anime();
+    // 同 newanime：标签在写库前过滤（TS 的 extractFilteredTagNames）。
+    anime.tags = crate::text::filter_tag_names(&anime.tags);
     runtime.store.save_anime(&anime)?;
     let metas: Vec<_> = episodes.iter().map(|episode| episode.to_meta(id)).collect();
     let written = runtime.store.upsert_episodes(id as i64, &metas)?;

@@ -31,6 +31,7 @@ mod review;
 mod runtime;
 mod store;
 mod td;
+mod text;
 mod web;
 
 use std::sync::Arc;

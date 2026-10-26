@@ -25,7 +25,7 @@ use serde_json::Value;
 use crate::media::Media;
 use crate::qb::Qb;
 use crate::runtime::Runtime;
-use crate::td::Target;
+use crate::td::{Target, VideoMeta};
 
 /// 同时最多几条在下载。TS 的 `AnimeProcessorManager` 也是 3 个 worker。
 const WORKERS: usize = 3;
@@ -275,6 +275,27 @@ fn add_and_discover(runtime: &Runtime, qb: &Qb, item: &AnimeItem) -> Result<Stri
     })
 }
 
+/// 探测出视频的真实参数（`duration` / `width` / `height`）。
+///
+/// 探测失败（ffmpeg 不在 / 文件怪）就返回全 0：Telegram 自己会重算，
+/// 只是客户端里先显示成未知尺寸。宁可这样也别因为拿不到参数就不发。
+fn video_meta(runtime: &Runtime, path: &Path, spoiler: bool) -> VideoMeta {
+    let media = Media::new(runtime.host);
+    let probe = match media.probe(path) {
+        Ok(probe) => probe,
+        Err(error) => {
+            log!(&runtime.logger, Debug, "探测视频参数失败（{}）：{error}", path.display());
+            return VideoMeta { spoiler, ..Default::default() };
+        }
+    };
+    VideoMeta {
+        duration: (probe.get("duration_ms").and_then(Value::as_u64).unwrap_or(0) / 1000) as i32,
+        width: probe.get("width").and_then(Value::as_u64).unwrap_or(0) as i32,
+        height: probe.get("height").and_then(Value::as_u64).unwrap_or(0) as i32,
+        spoiler,
+    }
+}
+
 /// 缓冲频道的目标会话。
 ///
 /// TS 的 `sendMegToCache` 固定发 `ADMIN_GROUP_ID` 的 `ANIME_GROUP_THREAD_ID` 话题——
@@ -362,6 +383,9 @@ fn run(
     let (send_path, transcoded) = prepare_video(runtime, &video);
 
     let _ = runtime.store.checkpoint_stage(&key, "发送");
+    // 上传中：从这里到「发送成功确认」可能要几十分钟（TG 上传 + 转码），
+    // 状态停在「下载完成」会让 /progress 看起来像卡在下载。
+    mark_status(runtime, item, TorrentStatus::Uploading);
     // 超过上传上限就按大小分段（TG 约 2GB）。分段是流复制，秒级。
     let parts = split_for_upload(runtime, &send_path);
     let total = parts.len();
@@ -370,24 +394,36 @@ fn run(
     } else {
         Target::new(config.telegram.anime_channel, 0).with_topic(config.telegram.anime_group_thread_id)
     };
+    // 视频文案：有番剧文档就给完整的 AnimeText（原名/中文名/发布组/四个链接），
+    // 没有（还没确定是哪部番）才退回「番名｜第 N 集」。
+    let anime = (plan.anime_id > 0)
+        .then(|| runtime.store.anime_by_id(plan.anime_id).ok().flatten())
+        .flatten();
+    let base_text = match &anime {
+        Some(anime) => crate::text::anime_text(anime, item, plan.episode_id.unwrap_or(0)),
+        None => caption(item),
+    };
+    let spoiler = anime.as_ref().and_then(|anime| anime.r18).unwrap_or(false);
+
     let mut message_id = None;
     let mut send_failed = false;
     for (index, part) in parts.iter().enumerate() {
         let text = if total > 1 {
-            format!("{}（{}/{}）", caption(item), index + 1, total)
+            format!("{base_text}（{}/{}）", index + 1, total)
         } else {
-            caption(item)
+            base_text.clone()
         };
+        let meta = video_meta(runtime, part, spoiler);
         // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）；
         // `wait_send = false` 时只投递（回放/无 TDLib 环境用）。
         let sent = if config.telegram.wait_send {
             runtime
                 .td
-                .send_video_wait(target, part.display().to_string(), text)
+                .send_video_wait(target, part.display().to_string(), text, meta)
         } else {
             runtime
                 .td
-                .send_video_now(target, part.display().to_string(), text)
+                .send_video_now(target, part.display().to_string(), text, meta)
                 .then_some(0)
         };
         if sent.is_none() {
@@ -419,9 +455,12 @@ fn run(
             "发送转码产物失败，回退原文件：{}",
             send_path.display()
         );
-        message_id = runtime
-            .td
-            .send_video_wait(target, video.display().to_string(), caption(item));
+        message_id = runtime.td.send_video_wait(
+            target,
+            video.display().to_string(),
+            base_text.clone(),
+            video_meta(runtime, &video, spoiler),
+        );
     }
     let Some(message_id) = message_id else {
         return Err(Error::Service {
@@ -429,24 +468,19 @@ fn run(
             message: "发视频失败或未确认".to_owned(),
         });
     };
-    // 只有正片频道才记导航：缓冲频道里的视频还没经过确认，记进导航等于把未审核的
-    // 东西公开出去（TS 也是 `sendMegToAnime` 之后才 `sendMegToNavAnime`）。
-    if !plan.to_cache
-        && plan.anime_id > 0
-        && message_id > 0
-        && let Err(error) = crate::nav::push_episode(
-            runtime,
-            plan.anime_id,
-            config.telegram.anime_channel,
-            message_id,
-        )
-    {
-        log!(&runtime.logger, Warn, "记录 navVideoMessage 失败：{error}");
+    // 资源是「哪部番第几集、发到哪条消息」的唯一真相，每次发送都要记
+    // （TS 的 saveAnimeResource 在每条路径上都有）。
+    if plan.anime_id > 0 && message_id > 0 {
+        crate::review::record_send(runtime, plan, item, target.chat_id, message_id);
+        // 只有正片频道才刷新导航：缓冲频道里的视频还没确认过，写进导航等于把
+        // 未审核的东西公开出去（TS 也是 `sendMegToAnime` 之后才 `sendMegToNavAnime`）。
+        if !plan.to_cache && let Err(error) = crate::nav::refresh(runtime, plan.anime_id) {
+            log!(&runtime.logger, Warn, "刷新导航失败：{error}");
+        }
     }
-    // 发完之后该做的事（记资源 / 建待审核 / 提示管理员）交给 review，
-    // 那里才知道提示该长什么样。
+    // 发完之后要不要请管理员确认，交给 review——那里才知道提示该长什么样。
     if plan.review {
-        crate::review::after_send(runtime, plan, item, target.chat_id, message_id);
+        crate::review::prompt_after_send(runtime, plan, item);
     }
     // 发送成功后再删源：发送失败时原始文件还要留着重试。
     if transcoded && config.media.delete_source_after_remux {

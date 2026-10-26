@@ -249,7 +249,10 @@ fn import_anime(runtime: &Runtime, subject_id: i64, cache: bool) -> Result<Anime
     let client = BgmClient::new(runtime.config.bangumi.clone());
     let subject = client.subject(subject_id as u64)?;
     let episodes = client.episodes(subject_id as u64)?;
-    let anime = subject.to_anime();
+    let mut anime = subject.to_anime();
+    // 标签在建档时就过滤（TS 的 extractFilteredTagNames）：「2024年」这类放送年份
+    // 和纯数字标签不进库，否则每次生成正文都要再过滤一遍。
+    anime.tags = crate::text::filter_tag_names(&anime.tags);
     if cache {
         runtime.store.save_cached_anime(&anime)?;
     } else {

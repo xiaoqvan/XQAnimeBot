@@ -10,8 +10,30 @@
 use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
 use fuyubot_simplify::{
-    EditCaptionParams, InputFile, Media, ReplyButton, SendMessageParams, Simplify, Text,
+    EditCaptionParams, EditTextParams, InputFile, Media, ReplyButton, SendMessageParams, Simplify,
+    Text,
 };
+
+/// 等「发送成功」的上限：30 分钟。
+///
+/// TS 发视频也是 1800 秒（30 分钟）。一集 1080p 几个 GB，上传加转码远超
+/// simplify 的默认值；超时不等于失败，但会把「还在传」误判成「失败了」。
+pub const SEND_TIMEOUT_MS: u64 = 1800 * 1000;
+
+/// 一段视频的真实参数：`duration` / `width` / `height` / 遮罩。
+///
+/// 以前全写 0：Telegram 自己也会算，但**算出来之前**客户端里那一集是
+/// 「时长 0:00」且没有缩略图，要点开才知道。填上真实值还有一个好处——
+/// `has_spoiler`（`r18`）本来就是靠这个结构带出去的。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VideoMeta {
+    /// 秒。0 表示没探测出来。
+    pub duration: i32,
+    pub width: i32,
+    pub height: i32,
+    /// `r18`：封面打码。
+    pub spoiler: bool,
+}
 
 /// 一条消息的定位：发给哪个会话、回复哪条、哪个话题。
 #[derive(Debug, Clone, Copy)]
@@ -112,16 +134,9 @@ impl Td {
         target: Target,
         path: impl Into<String>,
         caption: impl Into<String>,
+        meta: VideoMeta,
     ) -> bool {
-        let media = Media::Video {
-            file: InputFile::local(path),
-            caption: Some(Text::plain(caption)),
-            duration: 0,
-            width: 0,
-            height: 0,
-            supports_streaming: true,
-            has_spoiler: false,
-        };
+        let media = video_media(path, caption, meta);
         self.send(target, SendMessageParams::media(media))
     }
 
@@ -151,25 +166,53 @@ impl Td {
     }
 
     /// 发视频并等到最终消息，返回 message_id（导航列表要用）。
+    ///
+    /// 上传大文件要几十分钟，所以默认超时是 [SEND_TIMEOUT_MS]（30 分钟），
+    /// 不是 simplify 的默认：默认那点时间不够传完一集 1080p。
     pub fn send_video_wait(
         &self,
         target: Target,
         path: impl Into<String>,
         caption: impl Into<String>,
+        meta: VideoMeta,
     ) -> Option<i64> {
-        let media = Media::Video {
-            file: InputFile::local(path),
-            caption: Some(Text::plain(caption)),
-            duration: 0,
-            width: 0,
-            height: 0,
-            supports_streaming: true,
-            has_spoiler: false,
-        };
+        let media = video_media(path, caption, meta);
         let mut params = SendMessageParams::media(media);
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
+        params.timeout_ms = SEND_TIMEOUT_MS;
         self.wait_message_id(target.chat_id, &params)
+    }
+
+    /// 发一条纯文本并等到确认，返回 message_id。
+    ///
+    /// 导航的**分页消息**要用它：分页消息要记进 `navVideoMessage`（带 page 与链接），
+    /// 拿不到 id 就没法生成正文里的 `[第N页](link)`。
+    pub fn send_text_wait(&self, target: Target, text: impl Into<String>) -> Option<i64> {
+        let mut params = SendMessageParams::text(Text::plain(text));
+        params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
+        params.topic_id = target.topic_id;
+        self.wait_message_id(target.chat_id, &params)
+    }
+
+    /// 改一条文本消息（`editMessageText`）。导航正文刷新用它改分页消息。
+    ///
+    /// 分页消息是**长文本**（4096 上限），不能走 `edit_caption`（那是图注，1024 上限）。
+    pub fn edit_text(&self, chat_id: i64, message_id: i64, text: impl Into<String>) -> bool {
+        let params = EditTextParams {
+            text: Some(Text::plain(text)),
+            ..EditTextParams::default()
+        };
+        match self.api.edit_message_text(chat_id, message_id, &params) {
+            Ok(_) => true,
+            Err(error) => {
+                self.host.log(
+                    LogLevel::Warn,
+                    &format!("改文本失败（chat {chat_id} / msg {message_id}）：{error}"),
+                );
+                false
+            }
+        }
     }
 
     /// 发送并解析最终消息 id；失败只记日志（调用方据此降级）。
@@ -210,6 +253,19 @@ impl Td {
                 false
             }
         }
+    }
+}
+
+/// 组装视频媒体：`duration/width/height` 用探测出的真实值。
+fn video_media(path: impl Into<String>, caption: impl Into<String>, meta: VideoMeta) -> Media {
+    Media::Video {
+        file: InputFile::local(path),
+        caption: Some(Text::plain(caption)),
+        duration: meta.duration.max(0),
+        width: meta.width.max(0),
+        height: meta.height.max(0),
+        supports_streaming: true,
+        has_spoiler: meta.spoiler,
     }
 }
 

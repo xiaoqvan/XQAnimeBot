@@ -50,33 +50,28 @@ pub fn prompt(runtime: &Runtime, item: &AnimeItem, decision: &SeasonDecision) ->
     Some(id)
 }
 
-/// 视频发出去之后的收尾：记资源 → 建待审核 → 提示管理员。
+/// 把这一集的资源写进库（`resources` / `cache_resources`）。
 ///
-/// 对应 TS 的 `saveAnimeResource` + `createPendingReview` + 三个 `promptAdmin*`。
-/// 两条路的收尾不一样，区别在 `plan.to_cache`：
-///
-/// ```text
-/// 缓冲频道（to_cache）  →  resources/cache_resources + 请管理员确认（不建待审核）
-/// 正片频道（先发后审）  →  resources + 建待审核记录 + 带候选的确认提示
-/// ```
-///
-/// 缓冲频道那条路**不建**待审核记录：TS 也是这样，因为视频还没进正片，
-/// 没有「已发消息」可回溯，管理员要纠正的是集数本身（`N_ep`），不是一次投放。
-pub fn after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem, chat_id: i64, message_id: i64) {
-    let anime = load_anime(runtime, plan.anime_id);
+/// TS 的 `saveAnimeResource` 在**每条发送路径**上都有（命中、新番、缓冲频道），
+/// 因为它是「哪部番第几集、哪个字幕组、发到哪条消息」的唯一真相：导航正文、
+/// 内联取视频、集数纠正全读它。写失败只记日志——提示还得照发，否则管理员
+/// 根本不知道有东西等着他。
+pub fn record_send(
+    runtime: &Runtime,
+    plan: &Plan,
+    item: &AnimeItem,
+    chat_id: i64,
+    message_id: i64,
+) {
     let episode = item
         .episode
         .clone()
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "未知".to_owned());
     let thread_id = runtime.config.telegram.anime_group_thread_id;
-
-    // 资源是「哪部番第几集、哪个字幕组、发到哪条消息」的唯一真相：导航正文、
-    // 内联取视频、集数纠正都读它。写失败只记日志——提示还得照发，否则管理员
-    // 根本不知道有东西等着他。
     let resource = EpisodeResourceDoc {
         anime_id: plan.anime_id,
-        episode: episode.clone(),
+        episode,
         episode_id: plan.episode_id,
         groups: if item.fansub.is_empty() {
             vec![item.team.clone()]
@@ -90,7 +85,7 @@ pub fn after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem, chat_id: i64
             message_id,
             thread_id: Some(thread_id),
             topic_id: None,
-            link: None,
+            link: message_link(runtime, chat_id, message_id),
         }),
         messages: None,
         videoid: None,
@@ -104,8 +99,21 @@ pub fn after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem, chat_id: i64
     if let Err(error) = runtime.store.resource_upsert(&resource) {
         log!(&runtime.logger, Warn, "写入集数资源失败：{error}");
     }
+}
 
-    let Some(anime) = anime else {
+/// 发完视频之后请管理员确认（`plan.review` 为真时）。
+///
+/// 两条路的提示不一样，区别在 `plan.to_cache`：
+///
+/// ```text
+/// 缓冲频道（to_cache）  →  请管理员确认（不建待审核记录）
+/// 正片频道（先发后审）  →  建待审核记录 + 带候选的确认提示
+/// ```
+///
+/// 缓冲频道那条路**不建**待审核记录：TS 也是这样，因为视频还没进正片，
+/// 没有「已发消息」可回溯，管理员要纠正的是集数本身（`N_ep`），不是一次投放。
+pub fn prompt_after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem) {
+    let Some(anime) = load_anime(runtime, plan.anime_id) else {
         // 番剧文档读不出来就没法给提示（按钮里要带 anime id）：只记日志。
         log!(
             &runtime.logger,
@@ -140,13 +148,38 @@ pub fn after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem, chat_id: i64
                 false,
             );
         } else {
-            let _ = crate::prompts::confirm_episodes(runtime, &anime, plan.cache_id, item, &matched);
+            let _ = crate::prompts::confirm_episodes(
+                runtime,
+                &anime,
+                plan.cache_id,
+                item,
+                &matched,
+            );
         }
         return;
     }
 
     // 先发后审：视频已经在正片频道了，先建待审核记录（按钮带 r=<id> 才能回溯
     // 「那一次投放」的完整上下文），再发带候选的提示。
+    let primary = load_anime(runtime, plan.anime_id).and_then(|_| {
+        runtime
+            .store
+            .find(
+                "resources",
+                serde_json::json!({ "anime_id": plan.anime_id }),
+                None,
+                Some(serde_json::json!({ "createdAt": -1 })),
+                Some(1),
+            )
+            .ok()?
+            .into_iter()
+            .next()
+    });
+    let primary_message = primary
+        .as_ref()
+        .and_then(|doc| serde_json::from_value::<EpisodeResourceDoc>(doc.clone()).ok())
+        .and_then(|resource| resource.message);
+
     let doc = PendingReviewDoc {
         item: Some(item.clone()),
         anime: Some(anime.clone()),
@@ -156,18 +189,15 @@ pub fn after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem, chat_id: i64
             .as_ref()
             .and_then(|detail| detail.episode_sort)
             .map(|sort| sort as f64),
-        sent_messages: Some(vec![AlbumMessage {
-            chat_id,
-            message_id,
-            thread_id: Some(thread_id),
-            ..Default::default()
-        }]),
-        primary_message: Some(MessageRef {
-            chat_id,
-            message_id,
-            thread_id: Some(thread_id),
-            ..Default::default()
+        sent_messages: primary_message.as_ref().map(|message| {
+            vec![AlbumMessage {
+                chat_id: message.chat_id,
+                message_id: message.message_id,
+                thread_id: message.thread_id,
+                ..Default::default()
+            }]
         }),
+        primary_message,
         match_detail: plan
             .match_detail
             .as_ref()
@@ -192,6 +222,21 @@ pub fn after_send(runtime: &Runtime, plan: &Plan, item: &AnimeItem, chat_id: i64
         review_id,
         true,
     );
+}
+
+/// 取一条消息的链接；取不到返回 None（正文里少个跳转，不影响收录）。
+fn message_link(runtime: &Runtime, chat_id: i64, message_id: i64) -> Option<String> {
+    let client = fuyubot_tdlib_ext::TdExt::new(runtime.host);
+    match client.get_message_link(chat_id, message_id, None) {
+        Ok(value) => value
+            .as_str()
+            .map(str::to_owned)
+            .filter(|link| !link.trim().is_empty()),
+        Err(error) => {
+            log!(&runtime.logger, Debug, "取消息链接失败（{message_id}）：{error}");
+            None
+        }
+    }
 }
 
 /// 取番剧文档：正片库优先，缓冲库兜底。
