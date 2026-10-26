@@ -10,6 +10,7 @@ use std::sync::Arc;
 use chrono::Utc;
 use anime_core::bangumi::BgmClient;
 use anime_core::card::bangumi::BangumiCard;
+use anime_core::models::AnimeItem;
 use anime_core::store::Storage;
 use fuyubot_simplify::Command;
 
@@ -39,8 +40,13 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "addanime",
-        summary: "按 Bangumi 条目 id 导入/更新番剧与章节：/addanime <id>",
+        summary: "给已有番剧补种：/addanime <章节 id> <bangumi.moe/dmhy 链接>",
         handler: cmd_addanime,
+    },
+    CommandSpec {
+        name: "addnewanime",
+        summary: "新建番剧并补种：/addnewanime <章节 id> <bangumi.moe/dmhy 链接>",
+        handler: cmd_addnewanime,
     },
     CommandSpec {
         name: "aimatch",
@@ -231,10 +237,201 @@ fn run(runtime: &Arc<Runtime>, spec: &'static CommandSpec, command: &Command, se
     CURRENT_SENDER.with(|cell| cell.set(None));
 }
 
-/// `/updateanime <id>`：只刷新库里的条目与章节，不动导航消息。
+/// 从用户给的链接里取出一条种子（TS `anime/get.ts` + `parseInfo`）。
 ///
-/// 和 `/addanime` 的区别：那条会顺手发导航卡（第一次入库时有用），
-/// 这条是维护命令——番剧信息变了（评分/集数/简介）刷一遍即可。
+/// 两家的字段来源不同，但产出同一个 [`AnimeItem`]：后面的下载 / 发送 / 记资源
+/// 只认这个结构，不关心它是从哪抓来的。
+fn fetch_bt_item(url: &str) -> std::result::Result<AnimeItem, String> {
+    use anime_core::torrent::{self, TorrentSource};
+
+    let (title, magnet, team, extra_names, pub_date) = match torrent::parse_source(url) {
+        None => return Err("目前仅支持 bangumi.moe 和 dmhy 的链接".to_owned()),
+        Some(TorrentSource::Bangumi { id }) => {
+            let info = torrent::fetch_bangumi_torrent(&id)
+                .map_err(|error| format!("取种子信息失败：{error}"))?;
+            let fansub = torrent::fansub_from_title(&info.title);
+            if fansub.is_empty() {
+                return Err(format!("标题里没有字幕组标记：{}", info.title));
+            }
+            // 发布组：有 team_id 就问 API，没有就用标题里的第一个字幕组
+            // （TS 同逻辑——自建种子往往没有 team）。
+            let team = match info.team_id.as_deref() {
+                Some(team_id) if !team_id.is_empty() => torrent::fetch_bangumi_team(team_id)
+                    .ok()
+                    .and_then(|teams| teams.into_iter().next())
+                    .map(|team| team.name)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or_else(|| fansub[0].clone()),
+                _ => fansub[0].clone(),
+            };
+            let extra_names = if info.tag_ids.is_empty() {
+                Vec::new()
+            } else {
+                torrent::fetch_bangumi_tags(&info.tag_ids)
+                    .map(|tags| torrent::locale_names(&tags))
+                    .unwrap_or_default()
+            };
+            (info.title, info.magnet, team, extra_names, info.pub_date)
+        }
+        Some(TorrentSource::Dmhy { url }) => {
+            let info = torrent::fetch_dmhy_torrent(&url)
+                .map_err(|error| format!("取种子信息失败：{error}"))?;
+            (info.title, info.magnet, info.team, Vec::new(), None)
+        }
+    };
+    if magnet.trim().is_empty() {
+        return Err("这个链接里没有磁力".to_owned());
+    }
+    let fansub = torrent::fansub_from_title(&title);
+    if fansub.is_empty() {
+        return Err(format!("标题里没有字幕组标记：{title}"));
+    }
+    // LoliHouse 的简繁标记会让番名解析命中不了规则：TS 建库前先换掉。
+    let title = if team == "LoliHouse" {
+        title.replace("[简繁内封字幕]", "[简体内嵌]")
+    } else {
+        title
+    };
+    let parsed = anime_core::title::parse_info(&title, Some(&team))
+        .ok_or_else(|| format!("没有适用于发布组「{team}」的标题规则：{title}"))?;
+    // 译名：解析出的名字 + 标签里的多语言名，去重去空（TS 同逻辑）。
+    let mut names: Vec<String> = Vec::new();
+    for name in parsed.names.iter().chain(extra_names.iter()) {
+        let name = name.trim();
+        if !name.is_empty() && !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
+    }
+    if names.is_empty() {
+        return Err(format!("解析不出番剧名：{title}"));
+    }
+    Ok(AnimeItem {
+        title,
+        pub_date: pub_date.unwrap_or_default(),
+        magnet,
+        link: url.to_owned(),
+        team,
+        fansub,
+        names,
+        source: (!parsed.source.is_empty()).then_some(parsed.source.clone()),
+        episode: (!parsed.episode.is_empty()).then_some(parsed.episode.clone()),
+    })
+}
+
+/// `/addanime <章节 id> <链接>` / `/addnewanime <章节 id> <链接>` 的公共部分。
+///
+/// 两者只差一件事：`create` 为真时**先建档**（番剧还不在库里），
+/// 之后下载 / 发送 / 记资源 / 刷导航完全一样——都由 `chain` 负责。
+///
+/// 先发一条「正在添加」的提示，最后再把那条消息改成结果：
+/// 下载 + 上传要几十分钟，不给回执的话管理员会以为命令没生效。
+fn add_bt(runtime: &Arc<Runtime>, command: &Command, create: bool) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let mut parts = command.args.split_whitespace();
+    let episode_id = parts.next().and_then(|raw| raw.parse::<u64>().ok());
+    let url = parts.next().map(str::to_owned);
+    let (Some(episode_id), Some(url)) = (episode_id, url) else {
+        runtime.td.reply_text(
+            target,
+            format!(
+                "用法：/{} <章节 id> <链接>\n示例：/{} 12345 https://bangumi.moe/torrent/xxxx",
+                command.name, command.name
+            ),
+        );
+        return;
+    };
+
+    let worker = Arc::clone(runtime);
+    // `command` 是借用，线程要 'static：整条拷一份进去。
+    let command = command.clone();
+    let spawned = std::thread::Builder::new()
+        .name("xq-anime-add".to_owned())
+        .spawn(move || {
+            let tips_id = worker
+                .td
+                .send_text_wait(target, "正在添加 BT 信息，请稍候…");
+                    let result = add_bt_inner(&worker, episode_id, &url, create);
+            let text = match result {
+                Ok(summary) => summary,
+                Err(error) => format!("添加失败：{error}"),
+            };
+            // 改掉那条「正在添加」；拿不到它的 id（没等确认）就新发一条。
+            match tips_id {
+                Some(id) if worker.td.edit_text(command.chat_id, id, &text) => {}
+                _ => {
+                    worker.td.reply_text(target, text);
+                }
+            }
+        });
+    if let Err(error) = spawned {
+        runtime.host.log(
+            fuyubot_abi::LogLevel::Error,
+            &format!("[anime] /{} 线程起不来：{error}", command.name),
+        );
+    }
+}
+
+/// 真正干活：章节 → 条目 →（可选）建档 → 抓种子 → 交给 chain。
+fn add_bt_inner(
+    runtime: &Arc<Runtime>,
+    episode_id: u64,
+    url: &str,
+    create: bool,
+) -> std::result::Result<String, String> {
+    use anime_core::store::Storage;
+
+    let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+    // 章节 id → 它属于哪部番：命令收的是章节 id（TS 同），不是条目 id。
+    let episode = client
+        .episode(episode_id)
+        .map_err(|error| format!("取章节信息失败：{error}"))?;
+    let subject_id = episode.subject_id as i64;
+    let mut anime = runtime
+        .store
+        .anime_by_id(subject_id)
+        .map_err(|error| format!("读库失败：{error}"))?;
+    if anime.is_none() && !create {
+        return Err(format!(
+            "未找到 ID 为 {subject_id} 的动漫信息。请先 /addnewanime 建档，或确认章节 id 是否正确。"
+        ));
+    }
+    if anime.is_none() {
+        // 建档（TS 的 buildAndSaveAnimeFromInfo）：拉条目 + 章节一起写库。
+        let (created, _subject, _episodes, _written) = save_subject(runtime, subject_id as u64)
+            .map_err(|error| format!("建档失败：{error}"))?;
+        anime = Some(created);
+    }
+    let anime = anime.expect("上面两条路必定填入");
+    let display = crate::prompts::display(&anime).to_owned();
+
+    let item = fetch_bt_item(url)?;
+    // 下载 + 发送 + 记资源 + 刷导航全交给 chain：它有限流、有断点、会发封面。
+    crate::chain::spawn_with(
+        Arc::clone(runtime),
+        item.clone(),
+        crate::chain::Plan::for_episode(subject_id, episode_id as i64),
+    );
+    Ok(format!(
+        "已为动漫 {display} 添加 BT 信息，正在下载并发送：{}\n\n如需修改，再用 /addanime。",
+        item.title
+    ))
+}
+
+/// `/addanime <章节 id> <链接>`：给**已在库里**的番剧补一条种子。
+fn cmd_addanime(runtime: &Arc<Runtime>, command: &Command) {
+    add_bt(runtime, command, false);
+}
+
+/// `/addnewanime <章节 id> <链接>`：番剧不在库里时用它——先建档再补种。
+fn cmd_addnewanime(runtime: &Arc<Runtime>, command: &Command) {
+    add_bt(runtime, command, true);
+}
+
+/// `/updateanime <bangumi 条目 id>`：拉最新条目与章节写库。
+///
+/// 库里还没有这部番时它同时也是**导入**命令：顺手把导航卡发出来
+/// （`/addnewanime` 走的是「章节 id + 链接」，那条要先有种子）。
+/// 已经有导航消息时复用，不会在频道里刷第二张卡。
 fn cmd_updateanime(runtime: &Arc<Runtime>, command: &Command) {
     let target = Target::new(command.chat_id, command.message_id);
     let Some(id) = command
@@ -250,50 +447,18 @@ fn cmd_updateanime(runtime: &Arc<Runtime>, command: &Command) {
     };
     let runtime = Arc::clone(runtime);
     std::thread::spawn(move || {
-        let text = match refresh_anime(&runtime, id) {
-            Ok((name, total)) => format!("已刷新「{name}」（{id}），章节 {total} 条"),
+        let text = match import_and_publish(&runtime, id) {
+            Ok((name, total, nav)) => match nav {
+                Some(nav) => format!(
+                    "已刷新「{name}」（{id}），章节 {total} 条；导航消息 {}（chat {}）",
+                    nav.message_id, nav.chat_id
+                ),
+                None => format!("已刷新「{name}」（{id}），章节 {total} 条；导航频道未配置，跳过发卡"),
+            },
             Err(error) => format!("刷新失败：{error}"),
         };
         runtime.td.reply_text(target, text);
     });
-}
-/// `/addanime <bangumi_id>`：拉条目 + 章节写库。
-///
-/// TS 里 `addanime` 是「给已有番剧加种子」、`addnewanime` 是「新建番剧」。
-/// 这里先合并成一条「按 id 导入/更新」：章节按 id upsert，重复执行只刷新内容。
-fn cmd_addanime(runtime: &Arc<Runtime>, command: &Command) {
-    let target = Target::new(command.chat_id, command.message_id);
-    let Some(id) = command
-        .args
-        .split_whitespace()
-        .next()
-        .and_then(|raw| raw.parse::<u64>().ok())
-    else {
-        runtime
-            .td
-            .reply_text(target, "用法：/addanime <bangumi 条目 id>");
-        return;
-    };
-    let runtime = Arc::clone(runtime);
-    std::thread::spawn(move || {
-        let text = match import_and_publish(&runtime, id) {
-            Ok((name, total, nav)) => match nav {
-                Some(nav) => format!(
-                    "已导入「{name}」（{id}），章节 {total} 条；导航消息 {}（chat {}）",
-                    nav.message_id, nav.chat_id
-                ),
-                None => format!("已导入「{name}」（{id}），章节 {total} 条；导航频道未配置，跳过发卡"),
-            },
-            Err(error) => format!("导入失败：{error}"),
-        };
-        runtime.td.reply_text(target, text);
-    });
-}
-
-/// 拉 Bangumi 条目与章节写库。返回（展示名, 章节数）——不碰导航。
-fn refresh_anime(runtime: &Runtime, id: u64) -> anime_core::Result<(String, usize)> {
-    let (anime, _subject, _episodes, written) = save_subject(runtime, id)?;
-    Ok((anime.display_name().to_owned(), written))
 }
 
 /// 拉取 + 写库的公共部分：返回写好的 anime 与章节数。

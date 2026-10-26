@@ -28,6 +28,7 @@ pub mod models;
 pub mod rss;
 pub mod store;
 pub mod title;
+pub mod torrent;
 
 /// 领域层统一错误：都带「下一步该干什么」，别让调用方只看到 `error`。
 #[derive(Debug, thiserror::Error)]

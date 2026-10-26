@@ -76,6 +76,19 @@ impl Plan {
         }
     }
 
+    /// 已知是哪一部、哪一集（`/addanime` / `/addnewanime` 手工补种走这条）：
+    /// 发正片频道 + 记导航，资源按给定的章节 id 记。
+    ///
+    /// 与 [Self::channel] 的区别只在 `episode_id`：手工指定时它是命令参数给的，
+    /// 不用再去匹配，资源里的 `episodeId` 也因此是确定的。
+    pub fn for_episode(anime_id: i64, episode_id: i64) -> Self {
+        Self {
+            anime_id,
+            episode_id: Some(episode_id),
+            ..Default::default()
+        }
+    }
+
     /// 缓冲频道：发到管理群等纠正，发完请管理员确认。
     ///
     /// `episode_match` 决定提示的两个分支：日期不符（机器有答案）给「正确」，
