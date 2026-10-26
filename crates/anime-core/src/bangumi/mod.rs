@@ -156,6 +156,20 @@ impl BgmClient {
         Ok(all)
     }
 
+    /// 按 id 拉单个章节（`GET /v0/episodes/{id}`）。
+    ///
+    /// 列出条目全部章节时不需要它，但**管理员手动纠正**时要：他给的是
+    /// 「章节 id」或 `bgm.tv/ep/<id>` 链接，先还原成章节才知道属于哪部番
+    /// （TS 的 `getEpisodeById`）。
+    pub fn episode(&self, id: u64) -> Result<Episode> {
+        let url = episode_url(id);
+        let value = self.get_json(&url)?;
+        serde_json::from_value(value).map_err(|err| Error::Parse {
+            what: "Bangumi 章节",
+            message: format!("{url}：{err}"),
+        })
+    }
+
     /// 按关键词搜动画条目（`filter.type = [2]`，最多 10 条）。
     pub fn search(&self, keyword: &str) -> Result<Vec<Subject>> {
         let url = search_url();
@@ -286,6 +300,10 @@ fn episodes_url(subject_id: u64, offset: u32) -> String {
     )
 }
 
+fn episode_url(id: u64) -> String {
+    format!("{API_BASE}/v0/episodes/{id}")
+}
+
 fn search_url() -> String {
     format!("{API_BASE}/v0/search/subjects?limit={SEARCH_LIMIT}")
 }
@@ -324,6 +342,10 @@ mod tests {
         assert_eq!(
             episodes_url(400602, 100),
             "https://api.bgm.tv/v0/episodes?subject_id=400602&limit=100&offset=100"
+        );
+        assert_eq!(
+            episode_url(1227091),
+            "https://api.bgm.tv/v0/episodes/1227091"
         );
         assert_eq!(
             search_url(),

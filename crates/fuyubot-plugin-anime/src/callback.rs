@@ -1,24 +1,33 @@
 //! 内联键盘回调（审核按钮）的路由骨架。
 //!
-//! 对应 TS 的 `CallbackQuery/index.ts` + `hasAnime.ts` + `bangumi.ts`：那里用
+//! 对应 TS 的 `CallbackQuery/index.ts` + `hasAnime.ts` + `bangumi.ts`：用
 //! `callback_data` 的前缀（`Y_anime?` / `F_anime?` / `N_anime?` / `N_ep?` /
-//! `colorep?`）分发到不同处理器；Rust 侧先只做审核这一条最短的线：
+//! `colorep?`）分发到不同处理器。目前落地的是审核这一条线：
 //!
 //! ```text
-//! 管理群里的两个按钮
-//!   review:approve:<key>  →  pendingReviews.status = approved
-//!   review:reject:<key>   →  pendingReviews.status = rejected
+//! Y_anime?r=<id>                确认匹配正确（有待审核记录 → 改状态）
+//! Y_anime?id=<ep>&c=<cache>     旧格式确认（没有待审核记录可改）
+//! F_anime?r=<id>                匹配错误 → 问管理员要正确条目 → 迁移资源
+//! N_anime?c=<cache>             搜不到番剧 → 问管理员要条目 → 重新下载发送
+//! N_ep?c=<cache>&id=<anime>     集数不对 → 问管理员要章节 → 迁移资源
+//! review:approve:<id>           最早那版按钮，仅兼容还在飞的旧消息
+//! collection:<subject>:<kind>   Bangumi 收藏（另一条线，见 [parse_collection]）
 //! ```
+//!
+//! 后三种是**多轮交互**：点了之后改提示语，然后等管理员**回复那条消息**给出
+//! 章节 id 或 bgm 链接（[`crate::reply`]）。这是本模块唯一需要「等下一条更新」
+//! 的地方，也是 Rust 侧比 TS 多出来的部分——TS 有 `client.iterUpdates()` 这条
+//! 更新流，这里得自己订阅 `updateNewMessage` 搭一个。
 //!
 //! ## 与 TS 的差异（有意为之）
 //!
-//! - TS 用 `URLSearchParams` 把参数塞在 `?` 后面（`Y_anime?id=1&c=2`），这里用
-//!   `:` 分隔的固定前缀。原因是我们目前只有一个动作维度，没必要为两条参数引一套
-//!   查询串解析；等参数变多再升级格式，`parse` 是唯一入口。
+//! - TS 用 `URLSearchParams` 解析参数；这里是一份二十行的 [`Query`]（`k=v&k2=v2`，
+//!   只取整数）——回调数据是我们自己生成的，不会有需要转义的字符。
 //! - TDLib 的 `callback_data` 本身必须是 base64（`inlineKeyboardButtonTypeCallback
 //!   data:bytes`），所以按钮数据发出去前编码、收到后解码——这一点与 TS 一致。
-//! - TS 的审核结果直接改消息文本；这里先只往管理群发一条结果，编辑原消息留给下一步
-//!   （需要 `editMessageText` + 保存 message_id，属于接线阶段）。
+//! - TS 的纠正流程会 `editMessageText` 改写提示消息；宿主侧目前只有
+//!   `edit_caption`（改图注），所以这里改成「回复提示消息」说话。语义一致，
+//!   管理员看到的仍然是在那一条消息下面来回。
 //!
 //! ## 线程模型
 //!
@@ -39,9 +48,10 @@ use anime_core::log;
 use anime_core::store::{PENDING_REVIEW_STATUS, Storage};
 use fuyubot_abi::{HostApi, SubscriptionHandle};
 use fuyubot_simplify::{ReplyButton, SendMessageParams, Simplify, Text, send_params};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
+use crate::td::Target;
 
 /// 用户点了内联按钮时宿主推的更新类型。
 pub const CALLBACK_EVENT: &str = "updateNewCallbackQuery";
@@ -584,6 +594,13 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
         handle_collection(runtime, query, request);
         return;
     }
+    // TS 格式（Y_anime?r= / F_anime?r= / N_anime?c= / N_ep?c=&id=）：
+    // 它比下面的 `review:approve:<id>` 表达力强（能带「提供/纠正」这类多轮入口），
+    // 新提示一律用它，所以先判。
+    if let Some(command) = parse_anime_callback(&query.data) {
+        handle_anime_callback(runtime, query, command);
+        return;
+    }
     let Some((action, id)) = parse(&query.data) else {
         log!(
             &runtime.logger,
@@ -620,6 +637,346 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
     if let Err(error) = spawned {
         log!(&runtime.logger, Error, "审核回调线程启动失败：{error}");
     }
+}
+
+/// 分发 TS 格式的四种审核回调。
+///
+/// `Y_anime` 一步到位（改状态 + 回话），另外三种都要**等管理员回一条消息**
+/// （[`crate::reply`]），所以统一扔到自己的线程里——等待是分钟级的，
+/// 绝不能占着宿主的投递线程。
+fn handle_anime_callback(runtime: &Arc<Runtime>, query: &CallbackQuery, command: AnimeCallback) {
+    // 先回话：客户端在等 answerCallbackQuery，不回就一直转圈。
+    answer(
+        runtime,
+        query,
+        if matches!(command, AnimeCallback::Confirm(_)) {
+            "确认成功"
+        } else {
+            "已收到"
+        },
+    );
+
+    let worker = Arc::clone(runtime);
+    let query = query.clone();
+    let spawned = thread::Builder::new()
+        .name("xq-anime-review".to_owned())
+        .spawn(move || match command {
+            AnimeCallback::Confirm(target) => confirm_anime(&worker, &query, target),
+            // `F_anime`：匹错了，请管理员给出正确条目。有 `r` 时上下文从待审核记录里捞。
+            AnimeCallback::Reject(target) => {
+                let (cache_id, old_anime_id) = context_of(&worker, &target);
+                correct(&worker, &query, cache_id, old_anime_id, false);
+            }
+            // `N_anime`：搜不到番剧，提示是在**下载之前**发的——纠正完要重新走一遍下载。
+            AnimeCallback::ProvideAnime { cache_id } => {
+                correct(&worker, &query, Some(cache_id), None, true)
+            }
+            // `N_ep`：集数不对，视频已经在缓冲频道了——纠正完只搬资源，不重下。
+            AnimeCallback::ProvideEpisode { cache_id, anime_id } => {
+                correct(&worker, &query, Some(cache_id), Some(anime_id), false)
+            }
+        });
+    if let Err(error) = spawned {
+        log!(&runtime.logger, Error, "审核回调线程启动失败：{error}");
+    }
+}
+
+/// 回一次 `answerCallbackQuery`。失败只记日志——回话是锦上添花，
+/// 真正的结论在管理群里（或提示消息本身）。
+fn answer(runtime: &Runtime, query: &CallbackQuery, text: &str) {
+    if let Err(error) =
+        Simplify::new(runtime.host).answer_callback_query(query.id, Some(text), false)
+    {
+        log!(
+            &runtime.logger,
+            Warn,
+            "answerCallbackQuery 失败（#{}）：{error}",
+            query.id
+        );
+    }
+}
+
+/// `Y_anime`：确认匹配正确。
+///
+/// 有待审核 id 时走 [settle]（改状态 + 幂等保护）；旧格式（`id`+`c`）没有记录可改，
+/// 只在管理群里留一句——它是「已经发出去的片子被人工确认过」，本来也不该再动数据库。
+fn confirm_anime(runtime: &Arc<Runtime>, query: &CallbackQuery, target: CallbackTarget) {
+    match target.review_id {
+        Some(id) => {
+            settle(
+                runtime,
+                ReviewAction::Approve,
+                id,
+                query.sender_user_id,
+                query.message_id,
+            );
+        }
+        None => {
+            log!(
+                &runtime.logger,
+                Info,
+                "旧格式确认（无待审核记录）：episode={:?} cache={:?}（用户 {}）",
+                target.episode_id,
+                target.cache_id,
+                query.sender_user_id
+            );
+            notify_admin(
+                runtime,
+                format!(
+                    "✅ 已确认（旧格式按钮，没有待审核记录可更新）\n章节：{}\n缓存条目：{}",
+                    target
+                        .episode_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_owned()),
+                    target
+                        .cache_id
+                        .map(|id| id.to_string())
+                        .unwrap_or_else(|| "-".to_owned())
+                ),
+            );
+        }
+    }
+}
+
+/// 从待审核记录里捞回「缓存条目 id / 当前番剧 id」。
+///
+/// `F_anime?r=<id>` 只带一个 id，而纠正要知道「原来挂在哪部番下」（资源迁移的
+/// 起点）——这个上下文只能回查记录拿。
+fn context_of(runtime: &Runtime, target: &CallbackTarget) -> (Option<i64>, Option<i64>) {
+    let Some(review_id) = target.review_id else {
+        return (target.cache_id, None);
+    };
+    let doc = match runtime.store.pending_review_get(review_id) {
+        Ok(doc) => doc,
+        Err(error) => {
+            log!(&runtime.logger, Warn, "读待审核记录失败（#{review_id}）：{error}");
+            return (target.cache_id, None);
+        }
+    };
+    let anime_id = doc
+        .as_ref()
+        .and_then(|doc| doc.get("anime"))
+        .and_then(|anime| anime.get("id"))
+        .and_then(Value::as_i64);
+    (target.cache_id, anime_id)
+}
+
+/// 一次纠正最多问几轮。
+///
+/// 无上限地循环等于「管理员发错一次就永远卡住一条线程」；5 轮足够（TS 虽然无限，
+/// 但它没有线程成本概念——这里每一次等待都占着一条 OS 线程）。
+const MAX_CORRECTION_ROUNDS: usize = 5;
+
+/// 多轮纠正：问 → 等回复 → 解析 → 建档 → 迁移/重发。
+///
+/// `redownload` 区分两种场景（这是本函数唯一不好看但必须存在的参数）：
+/// - `N_anime`（true）：提示发在**下载之前**，视频还没发过，纠正完要重新走下载+发送；
+/// - `N_ep` / `F_anime`（false）：视频已经在缓冲频道了，纠正完只需把资源从
+///   `cache_resources` 搬到 `resources`（改挂到正确的番剧下）。
+fn correct(
+    runtime: &Arc<Runtime>,
+    query: &CallbackQuery,
+    cache_id: Option<i64>,
+    old_anime_id: Option<i64>,
+    redownload: bool,
+) {
+    let target = Target::new(query.chat_id, query.message_id);
+    runtime.td.reply_text(
+        target,
+        "请回复这一条消息，提供正确的 bgm.tv 章节链接或章节 id\n\n回复 /cancel 取消",
+    );
+
+    // 订阅不上就直说：静默卡住是最糟的结果（管理员不知道 bot 在等他）。
+    if !crate::reply::ensure(runtime.host) {
+        runtime.td.reply_text(
+            target,
+            "⚠️ 宿主未接入事件总线，收不到你的回复。请改用 /addanime <条目id> 手动导入。",
+        );
+        return;
+    }
+
+    for _ in 0..MAX_CORRECTION_ROUNDS {
+        let Some(text) =
+            crate::reply::wait(query.chat_id, query.message_id, crate::reply::DEFAULT_TIMEOUT)
+        else {
+            runtime.td.reply_text(target, "⏱️ 等待回复超时，本次纠正结束。需要的话请再点一次按钮。");
+            return;
+        };
+        if text.eq_ignore_ascii_case("/cancel") {
+            runtime.td.reply_text(target, "已取消");
+            return;
+        }
+        let Some(reference) = crate::reply::parse_reference(&text) else {
+            runtime.td.reply_text(
+                target,
+                "未识别的格式。请提供章节 id（例如 502272）或 bgm 链接，或者回复 /cancel 取消",
+            );
+            continue;
+        };
+        let (anime, episode_id) = match resolve_reference(runtime, reference) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                runtime.td.reply_text(target, format!("未找到：{error}\n请重新提供，或 /cancel 取消"));
+                continue;
+            }
+        };
+
+        if redownload {
+            // 视频还没发过：按纠正后的条目重新走一遍下载 + 发正片频道。
+            let Some(item) = cache_id.and_then(|id| match runtime.store.cache_item_get(id) {
+                Ok(item) => item,
+                Err(error) => {
+                    log!(&runtime.logger, Warn, "读缓存条目失败（#{id}）：{error}");
+                    None
+                }
+            }) else {
+                runtime
+                    .td
+                    .reply_text(target, "⚠️ 读不到缓存条目，无法重新下载（种子信息丢失）");
+                return;
+            };
+            let mut plan = crate::chain::Plan::channel(anime.id);
+            plan.episode_id = episode_id;
+            plan.cache_id = cache_id.unwrap_or(0);
+            crate::chain::spawn_with(Arc::clone(runtime), item, plan);
+            runtime.td.reply_text(
+                target,
+                format!(
+                    "✅ 已按「{}」（{}）重新下载并发送到频道",
+                    anime.display_name(),
+                    anime.id
+                ),
+            );
+            return;
+        }
+
+        // 视频已经发过：把资源从缓存库搬到正片库，改挂到纠正后的条目下。
+        let moved = match (cache_id, old_anime_id) {
+            (Some(cache_id), Some(old)) if old != anime.id => {
+                rebind_resources(runtime, cache_id, old, anime.id, episode_id)
+            }
+            _ => 0,
+        };
+        if let Some(old) = old_anime_id
+            && old != anime.id
+        {
+            let _ = runtime.store.delete("cacheAnime", json!({ "id": old }), false);
+        }
+        let _ = crate::nav::refresh_caption(runtime, anime.id);
+        runtime.td.reply_text(
+            target,
+            format!(
+                "✅ 已纠正为「{}」（{}）{}",
+                anime.display_name(),
+                anime.id,
+                episode_id
+                    .map(|id| format!("，章节 {id}"))
+                    .unwrap_or_default()
+                    + &if moved > 0 {
+                        format!("；迁移资源 {moved} 条")
+                    } else {
+                        String::new()
+                    }
+            ),
+        );
+        return;
+    }
+    runtime
+        .td
+        .reply_text(target, "重试次数太多，本次纠正结束。需要的话请再点一次按钮。");
+}
+
+/// 把管理员给的「章节 id / 条目 id」变成库里的一部番剧。
+///
+/// 章节 id 是首选：纠正时最常说的是「这一集其实是第 N 集」。由章节反查条目，
+/// 顺带把这一季的章节也一起入库（后面集数匹配才有得查）。
+fn resolve_reference(
+    runtime: &Runtime,
+    reference: crate::reply::Reference,
+) -> anime_core::Result<(anime_core::models::Anime, Option<i64>)> {
+    let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+    let (subject_id, episode_id) = match reference {
+        crate::reply::Reference::Episode(id) => {
+            let episode = client.episode(id)?;
+            (episode.subject_id, Some(id as i64))
+        }
+        crate::reply::Reference::Subject(id) => (id, None),
+    };
+    if subject_id == 0 {
+        return Err(anime_core::Error::Service {
+            service: "bangumi".to_owned(),
+            message: "章节没有归属条目".to_owned(),
+        });
+    }
+    let subject = client.subject(subject_id)?;
+    let episodes = client.episodes(subject_id)?;
+    let anime = subject.to_anime();
+    runtime.store.save_anime(&anime)?;
+    let metas: Vec<_> = episodes
+        .iter()
+        .map(|episode| episode.to_meta(subject_id))
+        .collect();
+    runtime.store.upsert_episodes(subject_id as i64, &metas)?;
+    Ok((anime, episode_id))
+}
+
+/// 把 `cache_resources` 里某个缓存条目的资源搬到 `resources`，改挂到新番剧下。
+///
+/// 这就是 TS 的 `rebindCacheResourceAnime`：视频消息没变（还在缓冲频道那条），
+/// 变的是「它属于哪部番」——不动数据只改归属，比重新下载一遍便宜得多。
+fn rebind_resources(
+    runtime: &Runtime,
+    cache_id: i64,
+    old_anime_id: i64,
+    new_anime_id: i64,
+    episode_id: Option<i64>,
+) -> usize {
+    let docs = match runtime.store.find(
+        "cache_resources",
+        json!({ "cache_id": cache_id }),
+        None,
+        None,
+        None,
+    ) {
+        Ok(docs) => docs,
+        Err(error) => {
+            log!(&runtime.logger, Warn, "读缓冲资源失败（{cache_id}）：{error}");
+            return 0;
+        }
+    };
+    let mut moved = 0usize;
+    for doc in docs {
+        let Ok(mut resource) =
+            serde_json::from_value::<anime_core::models::EpisodeResourceDoc>(doc)
+        else {
+            continue;
+        };
+        resource.anime_id = new_anime_id;
+        resource.episode_id = episode_id.or(resource.episode_id);
+        // 去掉 cache_id 是「搬出去」的动作：resource_upsert 见它为空就写 resources。
+        resource.cache_id = None;
+        resource.id = None;
+        match runtime.store.resource_upsert(&resource) {
+            Ok(true) => moved += 1,
+            Ok(false) => {}
+            Err(error) => log!(&runtime.logger, Warn, "写入正片资源失败：{error}"),
+        }
+    }
+    if moved > 0 {
+        // 搬完清掉缓存库里的旧记录：留着会让「已收录 N 集」double count。
+        if let Err(error) = runtime
+            .store
+            .delete("cache_resources", json!({ "cache_id": cache_id }), true)
+        {
+            log!(&runtime.logger, Warn, "清理缓冲资源失败：{error}");
+        }
+        log!(
+            &runtime.logger,
+            Info,
+            "资源归属已修正：{old_anime_id} → {new_anime_id}（{moved} 条）"
+        );
+    }
+    moved
 }
 
 /// 落库 + 通知管理群。

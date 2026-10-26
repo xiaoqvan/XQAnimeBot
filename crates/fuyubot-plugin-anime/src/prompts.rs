@@ -125,6 +125,11 @@ pub fn confirm_episodes(
 ///
 /// 没有待审核记录时用它——按钮只能带 `episodeId` + `cacheId`，信息量比带 `r` 少。
 /// 新流程一律走 [`confirm_with_candidates`]（带 `r`）。
+///
+/// 保留它只是为了和 TS 对齐（TS 的 `promptAdminConfirmAnime` 同样已无人调用，
+/// 只剩文档引用）：旧按钮还在飞的时候，解析层认得出 `Y_anime?id=&c=` 这种数据，
+/// 提示层就得有对应的那份文案。
+#[allow(dead_code)]
 pub fn confirm_anime(
     runtime: &Runtime,
     anime: &Anime,

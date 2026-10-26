@@ -352,6 +352,12 @@ pub struct BangumiUser {
 #[serde(default)]
 pub struct Episode {
     pub id: u64,
+    /// 所属条目 id。
+    ///
+    /// `/v0/episodes?subject_id=…` 的列表响应**不带**这个字段（只有单章接口带），
+    /// 所以是 `default`：列章节时不填，手动纠正（`GET /v0/episodes/{id}`）时才有值。
+    #[serde(default)]
+    pub subject_id: u64,
     /// 0 = 本篇，1 = SP，2 = OP，3 = ED，4 = 预告，5 = MAD，6 = 其他。
     #[serde(rename = "type")]
     pub r#type: i32,

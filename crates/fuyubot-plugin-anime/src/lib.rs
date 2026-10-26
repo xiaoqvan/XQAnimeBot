@@ -25,6 +25,7 @@ mod nav;
 mod poll;
 mod newanime;
 mod prompts;
+mod reply;
 mod qb;
 mod review;
 mod runtime;
