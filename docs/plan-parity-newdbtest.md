@@ -371,9 +371,10 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
   - `review`：`after_send` 拆成 `record_send`（每次都记）+ `prompt_after_send`（按路线提示）。
   - `td.rs`：`VideoMeta` / `send_text_wait` / `edit_text`。
 - **阶段 4 剩余（宿主侧限制，非本仓能补）**：
-  - 相册发送（`sendMessageAlbum`）：宿主 simplify 的 album 接口**不返回 message_id**，
-    导航拿不到分页/资源定位，所以分段仍逐条发。
-  - 视频封面：`Media::Video` 没有 cover 字段，且 ffmpeg 插件还没有 thumbnail 方法
-    （插件在本仓，可加；simplify 的字段在宿主仓）。
+  - ~~相册发送~~ **已补齐**：宿主 simplify 加了 `send_message_album`（返回各条最终
+    消息）与 `Media::Video.cover` / `start_timestamp`，本仓照 TS 接上——分段 2–10 段
+    走相册（只有首项带文案），超过 10 段（TG 相册上限）退化逐条发；主消息 = 首段。
+  - ~~视频封面~~ **已补齐**：ffmpeg 插件新增 `thumbnail` 动作（`-ss` 在 `-i` 前做输入
+    定位，第 10 秒抽一帧，`-q:v 2`），封面作为 `cover` 随视频发出。
   - `tagExcludeList`（TS 存在库里的标签黑名单）未实现。
-  测试 351 → 369 全绿。
+  测试 351 → 374 全绿。
