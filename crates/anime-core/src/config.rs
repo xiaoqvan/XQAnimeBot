@@ -272,10 +272,16 @@ impl Config {
         if let Ok(v) = std::env::var("XQ_QB_PASSWORD") {
             self.qbittorrent.password = v;
         }
-        if let Ok(v) =
-            std::env::var("DEEPSEEK_API_KEY").or_else(|_| std::env::var("OPENAI_API_KEY"))
-        {
-            self.ai.api_key = v;
+        // 凭据：配置文件优先，环境变量只在配置文件没填时兜底。
+        //
+        // 反过来（环境变量无条件覆盖）会出现「配置里明明换了 key，实际还在用旧的」，
+        // 排查时只看配置文件会完全对不上。这里保证「配置文件写什么就用什么」。
+        if self.ai.api_key.trim().is_empty() {
+            if let Ok(v) =
+                std::env::var("DEEPSEEK_API_KEY").or_else(|_| std::env::var("OPENAI_API_KEY"))
+            {
+                self.ai.api_key = v;
+            }
         }
     }
 }

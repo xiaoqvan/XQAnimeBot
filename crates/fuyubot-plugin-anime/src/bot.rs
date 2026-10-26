@@ -548,10 +548,27 @@ fn cmd_aimatch(runtime: &Arc<Runtime>, command: &Command) {
     };
     let title = pieces.join(" ");
 
-    let runtime = Arc::clone(runtime);
-    std::thread::spawn(move || {
-        use anime_core::ai::{BangumiAgent, MatchInput};
-        use anime_core::bangumi::{BgmClient, BgmTools};
+        // 没启用 AI 就直说，别让管理员对着置信度 0 猜是配置没开还是模型不给面子。
+        if !runtime.config.ai.usable() {
+            let reason = if runtime.config.ai.enabled {
+                "api_key 为空"
+            } else {
+                "ai.enabled = false"
+            };
+            runtime.td.reply_text(
+                target,
+                format!(
+                    "AI 未启用（{reason}）。请在 `fuyubot.toml` 的 `[plugin.xq.anime.ai]` 段\n\
+                     填写 enabled / api_key / base_url / model。"
+                ),
+            );
+            return;
+        }
+
+        let runtime = Arc::clone(runtime);
+        std::thread::spawn(move || {
+            use anime_core::ai::{BangumiAgent, MatchInput};
+            use anime_core::bangumi::{BgmClient, BgmTools};
 
         // 番名候选：按字幕组规则解析；没有组标签（或组不在规则表里）就退回整条标题。
         let team = anime_core::rss::fansub_of(&title).into_iter().next();

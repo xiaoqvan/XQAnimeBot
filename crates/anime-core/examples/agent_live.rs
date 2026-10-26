@@ -1,12 +1,26 @@
 //! LLM Agent 真机验证：拿一条真实 BT 标题走一遍 Bangumi 匹配。
 //!
-//! **不把凭据写进代码**——全部走环境变量：
+//! **凭据走配置文件，不写进代码**——和插件运行时同一条路径（`Config::parse` →
+//! `config.ai`），所以这里验证的就是生产真实链路，而不是另拼一套：
 //!
 //! ```sh
+//! # 方式一：给配置文件（推荐，与线上一致）
+//! agent_live "[喵萌奶茶屋] 葬送的芙莉莲 - 05" ./xq-anime.toml
+//!
+//! # 方式二：环境变量（临时验证用）
 //! export XQ_AI_BASE_URL="https://openrouter.ai/api/v1"
-//! export XQ_AI_KEY="sk-or-v1-..."
-//! export XQ_AI_MODEL="nvidia/nemotron-3.5-super-vl:free"
-//! cargo run -p anime-core --example agent_live -- "[喵萌奶茶屋] 葬送的芙莉莲 - 05"
+//! export XQ_AI_KEY="sk-or-v1-..." XQ_AI_MODEL="nvidia/nemotron-3.5-super-vl:free"
+//! agent_live "[喵萌奶茶屋] 葬送的芙莉莲 - 05"
+//! ```
+//!
+//! 配置文件里只需要 `[ai]` 段，其余走默认值：
+//!
+//! ```toml
+//! [ai]
+//! enabled = true
+//! api_key = "..."
+//! base_url = "https://api.deepseek.com"
+//! model = "deepseek-v4-flash"
 //! ```
 //!
 //! 为什么单独做一个 example 而不是走插件：`/aimatch` 要起宿主、装 TDLib、连数据库；
@@ -17,7 +31,7 @@
 
 use anime_core::ai::{BangumiAgent, MatchInput};
 use anime_core::bangumi::{BgmClient, BgmTools};
-use anime_core::config::AiConfig;
+use anime_core::config::{AiConfig, Config};
 use anime_core::title;
 
 fn main() {
@@ -25,16 +39,43 @@ fn main() {
     let title = args
         .next()
         .unwrap_or_else(|| "[喵萌奶茶屋] 葬送的芙莉莲 - 05 [1080p]".to_owned());
+    // 第二个位置参数是配置文件路径；也认 XQ_ANIME_CONFIG。都没有就走环境变量。
+    let config_path = args
+        .next()
+        .or_else(|| std::env::var("XQ_ANIME_CONFIG").ok());
 
-    let config = AiConfig {
-        enabled: true,
-        api_key: std::env::var("XQ_AI_KEY").unwrap_or_default(),
-        base_url: std::env::var("XQ_AI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.deepseek.com".to_owned()),
-        model: std::env::var("XQ_AI_MODEL").unwrap_or_else(|_| "deepseek-flash".to_owned()),
+    let config = match config_path {
+        Some(path) => {
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) => {
+                    eprintln!("读取配置 {path} 失败：{error}");
+                    std::process::exit(2);
+                }
+            };
+            match Config::parse(&text) {
+                Ok(config) => {
+                    println!("配置来源：{path}");
+                    config.ai
+                }
+                Err(error) => {
+                    eprintln!("解析配置 {path} 失败：{error}");
+                    std::process::exit(2);
+                }
+            }
+        }
+        None => AiConfig {
+            enabled: true,
+            api_key: std::env::var("XQ_AI_KEY").unwrap_or_default(),
+            base_url: std::env::var("XQ_AI_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com".to_owned()),
+            model: std::env::var("XQ_AI_MODEL").unwrap_or_else(|_| "deepseek-flash".to_owned()),
+        },
     };
     if !config.usable() {
-        eprintln!("缺少凭据：请先 export XQ_AI_KEY=...（可选 XQ_AI_BASE_URL / XQ_AI_MODEL）");
+        eprintln!(
+            "AI 未启用或缺 key：请检查配置文件的 [ai] 段（enabled = true、api_key = \"...\"）"
+        );
         std::process::exit(2);
     }
     println!("模型：{} @ {}", config.model, config.base_url);
