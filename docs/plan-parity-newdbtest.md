@@ -327,3 +327,33 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
   cache_resources）+ `save_cached_anime`（cacheAnime）；`navVideoMessage` 删 `episode` 字段、
   只存导航分页消息；回调格式 `review:approve:<key>` → `review:approve:<id>`。
   测试 306 → 313 全绿（含 TS 真实 camelCase 形状的反序列化用例）。
+- **阶段 7（LLM Agent）已完成**：`ai/agent.rs` 照搬 Responses API 工具调用
+  （`searchAnimeCandidates` / `getRelatedSubjects` / `getEpisodeDetail`、迭代上限、
+  去重、`confidence`/`reason`）；`bangumi/tools.rs` 提供工具后端；`Http::with_user_agent`
+  + `post_json_auth_statused`（502/429/5xx 才重试）；`/aimatch` 与 `agent_live` 可实测。
+  AI 凭据以**配置文件为准**，环境变量仅在配置为空时兜底；默认模型 `deepseek-flash`。
+- **阶段 3（新番链路 + 缓冲频道 + 审核）已完成**：
+  - 3.1 缓冲频道：`chain::Plan`（发到哪 + 发完干什么）+ `cache_target`
+    （`cache_channel`，为 0 时退回管理群 + 番剧话题，与 TS `sendMegToCache` 一致）；
+    缓冲路线发完种子状态置 `等待纠正`，正片路线才记导航。
+  - 3.2 新番主链：`newanime.rs` 照搬 `handleNewAnime` 两条路
+    （Agent 置信度 ≥0.9 先发后审；否则搜索 → 建档(cache) → 缓冲频道）。
+    轮询里「命中但集数没对齐」也改走缓冲频道（TS `handleExistingAnime`）。
+  - 3.3 四个提示：`prompts.rs`（提供条目 / 确认集数 / 确认番剧 / 带候选先发后审）；
+    `review::after_send` 负责发完收尾（记 `resources` 或 `cache_resources`、
+    建待审核、按分支发提示）。
+  - 3.4 六种回调：`callback.rs` 先判 TS 格式（`Y_anime?r=` / `F_anime?r=` /
+    `N_anime?c=` / `N_ep?c=&id=`）再回落旧 `review:approve:<id>`；多轮纠正靠新增的
+    `reply.rs`（进程级订阅 `updateNewMessage` + 等回复 + 30 分钟超时 + 回复解析）。
+    `N_anime` 纠正完重新下载发送（提示发在下载前），`N_ep`/`F_anime` 只迁移资源归属。
+  - 配套：`BgmClient::episode(id)`（`GET /v0/episodes/{id}`）+ `Episode.subject_id`。
+  测试 336 → 351 全绿。
+
+## 阶段 3 之后的已知缺口（如实记录）
+
+- `updateAnimeLinks` / 双条目导航刷新只做了一半：纠正后目前只刷新导航标题
+  （`nav::refresh_caption`），**没有**重建导航正文（那属于阶段 4 的 `navmegtext`）。
+- 纠正流程用「回复提示消息」说话，而不是 TS 的 `editMessageText`：宿主侧目前只有
+  `edit_caption`，没有改消息文本的封装。
+- 分段上传写进 `resources` 的仍是第一段（`messages[]` / `videoid[]` 未填），
+  与阶段 4 的相册发送一起补。
