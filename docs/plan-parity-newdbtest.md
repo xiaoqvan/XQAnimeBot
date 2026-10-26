@@ -258,15 +258,51 @@ Rust 的 [ai.rs](crates/anime-core/src/ai.rs) 只有 213 行，两次单发 chat
 
 ---
 
-## 8. 单独挂起：inline 模式
+## 8. inline 模式
 
-newdbtest 注册了两个 inline handler（`animeNavigation` / `episodeVideo`）。
-**但这条现在做不了**：宿主 `fuyubot-abi` / `fuyubot-core` 里 `inline` 是 0 命中，
-ABI 只有 `UPDATE_EVENT` / `RESPONSE_EVENT` 和 `on(...)`，没有 inline 注册入口。
-`fuyubot-tdlib-ext` 的 `answer_inline_query` 只能发、收不到查询。
+newdbtest 注册了两个 inline handler（`animeNavigation` / `episodeVideo`），
+`inline/*.ts` 里各一个 matcher 打分（数字 → 90 / 文字 ≥2 字 → 70；章节 id 或
+`bgm.tv/ep/<id>` → 100），框架取分高的那个。
 
-这是**宿主侧限制**，得先在 FuyuBot 加 inline 事件分发，不是本仓能单独补的。
-建议先挂着，等宿主侧有入口再说。
+**这里原先写着「做不了」，那是误判**：宿主 ABI 确实没有 inline 注册入口，但
+`HostRuntime::publish_update` 会把每条 TDLib 更新按 `@type` **单独发一遍**
+（`updateNewInlineQuery` 也在其中），所以 `host.on("updateNewInlineQuery", ...)`
+就能收到查询；回包用 `fuyubot-tdlib-ext` 的 `answer_inline_query`。整条链不需要宿主
+改代码，只差本仓接上——见 [inline.rs](crates/fuyubot-plugin-anime/src/inline.rs)。
+
+### 8.1 落地方案
+
+| TS | Rust | 说明 |
+| --- | --- | --- |
+| `index.ts` 的 `inlineHandlers` + matcher | `Handler` / `score` / `pick` | 打分取最高，同分按注册顺序 |
+| `matchAnimeNavigationInline` | `Handler::AnimeNavigation` | 数字 90、文字（≥2 字）70 |
+| `matchEpisodeVideoInline` | `Handler::EpisodeVideo` | 数字或 bangumi 链接 100 |
+| `animeNavigation.ts` | `answer_navigation` | 汇总卡 + 每部番一张（正文取导航正文首段） |
+| `episodeVideo.ts` | `answer_episode` | 按 `episodeId` 查 `resources`，`createdAt` 倒序 |
+
+### 8.2 必须偏离 TS 的地方（TDLib 协议所限）
+
+- **结果卡片只能是 `inputInlineQueryResultArticle`**：`inputInlineQueryResultVideo`
+  的 `video_url` / `thumbnail_url` 是给客户端预览用的 **HTTP URL**，而我们手上只有
+  Telegram 的文件 id（`message.content.video.video.remote.id`）。文件 id 塞进
+  `video_url` 会被服务端按「URL 非法」退回来。所以改成「article 卡片 +
+  `input_message_content = inputMessageVideo{inputFileRemote}`」——**列表里是卡片，
+  选中后发出的是视频**，不重新上传、不先下载。卡片缩略图用番剧封面（真 URL）。
+- **TS 的 photo 结果会「把封面当图片发出去」，这里统一发文本卡片**：TS 走的是它那层
+  `media: { photo: { id: anime.image } }`（把封面 **URL** 塞进文件 id 的位置），
+  TDLib 的 `InputFile` 只有本地 / 远程 id / 生成文件三种，没有「按 URL 发图」——
+  真要发图得先下载再上传。导航正文本身才是要发的东西，所以只把封面当缩略图。
+- **一个查询只回一次**：`answerInlineQuery` 一个 query id 只有最后一次应答生效，
+  所以两个 handler 不能各回各的。
+- **逐条结果的取视频逻辑保留 TS 的顺序**：`videoid` → `getMessage` 读
+  `messageVideo` → 相册各段的 `videoid` → 相册逐条读。尺寸/时长/`has_spoiler`
+  一起带出来（TS 只带了宽高），R18 遮罩因此不会在内联发送时丢。
+
+### 8.3 一处体验上的改进
+
+纯数字查询按 TS 的分数走 `episodeVideo`（100 > 90），但数字既可能是**章节 id**
+也可能是**番剧 id**：这一集一条资源都没有时，再按番剧 id 查一次导航；两边都没有才
+回「EP X 暂无资源」。
 
 ---
 
@@ -294,7 +330,8 @@ ABI 只有 `UPDATE_EVENT` / `RESPONSE_EVENT` 和 `on(...)`，没有 inline 注�
 | 5 | 并发管理器 + MKV 队列 + 进度/取消 | 4 |
 | 6 | 命令 / 权限 / OAuth / `getEpisodeById` | 2 |
 | 7 | LLM Agent（**待定**） | 3 |
-| 8 | 文档 + 分支交付 | 全部 |
+| 8 | inline 模式（`@机器人 关键词`） | 2、4 |
+| 9 | 文档 + 分支交付 | 全部 |
 
 阶段 1、2 是「越晚改越贵」的，建议先做完再动 3。
 
@@ -445,3 +482,17 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
 
 - **阶段 6 剩余**：`checkTorrentFormat` 已在阶段 5 落地（`/addanime` 的手工补种
   也可以吃到 MKV 分流）；`getTokenStatus` 已实现但没有命令用它。
+- **阶段 8（inline 模式）已完成**（`crates/fuyubot-plugin-anime/src/inline.rs`）：
+  - 订阅 `updateNewInlineQuery`：宿主 `publish_update` 按 `@type` 单独发一遍，
+    不需要宿主新增 ABI 入口（原先「做不了」的结论已作废，见 §8）。
+  - 两个 handler 按 TS 的 matcher 打分：章节 id / bangumi 链接 100 → 取视频，
+    纯数字 90、文字 ≥2 字 70 → 取导航；同分按注册顺序。
+  - 结果卡片用 `inputInlineQueryResultArticle` + `inputMessageVideo{inputFileRemote}`：
+    列表里是卡片（缩略图用番剧封面），选中后发出的是**原来的视频文件**，不重传不下载。
+    取视频 id 的顺序与 TS 一致（`videoid` → `getMessage` → 相册各段），并把
+    `duration/width/height/has_spoiler` 一起带出去。
+  - 纯数字查询在没有该章节资源时回退按番剧 id 查导航（TS 只查章节）。
+  - 顺带修掉一处 parity 偏差：导航正文 / 分页 / 视频文案改用 `Text::markdown`
+    （TS 发之前都过 `parseTextEntities`，之前按纯文本发，`[01](link)` 在频道里是
+    字面量、点不动）。
+  测试 152 → 163。

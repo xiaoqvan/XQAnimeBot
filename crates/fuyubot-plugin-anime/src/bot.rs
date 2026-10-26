@@ -1393,7 +1393,11 @@ fn cmd_help(runtime: &Arc<Runtime>, command: &Command) {
     for spec in COMMANDS {
         text.push_str(&format!("/{} —— {}\n", spec.name, spec.summary));
     }
-    text.push_str("\n先把种子发到群里，剩下的交给它。");
+    text.push_str(
+        "\n内联：任意聊天里输入 @本机器人 <番剧关键词> 取导航，\n\
+         或输入 @本机器人 <章节 id / bgm.tv/ep/<id>> 取这一集的视频。\n\
+         \n先把种子发到群里，剩下的交给它。",
+    );
     runtime
         .td
         .reply_text(Target::new(command.chat_id, command.message_id), text);

@@ -41,6 +41,21 @@ simplify 已经覆盖「发消息」这一整条（文本/图片/视频/相册/�
 
 ## 3. 待办
 
-- [ ] `crates/fuyubot-tdlib-ext` 落地十个读接口（见上表）
-- [ ] inline query 订阅：`UpdateFilter::flat("updateInlineQuery")` + `answer_inline_query`
+- [x] `crates/fuyubot-tdlib-ext` 落地读接口（上表里 `getMessage` / `getChat` /
+      `getSupergroup` / `getChatMember` / `getUser` / `getMe` / `getMessageLink` /
+      `answerInlineQuery` / `pinChatMessage` 都已在，`restrictUser` 未做，权限改走
+      `getChatMember` + 配置白名单，见 `perm.rs`）
+- [x] inline query 订阅：**事件名是 `updateNewInlineQuery`**（不是 TS 那层的
+      `updateInlineQuery`），订阅方式就是 `host.on("updateNewInlineQuery", ...)`；
+      回包 `TdExt::answer_inline_query`。落地见
+      [inline.rs](../crates/fuyubot-plugin-anime/src/inline.rs) 与
+      [plan-parity-newdbtest.md](plan-parity-newdbtest.md) §8
 - [ ] 上游发版后把该 crate 合并回 `fuyubot-simplify`，本仓改回版本依赖
+
+## 4. inline 结果类型的坑（2026-10-27 补）
+
+`answerInlineQuery` 收的是 `InputInlineQueryResult`，与查询返回的
+`InlineQueryResult` 不是同一套类型。`inputInlineQueryResultVideo` 的 `video_url` /
+`thumbnail_url` 必须是 **HTTP URL**（客户端拿它做预览），**不能**填 Telegram 的文件 id；
+要发一个已存在的文件，正确做法是把 `inputMessageVideo{inputFileRemote}` 放进
+`input_message_content`，卡片本身用 `inputInlineQueryResultArticle`。

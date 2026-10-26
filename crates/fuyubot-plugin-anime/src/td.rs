@@ -6,6 +6,16 @@
 //!
 //! **不要在更新回调里同步等响应**：`send_message` 只是投递，立刻返回；真正等
 //! 结果的那几个 `*_wait_success` 会阻塞投递线程，回调里用等于自己卡自己。
+//!
+//! ## 文本格式：导航正文与视频文案走 Markdown
+//!
+//! TS 在发这些文本之前都过一遍 `parseTextEntities`（`sendAnime.ts` / `anime/text.ts`），
+//! 所以正文里的 `[01](https://t.me/c/...)`、`#标签` 到客户端是**可点的链接与标签**。
+//! 这里对应地传 `Text::markdown`：simplify 内部也是走 `parseTextEntities`，
+//! 解析失败会退回纯文本，不会因为一个没配对的方括号把整条消息发废。
+//!
+//! 纯提示语（审核提示、错误回话、`/addanime` 的进度）仍然是 `Text::plain`：
+//! 那些文本是拿番剧名拼出来的，不该让名字里的 `*` / `_` 变成格式控制符。
 
 use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
@@ -134,7 +144,7 @@ impl Td {
         path: impl Into<String>,
         caption: impl Into<String>,
     ) -> bool {
-        let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
+        let media = Media::photo(InputFile::local(path)).caption(Text::markdown(caption));
         self.send(target, SendMessageParams::media(media))
     }
 
@@ -155,7 +165,7 @@ impl Td {
     /// 只发请求不等结果：改标题失败不影响业务（下一条消息还会再改一次）。
     pub fn edit_caption(&self, chat_id: i64, message_id: i64, text: impl Into<String>) -> bool {
         let params = EditCaptionParams {
-            text: Some(Text::plain(text)),
+            text: Some(Text::markdown(text)),
             reply_markup: Vec::new(),
             timeout_ms: EDIT_TIMEOUT_MS,
         };
@@ -186,7 +196,7 @@ impl Td {
         path: impl Into<String>,
         caption: impl Into<String>,
     ) -> bool {
-        let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
+        let media = Media::photo(InputFile::local(path)).caption(Text::markdown(caption));
         self.send(target, SendMessageParams::media(media))
     }
 
@@ -197,7 +207,7 @@ impl Td {
         path: impl Into<String>,
         caption: impl Into<String>,
     ) -> Option<i64> {
-        let media = Media::photo(InputFile::local(path)).caption(Text::plain(caption));
+        let media = Media::photo(InputFile::local(path)).caption(Text::markdown(caption));
         let mut params = SendMessageParams::media(media);
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
@@ -259,7 +269,7 @@ impl Td {
     /// 导航的**分页消息**要用它：分页消息要记进 `navVideoMessage`（带 page 与链接），
     /// 拿不到 id 就没法生成正文里的 `[第N页](link)`。
     pub fn send_text_wait(&self, target: Target, text: impl Into<String>) -> Option<i64> {
-        let mut params = SendMessageParams::text(Text::plain(text));
+        let mut params = SendMessageParams::text(Text::markdown(text));
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
         self.wait_sent(target.chat_id, &params).map(|sent| sent.message_id)
@@ -270,7 +280,7 @@ impl Td {
     /// 分页消息是**长文本**（4096 上限），不能走 `edit_caption`（那是图注，1024 上限）。
     pub fn edit_text(&self, chat_id: i64, message_id: i64, text: impl Into<String>) -> bool {
         let params = EditTextParams {
-            text: Some(Text::plain(text)),
+            text: Some(Text::markdown(text)),
             timeout_ms: EDIT_TIMEOUT_MS,
             ..EditTextParams::default()
         };
@@ -330,7 +340,7 @@ fn video_media(part: &VideoPart, caption: Option<&str>) -> Media {
     let meta = part.meta.clone();
     Media::Video {
         file: InputFile::local(part.path.clone()),
-        caption: caption.map(Text::plain),
+        caption: caption.map(Text::markdown),
         // 缩略图交给 Telegram 自己生成：我们已经给了 cover（那一帧的画面文件），
         // 再单独传一张缩略图只是多一次上传。
         thumbnail: None,

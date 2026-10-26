@@ -66,10 +66,6 @@ impl Stage {
             Self::Cancelled => "已取消",
         }
     }
-
-    pub fn is_finished(self) -> bool {
-        matches!(self, Self::Done | Self::Failed | Self::Cancelled)
-    }
 }
 
 /// 一条任务对外可见的快照。[`TaskView::line`] 直接渲染成 `/progress` 的一行。
@@ -251,6 +247,10 @@ pub fn enqueue(key: &str, title: &str, anime_id: i64) -> Option<Arc<Task>> {
 }
 
 /// 有没有同 key 的活跃任务（去重）。
+///
+/// 生产路径不再直接用它——[`enqueue`] 把「查重 + 插入」放进同一把锁，
+/// 这里留给单测断言任务表的真实内容。
+#[cfg(test)]
 pub fn has_active(key: &str) -> bool {
     TASKS
         .lock()

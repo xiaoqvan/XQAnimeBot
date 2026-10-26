@@ -41,7 +41,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 | 番剧匹配（season + 集数对齐） | ~0.6k | ✅ 完成（打分 + 阈值 + 放送日期窗口，真数据验证） |
 | 插件壳 / 命令路由 | ~3.3k | 🚧 19 个命令（含 /bindbangumi /exitbangumi /collect 收藏回调、主人权限校验） + 后台 RSS 轮询（去重 → 匹配 → 下载 → 转码 → 发视频；审核提示/按钮/通过即下载；/addanime 导入库；导航卡 + 每集链接） |
 | 业务存储层（db） | ~2.5k | 🚧 `anime-core::store` 就绪（Storage trait + 业务查询），插件侧已用 `storage.mongo` 实现 |
-| TDLib 读接口 / inline | — | 🚧 `fuyubot-tdlib-ext`（getMessage/getChat/getMessageLink/answerInlineQuery 等 10 个） |
+| TDLib 读接口 / inline | — | ✅ `fuyubot-tdlib-ext`（getMessage/getChat/getMessageLink/answerInlineQuery 等 10 个）；inline 两个 handler 已接（`@机器人 关键词`） |
 | 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | 🚧 主链已通（含待审核分支、导航卡、navVideoMessage）；缺分段/多集/播报 |
 | Bangumi API + AI Agent | ~1.8k | 🚧 API 客户端 + `/addanime` `/testbgimg`；AI 集数抽取与章节匹配已接（兜底，可关） |
 | 任务恢复 / 检查点 / 审核 | ~1.0k | ❌ 未开始 |
@@ -62,11 +62,13 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 常用命令：`/selftest`（一条命令自检服务/库/RSS/匹配）`/addanime` `/testbgimg` `/searchanime` `/progress` `/canceltask` `/status` `/web` `/help`。
 
+内联：在任意聊天里打 `@机器人 <番剧关键词>` 取导航卡（点开就是完整导航正文），打 `@机器人 <章节 id 或 bgm.tv/ep/<id> 链接>` 取这一集的视频，选中即发送（复用频道里已上传的文件，不重传）。
+
 ## 构建与验证
 
 ```bash
 cargo build --workspace       # 全部插件（0 warning）
-cargo test --workspace        # 288 个单测（离线，不碰网络/数据库）
+cargo test --workspace        # 440 个单测（离线，不碰网络/数据库）
 cargo run -p ultralight-gen-image --example render_card          # 出图（含渲染器）
 cargo run -p fuyubot-plugin-ffmpeg --example plan_smoke         # 转码选路 + 真实转码
 cargo run -p anime-core --example rss_probe                     # RSS 三源抓取 + 合并 + 标题解析

@@ -23,6 +23,7 @@ mod commands;
 mod card;
 mod chain;
 mod fetch;
+mod inline;
 mod media;
 mod nav;
 mod poll;
@@ -63,6 +64,8 @@ struct AnimePlugin {
     poller: Option<Poller>,
     /// 内联键盘回调订阅。`drop` 就退订，同上。
     callback: Option<callback::CallbackSubscription>,
+    /// 内联查询订阅（`@机器人 关键词`）。`drop` 就退订，同上。
+    inline: Option<inline::InlineSubscription>,
     /// 管理 API。`drop` 就停监听。
     web: Option<web::WebServer>,
 }
@@ -76,6 +79,7 @@ impl Plugin for AnimePlugin {
             subscription: None,
             poller: None,
             callback: None,
+            inline: None,
             web: None,
         })
     }
@@ -111,6 +115,12 @@ impl Plugin for AnimePlugin {
             self.host
                 .log(LogLevel::Warn, "订阅 updateNewCallbackQuery 失败，审核按钮不可用");
         }
+        // 内联查询：宿主按 `@type` 分发，订阅 `updateNewInlineQuery` 即可。
+        let inline = inline::spawn(self.host, Arc::clone(&runtime));
+        if inline.is_none() {
+            self.host
+                .log(LogLevel::Warn, "订阅 updateNewInlineQuery 失败，内联查询不可用");
+        }
 
         // 用本插件的 [mongodb] 驱动 storage.mongo（云端连接串走这里）。
         // 最多等 3 秒让它生效：否则第一轮轮询可能落在切换前的空库上。
@@ -129,6 +139,7 @@ impl Plugin for AnimePlugin {
         self.runtime = Some(runtime);
         self.poller = Some(poller);
         self.callback = callback;
+        self.inline = inline;
         self.web = web;
         self.host.log(
             LogLevel::Info,
@@ -145,6 +156,7 @@ impl Plugin for AnimePlugin {
         // 丢在最前面会让还在跑的回调拿到 `None`。
         self.subscription = None;
         self.callback = None;
+        self.inline = None;
         self.web = None;
         self.poller = None;
         self.runtime = None;
