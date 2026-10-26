@@ -176,7 +176,7 @@ fn collapse_blank_lines(text: &str) -> String {
 
 /// 集数的三种形态（决定排序位置）。
 #[derive(Debug, Clone, PartialEq)]
-enum ParsedEpisode {
+pub enum ParsedEpisode {
     /// `05` / `05v2`：正片，带版本号。
     Num { number: f64, version: String },
     /// `SP1` / `特别篇1`：特殊集，紧跟在同号正片后面。
@@ -186,7 +186,10 @@ enum ParsedEpisode {
 }
 
 /// 解析集数字符串（TS 的 `parseEpisode`）。
-fn parse_episode(episode: &str) -> ParsedEpisode {
+///
+/// 公开是因为除了导航排序，`/jz` 的单集纠正也要用它——纠正时「第 03 集」要在
+/// 目标番的章节表里找回去，与排序必须是同一套理解。
+pub fn parse_episode(episode: &str) -> ParsedEpisode {
     let text = episode.trim();
     let digits: String = text
         .chars()

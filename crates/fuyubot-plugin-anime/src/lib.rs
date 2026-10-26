@@ -15,6 +15,7 @@
 //! 「这条种子属于哪部番、该不该投」是 `anime-core` 的事——那边能纯 `cargo test`。
 
 mod bgmuser;
+mod correct;
 mod deeplink;
 mod bot;
 mod callback;

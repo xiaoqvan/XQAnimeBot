@@ -90,7 +90,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "jz",
-        summary: "把缓存条目接到番剧上：/jz <bangumi 条目 id> <缓存 id>",
+        summary: "单集纠正：/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]",
         handler: cmd_jz,
     },
     CommandSpec {
@@ -1105,55 +1105,40 @@ fn anime_name(runtime: &Runtime, anime_id: i64) -> String {
         .unwrap_or_else(|| format!("{anime_id}"))
 }
 
-/// `/jz <条目 id> <缓存 id>`：把缓存里的条目接到某部番上（TS `ConAnimeInformation`）。
+/// `/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]`：把一集改挂到正确的番上。
 ///
-/// 给出「确定」按钮（`Y_anime?id=&c=`），点了才真正落地——管理员先看清楚
-/// 番剧名和缓存标题对不对，再按。
+/// 见 [`crate::correct`]——现在的链路在投放前就把番剧定下来了，要纠正的是
+/// **已经发进正片频道但挂错番**的那一集，不再是缓存条目。
+///
+/// 干的是写库 + 刷两边导航 + 改已发消息文案，所以要开线程：一次 mongo 往返
+/// 不该把更新流按住。
 fn cmd_jz(runtime: &Arc<Runtime>, command: &Command) {
     let target = Target::new(command.chat_id, command.message_id);
-    let mut parts = command.args.split_whitespace();
-    let anime_id = parts.next().and_then(|raw| raw.parse::<i64>().ok());
-    let cache_id = parts.next().and_then(|raw| raw.parse::<i64>().ok());
-    let (Some(anime_id), Some(cache_id)) = (anime_id, cache_id) else {
+    let Some(request) = crate::correct::parse_request(&command.args) else {
         runtime.td.reply_text(
             target,
-            "用法：/jz <bangumi 条目 id> <缓存 id>\n示例：/jz 12345 67890",
+            "用法：/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]\n\
+             示例：/jz 12345 03 67890\n\
+             只纠正某个字幕组：/jz 12345 03 67890 喵萌奶茶屋",
         );
         return;
     };
     let worker = Arc::clone(runtime);
-    std::thread::spawn(move || {
-        use anime_core::store::Storage;
-        // 正片库优先，找不到再看缓冲库（`cacheAnime`）——TS 的 `getAnimeById(id, true)`。
-        let name = worker
-            .store
-            .anime_by_id(anime_id)
-            .ok()
-            .flatten()
-            .or_else(|| worker.store.cached_anime_by_id(anime_id).ok().flatten())
-            .map(|anime| crate::prompts::display(&anime).to_owned())
-            .unwrap_or_else(|| "未知".to_owned());
-        let cache_title = worker
-            .store
-            .cache_item_get(cache_id)
-            .ok()
-            .flatten()
-            .map(|item| item.title)
-            .unwrap_or_else(|| "未知".to_owned());
-        let text = format!(
-            "番剧信息为：{name}（id:{anime_id}）\n缓存：{cache_title}（id:{cache_id}）"
+    let spawned = std::thread::Builder::new()
+        .name("xq-anime-jz".to_owned())
+        .spawn(move || {
+            let text = match crate::correct::run(&worker, &request) {
+                Ok(outcome) => outcome.render(&request),
+                Err(error) => format!("纠正失败：{error}"),
+            };
+            worker.td.reply_text(target, text);
+        });
+    if let Err(error) = spawned {
+        runtime.host.log(
+            fuyubot_abi::LogLevel::Error,
+            &format!("[anime] /jz 线程起不来：{error}"),
         );
-        let _ = worker.td.send_text_with_buttons(
-            target,
-            text,
-            vec![vec![fuyubot_simplify::ReplyButton::callback(
-                "确定",
-                crate::callback::data::confirm(crate::callback::CallbackTarget::by_episode(
-                    anime_id, cache_id,
-                )),
-            )]],
-        );
-    });
+    }
 }
 
 /// `/collect <条目id> [章节id]`：弹一个五种收藏状态的键盘。
