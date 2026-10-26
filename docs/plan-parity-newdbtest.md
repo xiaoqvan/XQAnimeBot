@@ -392,8 +392,8 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
     `expiresIn` 的旧记录（手工绑的）不硬刷。收藏回调已改走它。
   - **命令**：`/start` 三种深链（`bgm_cb-<code>_<state>` 换 token 写库 + `getMe`、
     `collection-<id>` 标在看 + 状态按钮、`eplook-<epId>` 标看过；认不出的载荷
-    **不回复**，避免和宿主自带 start 插件抢话）；`/jz <条目 id> <缓存 id>`
-    （`Y_anime?id=&c=` 确定按钮）；`/bindbangumi` 不带参数改走 OAuth 授权按钮。
+    **不回复**，避免和宿主自带 start 插件抢话）；`/bindbangumi` 不带参数改走 OAuth
+    授权按钮。
     `deeplink.rs` 里的 `base62_to_hex` 用 base-256 大端累加（授权码可能超过 u128）。
   - **`/addanime` / `/addnewanime` 语义改正**：收「章节 id + 链接」，不再是
     「条目 id」。新增 `anime-core::torrent`：bangumi.moe 三个 fetch 接口 + dmhy
@@ -402,5 +402,14 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
     `/updateanime` 兼作导入命令（库里没有时建档并补发导航卡）。
   - 接口：`BgmClient::episode(id)`（阶段 3 已补）、`subject_id_of_episode`。
   测试 374 → 402 全绿。
+- **`/jz` 语义已改（不再照搬 TS 的 `ConAnimeInfo`）**：TS 是「缓存条目接番剧」
+  （`<条目 id> <缓存 id>` + `Y_anime?id=&c=` 确定按钮），依赖「先有 cacheItem 再谈
+  番剧」的旧流程。现在投放前就把番剧定下来了，缓存 id 不再是纠正入口，真正要
+  纠正的是**已发进正片却挂错番**的那一集。新用法
+  `/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]`（见 `correct.rs`）：
+  查资源 → 按目标番章节表重解 `episodeId` → 插新删旧 → 刷两边导航 →
+  把已发视频的 caption 改成目标番的（`edit_caption`）。
+  不做确认按钮：`callback_data` 上限 64 字节，塞不下中文字幕组名。
+
 - **阶段 6 剩余**：`checkTorrentFormat`（MKV 预检）属于阶段 5 的并发管理器，
   未在 `/addanime` 里做 MKV 分流；`getTokenStatus` 已实现但没有命令用它。
