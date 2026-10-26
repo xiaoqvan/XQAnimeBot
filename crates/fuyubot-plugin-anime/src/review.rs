@@ -17,7 +17,7 @@ use anime_core::store::Storage;
 use crate::callback;
 use crate::chain::Plan;
 use crate::runtime::Runtime;
-use crate::td::Target;
+use crate::td::{SentPart, Target};
 
 /// 发一条待审核提示。返回待审核记录的自增 id（`None` = 没配管理群/写库失败）。
 pub fn prompt(runtime: &Runtime, item: &AnimeItem, decision: &SeasonDecision) -> Option<i64> {
@@ -61,14 +61,24 @@ pub fn record_send(
     plan: &Plan,
     item: &AnimeItem,
     chat_id: i64,
-    message_id: i64,
+    sent: &[SentPart],
 ) {
+    // 主消息 = 第一段：`message` 指向它（导航跳转、集数纠正的落点都在这），
+    // 分段整体则记进 `messages`（TS 的 extractAlbumMsgData）。
+    let Some(primary) = sent.first() else {
+        return;
+    };
     let episode = item
         .episode
         .clone()
         .filter(|text| !text.trim().is_empty())
         .unwrap_or_else(|| "未知".to_owned());
     let thread_id = runtime.config.telegram.anime_group_thread_id;
+    let video_ids: Vec<String> = sent.iter().filter_map(|part| part.video_id.clone()).collect();
+    let unique_ids: Vec<String> = sent
+        .iter()
+        .filter_map(|part| part.unique_id.clone())
+        .collect();
     let resource = EpisodeResourceDoc {
         anime_id: plan.anime_id,
         episode,
@@ -82,14 +92,28 @@ pub fn record_send(
         names: Some(item.names.clone()),
         message: Some(MessageRef {
             chat_id,
-            message_id,
+            message_id: primary.message_id,
             thread_id: Some(thread_id),
             topic_id: None,
-            link: message_link(runtime, chat_id, message_id),
+            link: message_link(runtime, chat_id, primary.message_id),
         }),
-        messages: None,
-        videoid: None,
-        unique_id: None,
+        // 多段（相册）才记整组：单段时 `message` 已经够，`messages` 只是重复。
+        messages: (sent.len() > 1).then(|| {
+            sent.iter()
+                .map(|part| AlbumMessage {
+                    chat_id,
+                    message_id: part.message_id,
+                    thread_id: Some(thread_id),
+                    videoid: part.video_id.clone(),
+                    unique_id: part.unique_id.clone(),
+                    ..Default::default()
+                })
+                .collect()
+        }),
+        videoid: video_ids.first().cloned(),
+        unique_id: unique_ids.first().cloned(),
+        videoids: (video_ids.len() > 1).then_some(video_ids),
+        unique_ids: (unique_ids.len() > 1).then_some(unique_ids),
         // 有 cache_id 就写 cache_resources（TS 的 cache=true），否则写 resources。
         cache_id: (plan.cache_id > 0).then(|| serde_json::json!(plan.cache_id)),
         source: item.source.clone(),

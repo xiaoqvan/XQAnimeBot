@@ -24,7 +24,7 @@ const TIMEOUT: Duration = Duration::from_secs(15);
 /// 日志里附几条样本。多了没人看，还会把宿主日志冲掉。
 const SAMPLE_LIMIT: usize = 3;
 /// 内存里记住多少条标题。RSS 一轮几十条，这个容量够撑几十轮。
-const SEEN_CAPACITY: usize = 2000;
+pub(crate) const SEEN_CAPACITY: usize = 2000;
 /// 单行截短长度。错误原文（ureq 的）能很长，日志里留个开头就够。
 const SHORTEN: usize = 60;
 
@@ -192,6 +192,8 @@ impl Seen {
         true
     }
 
+    /// 只在测试里用（断言容量上限）：正式代码没有「查去重表多大」的需求。
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.titles.len()
     }

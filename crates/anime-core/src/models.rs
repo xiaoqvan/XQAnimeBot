@@ -484,11 +484,16 @@ pub struct EpisodeResourceDoc {
     /// TG 分段消息。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub messages: Option<Vec<AlbumMessage>>,
-    /// 单视频 videoid。
+    /// 单视频 videoid（相册时取第一条）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub videoid: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unique_id: Option<String>,
+    /// 相册各段的 videoid（TS 只在有多段时才写）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub videoids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unique_ids: Option<Vec<String>>,
     /// 缓存 id（cache_resources 用，指向 cacheItem.id）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_id: Option<serde_json::Value>,

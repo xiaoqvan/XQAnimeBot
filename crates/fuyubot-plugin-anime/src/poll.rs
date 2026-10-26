@@ -36,8 +36,6 @@ use crate::runtime::Runtime;
 
 /// 北京时间的时段切换点（整点）。
 const CHANGE_HOURS: [u32; 5] = [2, 11, 14, 18, 21];
-/// 内存去重记住多少条标题。RSS 一轮几十条，这个容量足够挡住短期重复。
-const SEEN_CAPACITY: usize = 2000;
 
 /// 北京时间（UTC+8）的当前小时 → 这一时段的轮询间隔秒数。
 ///
@@ -519,7 +517,7 @@ mod tests {
     #[test]
     fn seen_forgets_the_oldest_when_full() {
         let mut seen = Seen::default();
-        for index in 0..SEEN_CAPACITY + 10 {
+        for index in 0..fetch::SEEN_CAPACITY + 10 {
             seen.accept(&format!("标题 {index}"));
         }
         // 满了会整个清空，最早的标题于是又被当成新的。这是有意的取舍：

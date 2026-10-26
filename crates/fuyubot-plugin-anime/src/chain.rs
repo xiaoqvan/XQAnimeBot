@@ -25,12 +25,14 @@ use serde_json::Value;
 use crate::media::Media;
 use crate::qb::Qb;
 use crate::runtime::Runtime;
-use crate::td::{Target, VideoMeta};
+use crate::td::{SentPart, Target, VideoMeta, VideoPart};
 
 /// 同时最多几条在下载。TS 的 `AnimeProcessorManager` 也是 3 个 worker。
 const WORKERS: usize = 3;
 /// qB 分类，方便在 qB 界面里一眼认出哪些是这个机器人加的。
 const CATEGORY: &str = "xq-anime";
+/// 封面取第几秒。太靠前的帧常常是黑场或制作委员会的 logo（TS 也是 10 秒）。
+const COVER_SECOND: u64 = 10;
 /// 认得出的视频后缀（小写）。
 const VIDEO_EXT: [&str; 5] = ["mkv", "mp4", "avi", "ts", "m2ts"];
 
@@ -293,6 +295,67 @@ fn video_meta(runtime: &Runtime, path: &Path, spoiler: bool) -> VideoMeta {
         width: probe.get("width").and_then(Value::as_u64).unwrap_or(0) as i32,
         height: probe.get("height").and_then(Value::as_u64).unwrap_or(0) as i32,
         spoiler,
+        // 封面由 [video_part] 另外抽：探测失败时也不该放弃封面。
+        cover: None,
+    }
+}
+
+/// 一段视频的完整发送描述：真实参数 + 抽出来的封面帧。
+fn video_part(runtime: &Runtime, path: &Path, spoiler: bool, index: usize) -> VideoPart {
+    let mut meta = video_meta(runtime, path, spoiler);
+    meta.cover = extract_cover(runtime, path, index);
+    VideoPart {
+        path: path.display().to_string(),
+        meta,
+    }
+}
+
+/// 抽一帧做封面（TS 取第 10 秒）。失败返回 `None`。
+///
+/// 没有封面不是失败：Telegram 自己会从视频里抓一帧，只是抓哪一帧由它决定，
+/// 常常抓到黑场。所以这里是「尽力而为」，失败只记日志。
+fn extract_cover(runtime: &Runtime, path: &Path, index: usize) -> Option<String> {
+    let media = Media::new(runtime.host);
+    if !media.available() {
+        return None;
+    }
+    let stem = path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("video");
+    let output = work_dir(&runtime.config.media.work_dir).join(format!("cover_{stem}_{index}.jpg"));
+    match media.thumbnail(path, &output, COVER_SECOND) {
+        Ok(_) => Some(output.display().to_string()),
+        Err(error) => {
+            log!(
+                &runtime.logger,
+                Warn,
+                "抽封面失败（{}）：{error}",
+                path.display()
+            );
+            None
+        }
+    }
+}
+
+/// 逐条发送时的文案：多段才加「（n/N）」。
+///
+/// 相册路线不加后缀——相册里的各项是一集拆出来的，序号没有意义
+/// （TS 也是整组只给首项带文案）。
+fn part_text(base: &str, index: usize, total: usize) -> String {
+    if total > 1 {
+        format!("{base}（{}/{}）", index + 1, total)
+    } else {
+        base.to_owned()
+    }
+}
+
+/// 封面是临时产物，与分段一样发完就删。
+fn cleanup_covers(runtime: &Runtime, parts: &[VideoPart]) {
+    for path in parts.iter().filter_map(|part| part.meta.cover.as_deref()) {
+        if let Err(error) = std::fs::remove_file(path) {
+            log!(&runtime.logger, Warn, "删除封面失败（{path}）：{error}");
+        }
     }
 }
 
@@ -399,79 +462,92 @@ fn run(
     let anime = (plan.anime_id > 0)
         .then(|| runtime.store.anime_by_id(plan.anime_id).ok().flatten())
         .flatten();
-    let base_text = match &anime {
-        Some(anime) => crate::text::anime_text(anime, item, plan.episode_id.unwrap_or(0)),
-        None => caption(item),
+    let base_text = match (&anime, plan.to_cache) {
+        // 缓冲频道只用标题（TS 的 `sendMegToCache`）：那里是暂存区，视频还没确定
+        // 是哪部番，挂上「导航·收藏·标记看过」那四个链接反而是错的。
+        (_, true) | (None, _) => caption(item),
+        (Some(anime), false) => crate::text::anime_text(anime, item, plan.episode_id.unwrap_or(0)),
     };
     let spoiler = anime.as_ref().and_then(|anime| anime.r18).unwrap_or(false);
 
-    let mut message_id = None;
-    let mut send_failed = false;
-    for (index, part) in parts.iter().enumerate() {
-        let text = if total > 1 {
-            format!("{base_text}（{}/{}）", index + 1, total)
-        } else {
-            base_text.clone()
-        };
-        let meta = video_meta(runtime, part, spoiler);
-        // 等最终消息是为了拿 message_id 记进导航（navVideoMessage）；
-        // `wait_send = false` 时只投递（回放/无 TDLib 环境用）。
-        let sent = if config.telegram.wait_send {
-            runtime
-                .td
-                .send_video_wait(target, part.display().to_string(), text, meta)
-        } else {
-            runtime
-                .td
-                .send_video_now(target, part.display().to_string(), text, meta)
-                .then_some(0)
-        };
-        if sent.is_none() {
-            send_failed = true;
-
-            log!(
-                &runtime.logger,
-                Warn,
-                "发送失败：{}（第 {}/{} 段）",
-                part.display(),
-                index + 1,
-                total
-            );
-            continue;
+    // 每段都要探测真实参数 + 抽封面：没有它们客户端里这一集是「时长 0:00」的灰块。
+    let metas: Vec<VideoPart> = parts
+        .iter()
+        .enumerate()
+        .map(|(index, part)| video_part(runtime, part, spoiler, index))
+        .collect();
+    let mut sent: Vec<SentPart> = if !config.telegram.wait_send {
+        // 不等确认：逐段投递（回放 / 无 TDLib 环境），拿不到 id 也拿不到 videoid。
+        for (index, part) in metas.iter().enumerate() {
+            let text = part_text(&base_text, index, total);
+            runtime.td.send_video_now(target, part, &text);
         }
-        // 导航只记第一段：后续分段是同一条视频的续集，重复记会让列表翻倍。
-        if index == 0 {
-            message_id = sent;
-        }
+        Vec::new()
+    } else if (2..=10).contains(&total) {
+        // 分段 = 相册（TS 的 sendMessageAlbum）：一组消息，只有首项带文案。
+        // 超过 10 段（TG 的相册上限）就退化成逐条发。
+        runtime
+            .td
+            .send_video_album_wait(target, &metas, &base_text)
+            .unwrap_or_default()
+    } else {
+        metas
+            .iter()
+            .enumerate()
+            .filter_map(|(index, part)| {
+                let text = part_text(&base_text, index, total);
+                runtime.td.send_video_wait(target, part, &text)
+            })
+            .collect()
+    };
+    // 不等确认时拿不到结果，不知道成败——只有「等了却一个都没成」才算失败。
+    let send_failed = config.telegram.wait_send && sent.is_empty();
+    if send_failed {
+        log!(
+            &runtime.logger,
+            Warn,
+            "发送失败：{}（{} 段）",
+            item.title,
+            total
+        );
     }
-    if total > 1 {
-        cleanup_parts(runtime, &parts);
+    // 不等确认时后台线程还在上传，文件不能删（删了上传必失败）；
+    // 这条路线是「回放 / 没接 TDLib」时才用，宁可留着临时文件也别发坏。
+    if config.telegram.wait_send {
+        if total > 1 {
+            cleanup_parts(runtime, &parts);
+        }
+        cleanup_covers(runtime, &metas);
     }
     // 转码产物发不出去时再试原文件：这一步也属于「尽力而为」的一环。
-    if send_failed && total == 1 && transcoded && message_id.is_none() {
+    if send_failed && total == 1 && transcoded {
         log!(
             &runtime.logger,
             Warn,
             "发送转码产物失败，回退原文件：{}",
             send_path.display()
         );
-        message_id = runtime.td.send_video_wait(
-            target,
-            video.display().to_string(),
-            base_text.clone(),
-            video_meta(runtime, &video, spoiler),
-        );
+        let part = video_part(runtime, &video, spoiler, 0);
+        if let Some(again) = runtime
+            .td
+            .send_video_wait(target, &part, &base_text)
+        {
+            sent.push(again);
+        }
+        cleanup_covers(runtime, std::slice::from_ref(&part));
     }
-    let Some(message_id) = message_id else {
+    // 主消息 = 第一段：导航、资源、消息链接都以它为准（TS 的 primaryMeg）。
+    let message_id = sent.first().map(|part| part.message_id).unwrap_or(0);
+    if config.telegram.wait_send && message_id == 0 {
         return Err(Error::Service {
             service: "td".to_owned(),
             message: "发视频失败或未确认".to_owned(),
         });
-    };
+    }
     // 资源是「哪部番第几集、发到哪条消息」的唯一真相，每次发送都要记
     // （TS 的 saveAnimeResource 在每条路径上都有）。
     if plan.anime_id > 0 && message_id > 0 {
-        crate::review::record_send(runtime, plan, item, target.chat_id, message_id);
+        crate::review::record_send(runtime, plan, item, target.chat_id, &sent);
         // 只有正片频道才刷新导航：缓冲频道里的视频还没确认过，写进导航等于把
         // 未审核的东西公开出去（TS 也是 `sendMegToAnime` 之后才 `sendMegToNavAnime`）。
         if !plan.to_cache && let Err(error) = crate::nav::refresh(runtime, plan.anime_id) {
@@ -957,6 +1033,22 @@ mod tests {
                 output_name: "第01集-mp4.mp4".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn part_text_only_numbers_multi_part_sends() {
+        assert_eq!(part_text("某番｜第 01 集", 0, 1), "某番｜第 01 集");
+        assert_eq!(part_text("某番｜第 01 集", 0, 3), "某番｜第 01 集（1/3）");
+        assert_eq!(part_text("某番｜第 01 集", 2, 3), "某番｜第 01 集（3/3）");
+    }
+
+    #[test]
+    fn album_is_only_used_within_telegram_limits() {
+        // 相册 2–10 项：单段走 sendMessage，超过 10 段退化成逐条发。
+        let uses_album = |total: usize| (2..=10).contains(&total);
+        assert!(!uses_album(1));
+        assert!(uses_album(2) && uses_album(10));
+        assert!(!uses_album(11));
     }
 
     #[test]

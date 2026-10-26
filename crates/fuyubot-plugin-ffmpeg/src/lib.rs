@@ -9,6 +9,7 @@
 //! | `transcode` | 真跑：起任务立刻返回 id，进度走事件总线，也可以 `job_status` 轮询 |
 //! | `extract_subtitle` | 把内嵌字幕抽成外挂 `.ass`，给「烧录字幕」用 |
 //! | `split` | 按大小 `-c copy` 分段（TG 2GB 上限） |
+//! | `thumbnail` | 抽一帧做封面（Telegram 视频的 `cover`） |
 //!
 //! 「高度优化」落在三件事上：
 //!
@@ -45,6 +46,8 @@ const PLUGIN: &str = "ffmpeg";
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
 /// 分段是 `-c copy`，正常几十秒；给足余量避免大文件误判超时。
 const SPLIT_TIMEOUT: Duration = Duration::from_secs(600);
+/// 抽一帧只要几秒，但坏文件会让 ffmpeg 卡在解码上，给个上限。
+const THUMBNAIL_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// 启动配置：
 ///
@@ -75,7 +78,8 @@ impl Plugin for FfmpegPlugin {
                 ("plan", svc_plan as Handler),
                 ("transcode", svc_transcode as Handler),
                 ("extract_subtitle", svc_extract_subtitle as Handler),
-    ("split", svc_split as Handler),
+                ("split", svc_split as Handler),
+                ("thumbnail", svc_thumbnail as Handler),
                 ("job_status", svc_job_status as Handler),
                 ("job_list", svc_job_list as Handler),
                 ("job_cancel", svc_job_cancel as Handler),
@@ -454,6 +458,47 @@ unsafe extern "C" fn svc_split(_ctx: *mut c_void, input: *const c_char) -> *cons
             return Err("未生成任何分段文件".to_owned());
         }
         Ok(json!({ "parts": parts, "segment_sec": segment_sec }))
+    })();
+    reply_result(result)
+}
+
+/// 抽一帧做封面（`ffmpeg -ss N -i input -frames:v 1 -q:v 2 output`）。
+///
+/// 只截一帧，快；但坏文件会让 ffmpeg 卡在解码上，所以走 `run_ffmpeg` 的超时。
+/// `-ss` 放在 `-i` **前面**（输入定位）：先 seek 再解码，几秒出图；放后面就是
+/// 逐帧解码到第 N 秒，长视频要好几分钟。
+unsafe extern "C" fn svc_thumbnail(_ctx: *mut c_void, input: *const c_char) -> *const c_char {
+    let result = (|| -> Result<Value, String> {
+        let parsed = parse(input)?;
+        let input_path = require_str(&parsed, "input")?.to_owned();
+        let output_path = require_str(&parsed, "output")?.to_owned();
+        // 默认第 10 秒：太靠前的帧常常是黑场或制作委员会的 logo。
+        // 短于 10 秒的视频 ffmpeg 会取最后一帧，不必先探测时长。
+        let at_second = opt_u64(&parsed, "at_second").unwrap_or(10);
+
+        let parent = std::path::Path::new(&output_path).parent().unwrap_or(std::path::Path::new("."));
+        std::fs::create_dir_all(parent)
+            .map_err(|err| format!("创建封面目录失败（{}）：{err}", parent.display()))?;
+        let ffmpeg = with_caps(|caps| Ok(caps.ffmpeg.clone()))?;
+        let at = at_second.to_string();
+        let args = [
+            "-hide_banner",
+            "-nostdin",
+            "-y",
+            "-loglevel",
+            "error",
+            "-ss",
+            at.as_str(),
+            "-i",
+            input_path.as_str(),
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            output_path.as_str(),
+        ];
+        capability::run_ffmpeg(&ffmpeg, &args, THUMBNAIL_TIMEOUT)?;
+        Ok(json!({ "cover": output_path }))
     })();
     reply_result(result)
 }

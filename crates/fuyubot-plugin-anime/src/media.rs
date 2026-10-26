@@ -118,6 +118,31 @@ impl Media {
             })
     }
 
+    /// 抽一帧做封面（给 Telegram 的 `cover` 用）。返回封面文件路径。
+    ///
+    /// `at_second` 默认 10 秒（服务端兜底）：太靠前的帧常常是黑场或 logo。
+    /// 抽帧失败是**可以接受**的——没有封面 Telegram 自己会抓一帧，所以调用方
+    /// 应当只记日志然后照发。
+    pub fn thumbnail(&self, input: &Path, output: &Path, at_second: u64) -> Result<PathBuf> {
+        let reply = self.call(
+            "thumbnail",
+            json!({
+                "input": path_text(input),
+                "output": path_text(output),
+                "at_second": at_second,
+            }),
+        )?;
+        reply
+            .get("cover")
+            .and_then(Value::as_str)
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .ok_or_else(|| Error::Service {
+                service: SERVICE.to_owned(),
+                message: format!("thumbnail 没有返回封面路径：{reply}"),
+            })
+    }
+
     /// 按大小分段。返回各段路径（顺序即播放顺序）。
     ///
     /// `duration_ms` 只用来估算分段时长；传 0 会退化成最短 10 秒一段。

@@ -10,9 +10,10 @@
 use anime_core::logger::{Level, LogSink};
 use fuyubot_abi::{HostApi, LogLevel};
 use fuyubot_simplify::{
-    EditCaptionParams, EditTextParams, InputFile, Media, ReplyButton, SendMessageParams, Simplify,
-    Text,
+    EditCaptionParams, EditTextParams, InputFile, Media, ReplyButton, SendAlbumParams,
+    SendMessageParams, Simplify, Text,
 };
+use serde_json::Value;
 
 /// 等「发送成功」的上限：30 分钟。
 ///
@@ -20,12 +21,18 @@ use fuyubot_simplify::{
 /// simplify 的默认值；超时不等于失败，但会把「还在传」误判成「失败了」。
 pub const SEND_TIMEOUT_MS: u64 = 1800 * 1000;
 
-/// 一段视频的真实参数：`duration` / `width` / `height` / 遮罩。
+/// 等「编辑/应答」这类小动作的上限：10 秒。
+///
+/// 不是发送——编辑只等一个响应，跟文件大小无关；给 30 分钟会把一次卡住的
+/// 刷新拖成半小时不返回。
+pub const EDIT_TIMEOUT_MS: u64 = 10 * 1000;
+
+/// 一段视频的真实参数：`duration` / `width` / `height` / 遮罩 / 封面。
 ///
 /// 以前全写 0：Telegram 自己也会算，但**算出来之前**客户端里那一集是
 /// 「时长 0:00」且没有缩略图，要点开才知道。填上真实值还有一个好处——
 /// `has_spoiler`（`r18`）本来就是靠这个结构带出去的。
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct VideoMeta {
     /// 秒。0 表示没探测出来。
     pub duration: i32,
@@ -33,6 +40,43 @@ pub struct VideoMeta {
     pub height: i32,
     /// `r18`：封面打码。
     pub spoiler: bool,
+    /// 封面图（本地 jpg 路径）。`None` 表示让 Telegram 自己抓一帧。
+    pub cover: Option<String>,
+}
+
+/// 待发送的一段视频（相册的一项）。
+#[derive(Debug, Clone, Default)]
+pub struct VideoPart {
+    pub path: String,
+    pub meta: VideoMeta,
+}
+
+/// 一条已发出的消息：`id` + 视频的远程标识。
+///
+/// `videoid` / `unique_id` 是**发送结果**里才有的（`message.content.video.video.
+/// remote`），旧版记资源时不填它们；TS 的 `extractAlbumMsgData` 要填——内联取视频
+/// 与集数纠正都靠它定位文件，不必重新上传。
+#[derive(Debug, Clone, Default)]
+pub struct SentPart {
+    pub message_id: i64,
+    pub video_id: Option<String>,
+    pub unique_id: Option<String>,
+}
+
+/// 从最终消息里挑出发送结果要用的三个字段。
+fn sent_part(message: &Value) -> SentPart {
+    let remote = message.pointer("/content/video/video/remote");
+    SentPart {
+        message_id: message.get("id").and_then(Value::as_i64).unwrap_or(0),
+        video_id: remote
+            .and_then(|remote| remote.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+        unique_id: remote
+            .and_then(|remote| remote.get("unique_id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned),
+    }
 }
 
 /// 一条消息的定位：发给哪个会话、回复哪条、哪个话题。
@@ -113,6 +157,7 @@ impl Td {
         let params = EditCaptionParams {
             text: Some(Text::plain(text)),
             reply_markup: Vec::new(),
+            timeout_ms: EDIT_TIMEOUT_MS,
         };
         match self.api.edit_message_caption(chat_id, message_id, &params) {
             Ok(_request) => true,
@@ -129,14 +174,8 @@ impl Td {
     /// 发视频但**不等**确认（`telegram.wait_send = false` 时用）。
     ///
     /// 只投递、不拿 message_id：导航记账会因此跳过这一集，换来的是不阻塞。
-    pub fn send_video_now(
-        &self,
-        target: Target,
-        path: impl Into<String>,
-        caption: impl Into<String>,
-        meta: VideoMeta,
-    ) -> bool {
-        let media = video_media(path, caption, meta);
+    pub fn send_video_now(&self, target: Target, part: &VideoPart, caption: &str) -> bool {
+        let media = video_media(part, Some(caption));
         self.send(target, SendMessageParams::media(media))
     }
 
@@ -162,26 +201,57 @@ impl Td {
         let mut params = SendMessageParams::media(media);
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
-        self.wait_message_id(target.chat_id, &params)
+        self.wait_sent(target.chat_id, &params).map(|sent| sent.message_id)
     }
 
-    /// 发视频并等到最终消息，返回 message_id（导航列表要用）。
+    /// 发视频并等到最终消息（导航列表与资源记录都要 id）。
     ///
     /// 上传大文件要几十分钟，所以默认超时是 [SEND_TIMEOUT_MS]（30 分钟），
     /// 不是 simplify 的默认：默认那点时间不够传完一集 1080p。
-    pub fn send_video_wait(
-        &self,
-        target: Target,
-        path: impl Into<String>,
-        caption: impl Into<String>,
-        meta: VideoMeta,
-    ) -> Option<i64> {
-        let media = video_media(path, caption, meta);
-        let mut params = SendMessageParams::media(media);
+    pub fn send_video_wait(&self, target: Target, part: &VideoPart, caption: &str) -> Option<SentPart> {
+        let mut params = SendMessageParams::media(video_media(part, Some(caption)));
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
         params.timeout_ms = SEND_TIMEOUT_MS;
-        self.wait_message_id(target.chat_id, &params)
+        self.wait_sent(target.chat_id, &params)
+    }
+
+    /// 一组视频当**相册**发出去（2–10 段，TS 的 `sendMessageAlbum`）。
+    ///
+    /// 分段上传在 TS 里就是相册：一堆文件同属一集，逐条发会让频道里出现 N 条
+    /// 散消息，而且只有第一条有文案。相册只有**首项带文案**，其余留空——
+    /// `sendMessageAlbum` 也没有 `reply_markup`（真签名里没有这个字段）。
+    ///
+    /// 返回值与 `medias` **同序**（simplify 保证），所以 `sent[0]` 就是主消息。
+    /// 任一项失败都会让整组失败（simplify 会撤回没发出去的），此时返回 `None`。
+    pub fn send_video_album_wait(
+        &self,
+        target: Target,
+        parts: &[VideoPart],
+        caption: &str,
+    ) -> Option<Vec<SentPart>> {
+        let params = SendAlbumParams {
+            medias: parts
+                .iter()
+                .enumerate()
+                // 只有首项带文案：相册共用一段标题时，Telegram 会把文案挂在最后一项上。
+                .map(|(index, part)| video_media(part, (index == 0).then_some(caption)))
+                .collect(),
+            caption: None,
+            reply_to_message_id: (target.reply_to != 0).then_some(target.reply_to),
+            topic_id: target.topic_id,
+            timeout_ms: SEND_TIMEOUT_MS,
+        };
+        match self.api.send_message_album(target.chat_id, &params) {
+            Ok(messages) => Some(messages.iter().map(sent_part).collect()),
+            Err(error) => {
+                self.host.log(
+                    LogLevel::Warn,
+                    &format!("发相册失败（chat {}，{} 段）：{error}", target.chat_id, parts.len()),
+                );
+                None
+            }
+        }
     }
 
     /// 发一条纯文本并等到确认，返回 message_id。
@@ -192,7 +262,7 @@ impl Td {
         let mut params = SendMessageParams::text(Text::plain(text));
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
-        self.wait_message_id(target.chat_id, &params)
+        self.wait_sent(target.chat_id, &params).map(|sent| sent.message_id)
     }
 
     /// 改一条文本消息（`editMessageText`）。导航正文刷新用它改分页消息。
@@ -201,6 +271,7 @@ impl Td {
     pub fn edit_text(&self, chat_id: i64, message_id: i64, text: impl Into<String>) -> bool {
         let params = EditTextParams {
             text: Some(Text::plain(text)),
+            timeout_ms: EDIT_TIMEOUT_MS,
             ..EditTextParams::default()
         };
         match self.api.edit_message_text(chat_id, message_id, &params) {
@@ -215,52 +286,57 @@ impl Td {
         }
     }
 
-    /// 发送并解析最终消息 id；失败只记日志（调用方据此降级）。
-    fn wait_message_id(&self, chat_id: i64, params: &SendMessageParams) -> Option<i64> {
-        match self.api.send_message_wait_success(chat_id, params) {
-            Ok(confirmation) if confirmation.confirmed => confirmation
-                .update
-                .pointer("/message/id")
-                .and_then(serde_json::Value::as_i64),
-            Ok(_) => {
-                self.host.log(
-                    LogLevel::Warn,
-                    &format!("发送未确认（chat {chat_id}）：等不到 messageSendSucceeded"),
-                );
-                None
-            }
+    /// 发送并等到最终消息；失败只记日志（调用方据此降级）。
+    ///
+    /// `send_message` 本身会一路等到 `updateMessageSendSucceeded`，返回的已经是
+    /// **最终消息**（不是临时那条），所以直接读 `id` 就行。
+    fn wait_sent(&self, chat_id: i64, params: &SendMessageParams) -> Option<SentPart> {
+        match self.api.send_message(chat_id, params) {
+            Ok(message) => Some(sent_part(&message)),
             Err(error) => {
-                self.host.log(
-                    LogLevel::Warn,
-                    &format!("发送失败（chat {chat_id}）：{error}"),
-                );
+                self.host
+                    .log(LogLevel::Warn, &format!("发送失败（chat {chat_id}）：{error}"));
                 None
             }
         }
     }
 
-    /// 底层出口：填好 `reply_to` 再交给 simplify。
+    /// 底层出口：填好 `reply_to` 再交给 simplify，**不等结果**。
+    ///
+    /// 用 `*_then` 而不是 `send_message`：后者会阻塞到发送成功，而这里多半是在
+    /// 更新回调里被调用的（回调线程就是接收循环那条），在那里等必然等到超时。
     fn send(&self, target: Target, mut params: SendMessageParams) -> bool {
         params.reply_to_message_id = (target.reply_to != 0).then_some(target.reply_to);
         params.topic_id = target.topic_id;
-        match self.api.send_message(target.chat_id, &params) {
-            Ok(_request) => true,
-            Err(error) => {
-                self.host.log(
-                    LogLevel::Warn,
-                    &format!("发消息失败（chat {}）：{error}", target.chat_id),
-                );
-                false
-            }
-        }
+        let chat_id = target.chat_id;
+        let host = self.host;
+        self.api
+            .send_message_then(chat_id, &params, move |outcome| {
+                if let Err(error) = outcome {
+                    host.log(
+                        LogLevel::Warn,
+                        &format!("发消息失败（chat {chat_id}）：{error}"),
+                    );
+                }
+            });
+        true
     }
 }
 
-/// 组装视频媒体：`duration/width/height` 用探测出的真实值。
-fn video_media(path: impl Into<String>, caption: impl Into<String>, meta: VideoMeta) -> Media {
+/// 组装视频媒体：`duration/width/height` 用探测出的真实值，`cover` 用抽出来的那帧。
+///
+/// `caption` 为 `None` 时这项不带文案（相册里只有首项带）。
+fn video_media(part: &VideoPart, caption: Option<&str>) -> Media {
+    let meta = part.meta.clone();
     Media::Video {
-        file: InputFile::local(path),
-        caption: Some(Text::plain(caption)),
+        file: InputFile::local(part.path.clone()),
+        caption: caption.map(Text::plain),
+        // 缩略图交给 Telegram 自己生成：我们已经给了 cover（那一帧的画面文件），
+        // 再单独传一张缩略图只是多一次上传。
+        thumbnail: None,
+        cover: meta.cover.map(InputFile::local),
+        // 不指定「从第几秒开始播」：TS 也没给，播放器默认从头开始。
+        start_timestamp: None,
         duration: meta.duration.max(0),
         width: meta.width.max(0),
         height: meta.height.max(0),
@@ -317,6 +393,65 @@ mod tests {
                 "领域层的 {level:?} 没映射好"
             );
         }
+    }
+
+    #[test]
+    fn sent_part_reads_id_and_remote_video_ids() {
+        let message = serde_json::json!({
+            "id": 42,
+            "content": {
+                "@type": "messageVideo",
+                "video": { "video": { "remote": { "id": "AwAC", "unique_id": "AQAD" } } }
+            }
+        });
+        let sent = sent_part(&message);
+        assert_eq!(sent.message_id, 42);
+        assert_eq!(sent.video_id.as_deref(), Some("AwAC"));
+        assert_eq!(sent.unique_id.as_deref(), Some("AQAD"));
+    }
+
+    #[test]
+    fn sent_part_survives_messages_without_video() {
+        // 纯文本消息（导航分页）：没有 videoid 不该 panic。
+        let sent = sent_part(&serde_json::json!({ "id": 7, "content": { "@type": "messageText" } }));
+        assert_eq!(sent.message_id, 7);
+        assert_eq!(sent.video_id, None);
+        assert_eq!(sent.unique_id, None);
+    }
+
+    #[test]
+    fn video_media_carries_probe_values_cover_and_spoiler() {
+        let part = VideoPart {
+            path: "D:/dl/01.mp4".to_owned(),
+            meta: VideoMeta {
+                duration: 1440,
+                width: 1920,
+                height: 1080,
+                spoiler: true,
+                cover: Some("D:/dl/cover.jpg".to_owned()),
+            },
+        };
+        let media = video_media(&part, Some("某番｜第 01 集"));
+        match media {
+            Media::Video {
+                caption,
+                cover,
+                duration,
+                width,
+                has_spoiler,
+                ..
+            } => {
+                assert!(caption.is_some(), "首项要带文案");
+                assert!(cover.is_some(), "封面要带出去");
+                assert_eq!(duration, 1440);
+                assert_eq!(width, 1920);
+                assert!(has_spoiler, "r18 要带遮罩");
+            }
+            other => panic!("应当是视频：{other:?}"),
+        }
+        // 相册里的非首项不带文案。
+        let second = video_media(&part, None);
+        assert!(matches!(second, Media::Video { caption: None, .. }));
     }
 
     #[test]

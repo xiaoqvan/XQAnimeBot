@@ -534,6 +534,7 @@ fn handle_collection(runtime: &Arc<Runtime>, query: &CallbackQuery, request: Col
                 query.id,
                 Some(&toast),
                 false,
+                crate::td::EDIT_TIMEOUT_MS,
             ) {
                 log!(&worker.logger, Warn, "answerCallbackQuery 失败：{error}");
             }
@@ -618,6 +619,7 @@ fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
         query.id,
         Some(action.answer_text()),
         false,
+        crate::td::EDIT_TIMEOUT_MS,
     ) {
         log!(
             &runtime.logger,
@@ -685,7 +687,12 @@ fn handle_anime_callback(runtime: &Arc<Runtime>, query: &CallbackQuery, command:
 /// 真正的结论在管理群里（或提示消息本身）。
 fn answer(runtime: &Runtime, query: &CallbackQuery, text: &str) {
     if let Err(error) =
-        Simplify::new(runtime.host).answer_callback_query(query.id, Some(text), false)
+        Simplify::new(runtime.host).answer_callback_query(
+            query.id,
+            Some(text),
+            false,
+            crate::td::EDIT_TIMEOUT_MS,
+        )
     {
         log!(
             &runtime.logger,
