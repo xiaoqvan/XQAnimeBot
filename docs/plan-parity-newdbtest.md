@@ -378,3 +378,29 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
     定位，第 10 秒抽一帧，`-q:v 2`），封面作为 `cover` 随视频发出。
   - `tagExcludeList`（TS 存在库里的标签黑名单）未实现。
   测试 351 → 374 全绿。
+- **阶段 6（命令 / 权限 / Bangumi OAuth）已完成**（commit 5156a25 / bbb17da）：
+  - **权限**：新增 `perm.rs`——`is_admin` = `super_admin` 或 `owner_id`（配置白名单，
+    免网络）或管理群里 `getChatMember` 是 creator/administrator（用
+    `TdExt::get_chat_member`）。0 一律当「没设」，绝不退化成放行。
+    `bot::dispatch` 把管理命令的校验**搬进 worker 线程**：`getChatMember` 要等
+    TDLib 响应，而命令回调跑在接收循环那条线程上。
+    配置新增 `telegram.super_admin`、`bangumi.redirect_uri`（默认照 TS）。
+  - **OAuth 四步**：`authorize_url` / `exchange_code` / `refresh_token`（原有）/
+    `token_status`，外加 `percent_encode`；三个端点共用 `post_form`（`x-www-form-
+    urlencoded` + 自报家门 UA）。新增 `bgmuser::get_bgm_token`：按
+    `authTime + expiresIn` **提前 60 秒**自动刷新并写回库；缺 `authTime`/
+    `expiresIn` 的旧记录（手工绑的）不硬刷。收藏回调已改走它。
+  - **命令**：`/start` 三种深链（`bgm_cb-<code>_<state>` 换 token 写库 + `getMe`、
+    `collection-<id>` 标在看 + 状态按钮、`eplook-<epId>` 标看过；认不出的载荷
+    **不回复**，避免和宿主自带 start 插件抢话）；`/jz <条目 id> <缓存 id>`
+    （`Y_anime?id=&c=` 确定按钮）；`/bindbangumi` 不带参数改走 OAuth 授权按钮。
+    `deeplink.rs` 里的 `base62_to_hex` 用 base-256 大端累加（授权码可能超过 u128）。
+  - **`/addanime` / `/addnewanime` 语义改正**：收「章节 id + 链接」，不再是
+    「条目 id」。新增 `anime-core::torrent`：bangumi.moe 三个 fetch 接口 + dmhy
+    页面抓取（只认 `id="a_magnet"` 与 `<title>`，取不到就报错而不是返回「未知」）
+    + `retry`（3 次 / 10 秒，TS `retryRequest`）。`/addnewanime` 先建档再补种；
+    `/updateanime` 兼作导入命令（库里没有时建档并补发导航卡）。
+  - 接口：`BgmClient::episode(id)`（阶段 3 已补）、`subject_id_of_episode`。
+  测试 374 → 402 全绿。
+- **阶段 6 剩余**：`checkTorrentFormat`（MKV 预检）属于阶段 5 的并发管理器，
+  未在 `/addanime` 里做 MKV 分流；`getTokenStatus` 已实现但没有命令用它。

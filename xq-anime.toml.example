@@ -70,6 +70,8 @@ ai_episode_fallback = false
 [plugin.xq.anime.bangumi]
 app_id = ""
 app_secret = ""
+# OAuth 回调地址：必须与 Bangumi 应用里登记的完全一致，否则换 token 会 400
+redirect_uri = "https://anime.xiaoqvan.top"
 access_token = ""
 # Bangumi 要求带可识别 UA（公开接口目前用通用 UA）
 user_agent = "XQAnimeBot/0.1 (https://github.com/xiaoqvan/XQAnimeBot)"
