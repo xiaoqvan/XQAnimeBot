@@ -14,6 +14,8 @@
 //! **业务判断一律不写在这里**。宿主层能做的只有「收到什么、回什么」，
 //! 「这条种子属于哪部番、该不该投」是 `anime-core` 的事——那边能纯 `cargo test`。
 
+mod bgmuser;
+mod deeplink;
 mod bot;
 mod callback;
 mod commands;
@@ -24,6 +26,7 @@ mod media;
 mod nav;
 mod poll;
 mod newanime;
+mod perm;
 mod prompts;
 mod reply;
 mod qb;

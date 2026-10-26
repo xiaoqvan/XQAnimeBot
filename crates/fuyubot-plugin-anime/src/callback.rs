@@ -558,36 +558,32 @@ fn apply_collection(
     query: &CallbackQuery,
     request: CollectionRequest,
 ) -> String {
-    use anime_core::store::Storage;
-    let binding = match runtime.store.bangumi_user_by_tg(query.sender_user_id) {
-        Ok(binding) => binding,
-        Err(error) => return format!("读取绑定失败：{error}"),
-    };
-    let Some(binding) = binding.filter(|user| {
-        user.access_token
-            .as_deref()
-            .is_some_and(|token| !token.trim().is_empty())
-    }) else {
-        return "请先 /bindbangumi 绑定 Bangumi 账号".to_owned();
-    };
-    let access_token = binding.access_token.as_deref().unwrap_or_default();
-    let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
-    if let Err(error) =
-        client.set_subject_collection(access_token, request.subject_id, request.kind)
-    {
-        return format!("修改收藏失败：{error}");
-    }
-    if let Some((episode_id, ep_kind)) = request.episode {
-        // 章节失败不报错：条目状态已经改成功，章节可能因为未收藏而 400。
-        let _ = client.set_episode_collection(access_token, episode_id, ep_kind);
-    }
-    let label = COLLECTION_STATUSES
-        .iter()
-        .find(|(kind, _)| *kind == request.kind)
-        .map(|(_, label)| *label)
-        .unwrap_or("?");
-    format!("已标记为「{label}」")
+    // 走 `get_bgm_token` 而不是直接读绑定：token 过期时它会顺手刷新并写回库，
+    // 用户不会因为「一个月前绑过」就发现按钮点了没反应。
+    crate::bgmuser::get_bgm_token(runtime, query.sender_user_id)
+        .either(
+            |access_token| {
+                let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+                if let Err(error) =
+                    client.set_subject_collection(&access_token, request.subject_id, request.kind)
+                {
+                    return format!("修改收藏失败：{error}");
+                }
+                if let Some((episode_id, ep_kind)) = request.episode {
+                    // 章节失败不报错：条目状态已经改成功，章节可能因为未收藏而 400。
+                    let _ = client.set_episode_collection(&access_token, episode_id, ep_kind);
+                }
+                let label = COLLECTION_STATUSES
+                    .iter()
+                    .find(|(kind, _)| *kind == request.kind)
+                    .map(|(_, label)| *label)
+                    .unwrap_or("?");
+                format!("已标记为「{label}」")
+            },
+            |message| message,
+        )
 }
+
 /// 认得出就处理，认不出就放过（同一进程里还有别的插件在收同一条更新）。
 fn route(runtime: &Arc<Runtime>, query: &CallbackQuery) {
     // 收藏按钮：不弹审核结论，只回一个 toast。

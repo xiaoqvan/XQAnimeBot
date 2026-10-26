@@ -24,8 +24,10 @@ admin_group_id = -1000000000000
 anime_group_thread_id = 0
 nav_group_thread_id = 0
 error_group_thread_id = 0
-# 主人 user id（预留给权限校验）
+# 主人 user id：命中即算管理员（TS 没这项，作为旧配置的兜底）
 owner_id = 0
+# 超级管理员 user id：不在管理群里也能管（TS 的 super_admin）
+super_admin = 0
 
 [plugin.xq.anime.qbittorrent]
 host = "http://127.0.0.1:8080"

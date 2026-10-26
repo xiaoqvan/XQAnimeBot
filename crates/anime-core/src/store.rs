@@ -145,6 +145,21 @@ pub trait Storage {
             .collect()
     }
 
+    /// 按章节 id 反查它属于哪部番（TS `getAnimeByEpisodeId` 的前半段）。
+    ///
+    /// 只要 `subject_id` 一个字段，所以带 projection——`episodes_meta` 里每章还有
+    /// 简介和 airdate，整条取回来是浪费。
+    fn subject_id_of_episode(&self, episode_id: i64) -> Result<Option<i64>> {
+        let row = self.find_one(
+            "episodes_meta",
+            json!({ "id": episode_id }),
+            Some(json!({ "_id": 0, "subject_id": 1 })),
+        )?;
+        Ok(row
+            .and_then(|row| decode::<EpisodeMeta>("episodes_meta", row).ok())
+            .map(|meta| meta.subject_id))
+    }
+
     /// torrents 里是否已有这个标题。
     ///
     /// 写作前统一走 [clean_title]——TS 在入库时清洗、查询时却不洗，结果同一条种子

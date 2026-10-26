@@ -36,7 +36,11 @@ fn admin_target(runtime: &Runtime) -> Target {
 }
 
 /// 条目在 Bangumi 上的展示名（中文名优先，没有就用原名）。
-fn display(anime: &Anime) -> &str {
+/// 展示名：中文名优先（空串不算有），没有就用原名。
+///
+/// 公开是因为除了提示语，深链回复（`/start collection-`）也要显示番剧名——
+/// 两处用同一套规则，免得一处改了另一处忘了。
+pub fn display(anime: &Anime) -> &str {
     match anime.name_cn.as_deref() {
         Some(name) if !name.trim().is_empty() => name,
         _ => anime.name.as_deref().unwrap_or("(未命名)"),

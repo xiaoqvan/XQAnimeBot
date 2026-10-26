@@ -50,8 +50,18 @@ pub struct TelegramConfig {
     pub nav_group_thread_id: i64,
     pub error_group_thread_id: i64,
     /// 主人 user id：只有他们能跑管理命令。
+    ///
+    /// 这是 TS 没有的**兜底**：TS 只认「管理群管理员」+ `super_admin`。保留它
+    /// 是因为 `owner_id == 0` 时旧配置是「完全不校验」，直接换成 TS 语义会让
+    /// 现有部署一夜之间失去所有管理命令。现在两者任一命中即可。
     #[serde(default)]
     pub owner_id: i64,
+    /// 超级管理员 user id（TS 的 `config.super_admin`）：不在管理群里也能管。
+    ///
+    /// 典型场景是「机器人 owner 不在管理群」或「管理群还没建好」。
+    /// 为 0 表示没设——注意**不能**退化成「谁都是超管」。
+    #[serde(default)]
+    pub super_admin: i64,
     /// 发消息后是否等 `messageSendSucceeded` 再算成功。
     ///
     /// 默认 true（生产）：等到确认才能拿 message_id 回写导航。
@@ -156,15 +166,34 @@ impl Default for RssConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct BangumiConfig {
     /// bangumi.tv 的 OAuth App。
     pub app_id: String,
     pub app_secret: String,
+    /// OAuth 回调地址：必须和 Bangumi 应用里登记的**完全一致**，否则换 token 会 400。
+    ///
+    /// 默认值照 TS 版 `bangumi/callback.ts` 里写死的那个（作者部署的回调页）。
+    /// 自建部署要改成自己的地址——这也是它成为配置项而不是常量的原因。
+    pub redirect_uri: String,
     pub access_token: String,
     /// 拉章节信息用的 UA（Bangumi 要求带可识别的 UA）。
     pub user_agent: String,
+}
+
+impl Default for BangumiConfig {
+    fn default() -> Self {
+        Self {
+            app_id: String::new(),
+            app_secret: String::new(),
+            // TS 版把这个地址写死在 `bangumi/callback.ts`；这里做成有默认值的配置：
+            // 作者部署直接用默认值，自建部署改一行即可。
+            redirect_uri: "https://anime.xiaoqvan.top".to_owned(),
+            access_token: String::new(),
+            user_agent: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

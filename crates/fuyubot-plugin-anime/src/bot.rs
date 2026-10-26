@@ -13,6 +13,7 @@ use anime_core::card::bangumi::BangumiCard;
 use anime_core::store::Storage;
 use fuyubot_simplify::Command;
 
+use crate::perm;
 use crate::poll;
 use crate::runtime::Runtime;
 use crate::td::Target;
@@ -58,7 +59,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "bindbangumi",
-        summary: "绑定 Bangumi 账号：/bindbangumi <access_token>",
+        summary: "绑定 Bangumi 账号：不带参数走 OAuth 授权；也可 /bindbangumi <access_token>",
         handler: cmd_bindbangumi,
     },
     CommandSpec {
@@ -80,6 +81,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "help",
         summary: "看看我能做什么",
         handler: cmd_help,
+    },
+    CommandSpec {
+        name: "jz",
+        summary: "把缓存条目接到番剧上：/jz <bangumi 条目 id> <缓存 id>",
+        handler: cmd_jz,
     },
     CommandSpec {
         name: "ping",
@@ -110,6 +116,11 @@ pub const COMMANDS: &[CommandSpec] = &[
         name: "setanimer18",
         summary: "设置番剧的 r18 标记：/setanimer18 <id> <true|false>",
         handler: cmd_set_r18,
+    },
+    CommandSpec {
+        name: "start",
+        summary: "深链入口：Bangumi 授权回调 / 收藏 / 标记看过（/start 后带参数才响应）",
+        handler: cmd_start,
     },
     CommandSpec {
         name: "status",
@@ -162,6 +173,7 @@ const ADMIN_COMMANDS: &[&str] = &[
     "setanimer18",
     "animeblacklist",
     "canceltask",
+    "jz",
     "testbgimg",
     "bindbangumi",
     "exitbangumi",
@@ -172,19 +184,51 @@ pub fn dispatch(runtime: &Arc<Runtime>, command: &Command, sender: Option<i64>) 
     let Some(spec) = spec_for(&command.name) else {
         return false;
     };
-    let owner = runtime.config.telegram.owner_id;
-    if ADMIN_COMMANDS.contains(&spec.name) && owner != 0 && sender != Some(owner) {
-        // 不回复：群里可能还有别的机器人在管同一批命令，沉默比报错干净。
-        runtime.host.log(
-            fuyubot_abi::LogLevel::Warn,
-            &format!("[anime] 非主人执行管理命令 /{}（sender {sender:?}）", spec.name),
-        );
+    if !ADMIN_COMMANDS.contains(&spec.name) {
+        run(runtime, spec, command, sender);
         return true;
     }
+    // 管理命令：先认发送者。取不到（频道身份）直接拒——TS 也只认
+    // `messageSenderUser`，宁可漏判也不放行一个身份不明的来源。
+    let Some(user_id) = sender else {
+        perm::log_denied(runtime, spec.name, sender);
+        return true;
+    };
+    // 配置里点名的两个 id 不必查群成员，省一次 TDLib 往返。
+    if perm::is_super_admin(&runtime.config.telegram, user_id) {
+        run(runtime, spec, command, sender);
+        return true;
+    }
+    // 查群成员要等 TDLib 响应，而这里跑在接收循环那条线程上——开线程做。
+    let worker = Arc::clone(runtime);
+    let command = command.clone();
+    let spawned = std::thread::Builder::new()
+        .name("xq-anime-cmd".to_owned())
+        .spawn(move || {
+            if !perm::is_admin(&worker, user_id) {
+                perm::log_denied(&worker, spec.name, sender);
+                return;
+            }
+            run(&worker, spec, &command, sender);
+        });
+    if let Err(error) = spawned {
+        runtime.host.log(
+            fuyubot_abi::LogLevel::Error,
+            &format!("[anime] 管理命令线程起不来（/{}）：{error}", spec.name),
+        );
+    }
+    true
+}
+
+/// 真正执行一条命令：把发送者放进线程局部，跑完再清空。
+///
+/// 拆出来是因为 `dispatch` 有三条分支都要做同样这件事，而 `CURRENT_SENDER`
+/// 是**线程局部**——所以「设置 → 执行 → 清空」必须在同一个线程里，
+/// 管理命令那条分支因此把整个 `run` 搬进了 worker 线程。
+fn run(runtime: &Arc<Runtime>, spec: &'static CommandSpec, command: &Command, sender: Option<i64>) {
     CURRENT_SENDER.with(|cell| cell.set(sender));
     (spec.handler)(runtime, command);
     CURRENT_SENDER.with(|cell| cell.set(None));
-    true
 }
 
 /// `/updateanime <id>`：只刷新库里的条目与章节，不动导航消息。
@@ -434,10 +478,9 @@ fn cmd_bindbangumi(runtime: &Arc<Runtime>, command: &Command) {
     let target = Target::new(command.chat_id, command.message_id);
     let token = command.args.trim().to_owned();
     if token.is_empty() {
-        runtime.td.reply_text(
-            target,
-            "用法：/bindbangumi <bangumi access_token>\n可在 https://next.bgm.tv/demo/access-token 生成",
-        );
+        // 不给参数 = 走 OAuth：发一条带「前往授权」按钮的消息（TS 同行为）。
+        // 给了参数 = 老办法：直接粘一个 access token（手工生成的那种）。
+        send_auth_button(runtime, target);
         return;
     }
     let Some(tg_user_id) = current_sender() else {
@@ -474,6 +517,59 @@ fn cmd_bindbangumi(runtime: &Arc<Runtime>, command: &Command) {
         };
         runtime.td.reply_text(target, text);
     });
+}
+
+/// `/bindbangumi` 的 OAuth 分支：建/取绑定记录 → 拼授权页 → 发 URL 按钮。
+///
+/// `state` 用库里的**内部自增 id**（`bangumi_user_upsert` 返回）：Bangumi 回调时
+/// 把它原样带回来，才能知道这次授权属于哪个 Telegram 用户。
+fn send_auth_button(runtime: &Arc<Runtime>, target: Target) {
+    use anime_core::store::Storage;
+
+    let Some(tg_user_id) = current_sender() else {
+        runtime
+            .td
+            .reply_text(target, "无法识别你的 Telegram 账号：请在私聊里绑定");
+        return;
+    };
+    if runtime.config.bangumi.app_id.trim().is_empty() {
+        runtime.td.reply_text(
+            target,
+            "未配置 bangumi.app_id：请先在配置里填好 OAuth 应用凭据，\
+             或直接 /bindbangumi <access_token> 手工绑定",
+        );
+        return;
+    }
+    // upsert 只为拿到（或复用）内部 id：此时还没有 token，只写 tgUserId。
+    let doc = anime_core::models::BangumiUserDoc {
+        tg_user_id,
+        ..Default::default()
+    };
+    let state = match runtime.store.bangumi_user_upsert(&doc) {
+        Ok(id) => id,
+        Err(error) => {
+            runtime
+                .td
+                .reply_text(target, format!("创建绑定记录失败：{error}"));
+            return;
+        }
+    };
+    let url = anime_core::bangumi::oauth::authorize_url(
+        &runtime.config.bangumi.app_id,
+        &runtime.config.bangumi.redirect_uri,
+        &state.to_string(),
+    );
+    let text = format!(
+        "请点击下方按钮进行 Bangumi 账户授权\n\n注：\n\
+         > Bangumi 用于管理 ACG 收藏与收视进度\n\
+         > Bangumi 不提供资源下载与观看\n\
+         我们使用 Bangumi 的 API 接口进行收藏与进度管理"
+    );
+    let _ = runtime.td.send_text_with_buttons(
+        target,
+        text,
+        vec![vec![fuyubot_simplify::ReplyButton::url("前往 Bangumi 授权页面", url)]],
+    );
 }
 
 /// `/exitbangumi`：删掉当前 Telegram 用户的绑定。
@@ -660,6 +756,239 @@ fn cmd_blacklist(runtime: &Arc<Runtime>, command: &Command) {
         _ => "未知子命令。可用：list / add / remove / clear".to_owned(),
     };
     runtime.td.reply_text(target, text);
+}
+
+/// `/start <payload>`：三种深链（见 [`crate::deeplink`]）。
+///
+/// 认不出的载荷**不回复**：`/start` 是 Telegram 里最常见的命令，宿主还有自己的
+/// start 插件（回欢迎语），我们再插一句「无法识别」会很吵。
+fn cmd_start(runtime: &Arc<Runtime>, command: &Command) {
+    let Some(link) = crate::deeplink::parse(&command.args) else {
+        return;
+    };
+    let Some(tg_user_id) = current_sender() else {
+        // 频道身份发来的 /start 没法确定身份（收藏/授权都要绑定用户）。
+        return;
+    };
+    let target = Target::new(command.chat_id, command.message_id);
+    let worker = Arc::clone(runtime);
+    let spawned = std::thread::Builder::new()
+        .name("xq-anime-start".to_owned())
+        .spawn(move || {
+            let (text, buttons) = match link.action {
+                crate::deeplink::Action::BangumiCallback => {
+                    let text = finish_bangumi_auth(&worker, tg_user_id, &link.values);
+                    (text, Vec::new())
+                }
+                crate::deeplink::Action::Collection => {
+                    collect_subject(&worker, tg_user_id, &link.values)
+                }
+                crate::deeplink::Action::EpisodeWatched => {
+                    let text = watch_episode(&worker, tg_user_id, &link.values);
+                    (text, Vec::new())
+                }
+            };
+            if buttons.is_empty() {
+                worker.td.reply_text(target, text);
+            } else {
+                worker.td.send_text_with_buttons(target, text, buttons);
+            }
+        });
+    if let Err(error) = spawned {
+        runtime.host.log(
+            fuyubot_abi::LogLevel::Error,
+            &format!("[anime] /start 线程起不来：{error}"),
+        );
+    }
+}
+
+/// `bgm_cb-<code>_<state>`：授权码换 token，写回绑定。
+fn finish_bangumi_auth(runtime: &Runtime, tg_user_id: i64, values: &[String]) -> String {
+    use anime_core::store::Storage;
+
+    let short = values.first().map(String::as_str).unwrap_or_default();
+    let state = values.get(1).map(String::as_str).unwrap_or_default();
+    let Some(code) = crate::deeplink::base62_to_hex(short) else {
+        return "授权失败：授权码格式不正确，请重新 /bindbangumi".to_owned();
+    };
+    let binding = match runtime.store.bangumi_user_by_tg(tg_user_id) {
+        Ok(binding) => binding,
+        Err(error) => return format!("授权失败，读取绑定记录出错：{error}"),
+    };
+    let Some(binding) = binding else {
+        return "授权失败，找不到对应的用户记录！请重新使用 /bindbangumi 进行绑定。".to_owned();
+    };
+    // `state` 是库里的内部自增 id：对不上说明这个链接不是给当前用户签发的
+    // （转别人的授权链接是常见误操作，Bangumi 也会拒，这里先挡一道）。
+    if !state.is_empty() && state != binding.id.to_string() {
+        return "授权失败，当前 Telegram 账户与绑定的账户不匹配！请使用正确的账户进行授权。"
+            .to_owned();
+    }
+
+    let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+    let token = match client.exchange_code(
+        &code,
+        &runtime.config.bangumi.redirect_uri,
+        &binding.id.to_string(),
+    ) {
+        Ok(token) => token,
+        Err(error) => return format!("授权失败，发生错误：{error}"),
+    };
+    let mut updated = binding.clone();
+    updated.access_token = Some(token.access_token.clone());
+    updated.refresh_token = token.refresh_token.filter(|next| !next.trim().is_empty());
+    updated.expires_in = (token.expires_in > 0).then_some(token.expires_in as i64);
+    updated.token_type = (!token.token_type.is_empty()).then_some(token.token_type.clone());
+    updated.bgm_user_id = token.user_id.map(|id| id as i64);
+    updated.scope = token.scope.filter(|scope| !scope.trim().is_empty());
+    updated.auth_time = Some(Utc::now());
+    if let Err(error) = runtime.store.bangumi_user_upsert(&updated) {
+        return format!("授权已生效但写入失败：{error}");
+    }
+
+    // 报个账户名确认绑对了人：拿不到也不算失败（token 已经能用了）。
+    let mut me_config = runtime.config.bangumi.clone();
+    me_config.access_token = token.access_token;
+    let who = anime_core::bangumi::BgmClient::new(me_config)
+        .me()
+        .map(|user| {
+            format!(
+                "账户名：{}\n用户ID：{}",
+                if user.nickname.is_empty() {
+                    &user.username
+                } else {
+                    &user.nickname
+                },
+                user.id
+            )
+        })
+        .unwrap_or_else(|_| "（读取账户信息失败）".to_owned());
+
+    format!(
+        "账户授权成功！\n{who}\n你可以在 https://bgm.tv/ 中管理你的进度\n\n\
+         使用 /exitbangumi 可以退出登录。\n\n如果需要更改绑定的账户，\
+         使用 /exitbangumi 退出后重新授权流程即可"
+    )
+}
+
+/// `collection-<animeId>`：把条目标成「在看」，再给一排改状态的按钮。
+fn collect_subject(
+    runtime: &Runtime,
+    tg_user_id: i64,
+    values: &[String],
+) -> (String, Vec<Vec<fuyubot_simplify::ReplyButton>>) {
+    let Some(anime_id) = values.first().and_then(|raw| raw.parse::<u64>().ok()) else {
+        return ("收藏失败：链接里没有条目 id".to_owned(), Vec::new());
+    };
+    crate::bgmuser::get_bgm_token(runtime, tg_user_id).either(
+        |access_token| {
+            let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+            if let Err(error) = client.set_subject_collection(&access_token, anime_id, 3) {
+                return (format!("收藏失败：{error}"), Vec::new());
+            }
+            let name = anime_name(runtime, anime_id as i64);
+            (
+                format!("收藏动漫：{name} 成功！\n当前状态：在看\n\n点击下方按钮更改收藏状态："),
+                // 五个状态都给（含当前的「在看」）：点错了也能点回来。
+                crate::callback::collection_buttons(anime_id, None),
+            )
+        },
+        |message| (message, Vec::new()),
+    )
+}
+
+/// `eplook-<episodeId>`：把章节标成「看过」。
+fn watch_episode(runtime: &Runtime, tg_user_id: i64, values: &[String]) -> String {
+    use anime_core::store::Storage;
+
+    let Some(episode_id) = values.first().and_then(|raw| raw.parse::<u64>().ok()) else {
+        return "标记失败：链接里没有章节 id".to_owned();
+    };
+    let subject_id = match runtime.store.subject_id_of_episode(episode_id as i64) {
+        Ok(Some(id)) => id,
+        Ok(None) => return format!("标记失败，找不到对应的动漫信息，剧集ID：{episode_id}"),
+        Err(error) => return format!("标记失败，读取章节信息出错：{error}"),
+    };
+    crate::bgmuser::get_bgm_token(runtime, tg_user_id).either(
+        |access_token| {
+            let client = anime_core::bangumi::BgmClient::new(runtime.config.bangumi.clone());
+            if let Err(error) = client.set_episode_collection(&access_token, episode_id, 2) {
+                // 没收藏条目就标不了章节：Bangumi 会 400，这里把原因说清楚。
+                return format!(
+                    "标记失败：{error}\n请先收藏 [{}](https://bgm.tv/subject/{subject_id}) 后再标记看过！",
+                    anime_name(runtime, subject_id)
+                );
+            }
+            format!(
+                "动漫：{}\n集数：[{episode_id}](https://bgm.tv/ep/{episode_id}) 标记为 看过 成功！",
+                anime_name(runtime, subject_id)
+            )
+        },
+        |message| message,
+    )
+}
+
+/// 番剧名：中文名优先（与提示语同一套规则）；读不到就退回 id。
+fn anime_name(runtime: &Runtime, anime_id: i64) -> String {
+    use anime_core::store::Storage;
+    runtime
+        .store
+        .anime_by_id(anime_id)
+        .ok()
+        .flatten()
+        .map(|anime| crate::prompts::display(&anime).to_owned())
+        .unwrap_or_else(|| format!("{anime_id}"))
+}
+
+/// `/jz <条目 id> <缓存 id>`：把缓存里的条目接到某部番上（TS `ConAnimeInformation`）。
+///
+/// 给出「确定」按钮（`Y_anime?id=&c=`），点了才真正落地——管理员先看清楚
+/// 番剧名和缓存标题对不对，再按。
+fn cmd_jz(runtime: &Arc<Runtime>, command: &Command) {
+    let target = Target::new(command.chat_id, command.message_id);
+    let mut parts = command.args.split_whitespace();
+    let anime_id = parts.next().and_then(|raw| raw.parse::<i64>().ok());
+    let cache_id = parts.next().and_then(|raw| raw.parse::<i64>().ok());
+    let (Some(anime_id), Some(cache_id)) = (anime_id, cache_id) else {
+        runtime.td.reply_text(
+            target,
+            "用法：/jz <bangumi 条目 id> <缓存 id>\n示例：/jz 12345 67890",
+        );
+        return;
+    };
+    let worker = Arc::clone(runtime);
+    std::thread::spawn(move || {
+        use anime_core::store::Storage;
+        // 正片库优先，找不到再看缓冲库（`cacheAnime`）——TS 的 `getAnimeById(id, true)`。
+        let name = worker
+            .store
+            .anime_by_id(anime_id)
+            .ok()
+            .flatten()
+            .or_else(|| worker.store.cached_anime_by_id(anime_id).ok().flatten())
+            .map(|anime| crate::prompts::display(&anime).to_owned())
+            .unwrap_or_else(|| "未知".to_owned());
+        let cache_title = worker
+            .store
+            .cache_item_get(cache_id)
+            .ok()
+            .flatten()
+            .map(|item| item.title)
+            .unwrap_or_else(|| "未知".to_owned());
+        let text = format!(
+            "番剧信息为：{name}（id:{anime_id}）\n缓存：{cache_title}（id:{cache_id}）"
+        );
+        let _ = worker.td.send_text_with_buttons(
+            target,
+            text,
+            vec![vec![fuyubot_simplify::ReplyButton::callback(
+                "确定",
+                crate::callback::data::confirm(crate::callback::CallbackTarget::by_episode(
+                    anime_id, cache_id,
+                )),
+            )]],
+        );
+    });
 }
 
 /// `/collect <条目id> [章节id]`：弹一个五种收藏状态的键盘。
@@ -911,10 +1240,19 @@ mod tests {
 
     #[test]
     fn builtin_plugins_keep_their_commands() {
-        // 同一进程里 /start /help /plugins 都可能有别的插件在管。`/help` 我们自己也提供，
+        // 同一进程里 /help /plugins 都可能有别的插件在管。`/help` 我们自己也提供，
         // 但语义必须一致（列命令），所以这里只锁「不抢别人的」。
-        assert!(spec_for("start").is_none(), "/start 归 start 插件");
         assert!(spec_for("plugins").is_none(), "/plugins 归 manage 插件");
+    }
+
+    #[test]
+    fn start_only_reacts_to_its_own_deep_links() {
+        // `/start` 我们**接管了**（三种深链），但只对认识的载荷出声：
+        // 宿主自带的 start 插件会回欢迎语，我们再插一句「无法识别」会很吵。
+        assert!(spec_for("start").is_some());
+        assert!(crate::deeplink::parse("").is_none());
+        assert!(crate::deeplink::parse("welcome").is_none());
+        assert!(crate::deeplink::parse("bgm_cb-abc_42").is_some());
     }
 
     #[test]

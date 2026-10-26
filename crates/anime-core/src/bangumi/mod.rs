@@ -64,6 +64,12 @@ const API_BASE: &str = "https://api.bgm.tv";
 /// OAuth 端点在主站，不在 api.bgm.tv。
 const OAUTH_TOKEN_URL: &str = "https://bgm.tv/oauth/access_token";
 
+/// 授权页（用户点进去点「同意」的那个页面）。
+pub const OAUTH_AUTHORIZE_URL: &str = "https://bgm.tv/oauth/authorize";
+
+/// 查授权信息（还剩多久过期、scope 是什么）。
+pub const OAUTH_TOKEN_STATUS_URL: &str = "https://bgm.tv/oauth/token_status";
+
 /// 配置里没写 UA 时的兜底：与 TS 版一致，Bangumi 要求能识别调用方。
 const DEFAULT_USER_AGENT: &str = "XQAnimeBot/1.0 (https://github.com/xiaoqvan/XQAnimeBot)";
 
@@ -473,6 +479,7 @@ mod tests {
             app_secret: "secret".to_owned(),
             access_token: "token".to_owned(),
             user_agent: "XQAnimeBot/test".to_owned(),
+            ..Default::default()
         };
         let client = BgmClient::new(config);
         assert_eq!(client.config().app_id, "app");
