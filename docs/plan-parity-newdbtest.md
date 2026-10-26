@@ -357,3 +357,23 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
   `edit_caption`，没有改消息文本的封装。
 - 分段上传写进 `resources` 的仍是第一段（`messages[]` / `videoid[]` 未填），
   与阶段 4 的相册发送一起补。
+- **阶段 4（导航正文 + 视频文案 + 媒体细节）主体已完成**（commit 3f589e6）：
+  - `text.rs`（新增，全部纯函数 + 单测）：`safe_tag` / `format_tags` / 标签过滤
+    （`^\d{4}年` 与纯数字，TS `extractFilteredTagNames`）、`anime_date`（只留年月）、
+    `summary_trim`（300→100 逐级压缩 + `[...详细]`）、集数解析与排序（**SP/特别篇按
+    自己的编号和正片混排**，与 TS 一致）、按字幕组分组的资源区、`navmegtext`
+    （1024 上限 / 分页 4096 / 页码导航 / 资源外移）、`AnimeText` 四链接文案、
+    `measure`（无 TDLib 时用「可见长度 + 链接数」近似）。
+  - `nav.rs`：正文接进导航——`publish` 用正文首段做图注；新增 `refresh`（改首条
+    caption + 分页消息 `editMessageText`／新发并记 `navVideoMessage`，page 从 1 起）。
+  - `chain`：视频 caption 换 `AnimeText`；`duration/width/height` 用 probe 的真实值；
+    `has_spoiler = r18`；发送超时 1800s；种子状态补「上传中」；**每次发送都记资源**。
+  - `review`：`after_send` 拆成 `record_send`（每次都记）+ `prompt_after_send`（按路线提示）。
+  - `td.rs`：`VideoMeta` / `send_text_wait` / `edit_text`。
+- **阶段 4 剩余（宿主侧限制，非本仓能补）**：
+  - 相册发送（`sendMessageAlbum`）：宿主 simplify 的 album 接口**不返回 message_id**，
+    导航拿不到分页/资源定位，所以分段仍逐条发。
+  - 视频封面：`Media::Video` 没有 cover 字段，且 ffmpeg 插件还没有 thumbnail 方法
+    （插件在本仓，可加；simplify 的字段在宿主仓）。
+  - `tagExcludeList`（TS 存在库里的标签黑名单）未实现。
+  测试 351 → 369 全绿。
