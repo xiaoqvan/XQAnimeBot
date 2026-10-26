@@ -10,7 +10,7 @@
 | 产物 | 是什么 |
 | --- | --- |
 | `ultralight_gen_image.dll` | 插件本体（cdylib）。只发请求，不碰 Ultralight |
-| `image-shot.exe` | 渲染器（同包 bin）。真正加载 Ultralight、跑 Vue、截图 |
+| `image-shot.exe` | 渲染器（同包 bin）。真正加载 Ultralight、绑定数据、截图 |
 
 ```bash
 cargo build -p ultralight-gen-image          # 一次编出两个产物
@@ -55,11 +55,19 @@ let result = call_service(&self.host, "image.render", "render", &serde_json::jso
 
 ## 模板契约
 
-模板是**纯 HTML**，三条约定：
+模板是**纯 HTML**，加六种标签（完整语法见 [`src/template.rs`](src/template.rs)）：
 
-1. `<!--__VUE_RUNTIME__-->` 会被替换成 Vue 3 运行时（内联，无外部请求）；
-2. `__IMAGE_DATA__` 会被替换成调用方给的 JSON（`<` 已转义，数据里写 `</script>` 也炸不掉页面）；
-3. 数据渲染完置 `window.__READY__ = true`，渲染器等「页面 settled + 该表达式为真」两帧后截图。
+| 写法 | 作用 |
+| --- | --- |
+| `{{ 字段 }}` | 输出并 HTML 转义 |
+| `{{& 字段 }}` / `{{{ 字段 }}}` | 原样输出 |
+| `{{#if 字段}} … {{else}} … {{/if}}` | 条件块 |
+| `{{#each 字段}} … {{/each}}` | 遍历（循环里 `this` / `@index` / `@first`……） |
+| `{{ a.b }}` | 嵌套字段 |
+
+数据在渲染前由 Rust 侧绑进模板：**字段不存在直接报错**（`#if` 除外），
+`html` + `data` 也会绑定（插件内嵌模板文本走这条），不带 `data` 的 `html` 原样渲染。
+页面零 JS，不需要就绪协议；要等 JS 动作才显式传 `ready_expr`。
 
 模板跟着**业务**走，不放本插件里。本插件的 `templates/demo.html` 只是接口示例。
 
@@ -100,5 +108,5 @@ cargo run -p ultralight-gen-image --example render_card
 cargo run -p ultralight-gen-image --bin image-shot -- --once req.json
 ```
 
-实测（本机，debug 构建）：demo 卡 2000×1100 / 173KB / 653ms；
-动漫卡 2000×1100 / 190KB / 758ms。
+实测（本机，debug 构建，`image-shot --once` 含进程初始化）：demo 卡 2000×1100 / 181KB / 1.3s；
+动漫卡 2000×1100 / 231KB / 1.0~1.4s（两条绑定路径输出逐字节一致）。

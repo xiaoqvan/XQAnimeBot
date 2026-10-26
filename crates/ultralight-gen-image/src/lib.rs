@@ -12,7 +12,7 @@
 //!     │  JSON 行协议，stdin/stdout
 //!     ▼
 //! image-shot.exe（同包产物，独立进程，独占主线程）
-//!     │  Ultralight 2.0：加载 HTML → 跑 Vue → 截图
+//!     │  Ultralight 2.0：加载最终 HTML（数据已绑好）→ 截图
 //!     ▼
 //!   JPEG/PNG 路径
 //! ```
@@ -34,6 +34,7 @@
 pub mod client;
 pub mod render;
 pub mod request;
+pub mod template;
 
 use std::ffi::{c_char, c_void};
 use std::path::PathBuf;

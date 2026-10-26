@@ -33,18 +33,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let request = RenderRequest::template(
         "demo",
         serde_json::json!({
-            "badge": "EXAMPLE",
+            "eyebrow": "EXAMPLE",
             "title": "HTML 出图，一个插件搞定",
-            "subtitle": "ultralightGenImage 只认 HTML / 模板 + JSON，不认识动漫、订单或报表",
+            "subtitle": "ultralightGenImage 只认「HTML 模板 + JSON 数据」，不认识动漫、订单或报表",
             "rows": [
-                { "label": "渲染后端", "value": "Ultralight 2.0" },
-                { "label": "布局", "value": "HTML + Vue（Flexbox 原生生效）" },
-                { "label": "输出", "value": "JPEG / PNG，2× 超采样" }
-            ],
-            "metrics": [
-                { "label": "视口", "value": "1000 × 550" },
-                { "label": "像素比", "value": "2.0" },
-                { "label": "格式", "value": "JPEG q90" }
+                { "key": "渲染后端", "value": "Ultralight 2.0" },
+                { "key": "模板", "value": "纯 HTML，数据 Rust 侧绑定" },
+                { "key": "输出", "value": "JPEG / PNG，2× 超采样" }
             ],
             "footer": "由 ultralightGenImage 渲染"
         }),

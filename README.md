@@ -30,7 +30,7 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 | 模块 | TS 规模 | Rust 状态 |
 | --- | --- | --- |
-| 出图（Vue/satori/resvg → Ultralight） | ~1.1k | ✅ 独立插件，实测出图 |
+| 出图（bangumi.vue/satori → 纯 HTML + Ultralight） | ~1.1k | ✅ 独立插件，实测出图 |
 | ffmpeg 转码 | ~0.5k | ✅ 独立插件，实测 copy/NVENC 两条路；MKV 简体中文字幕烧录已实测 |
 | qBittorrent 客户端 | ~1.1k | ✅ 独立插件（手写 5.0 API，真机联调通过） |
 | MongoDB 存储层 | ~2.5k | ✅ 独立插件（通用 CRUD，本机全链路联调通过） |

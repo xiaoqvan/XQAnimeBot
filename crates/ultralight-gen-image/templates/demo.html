@@ -2,10 +2,11 @@
 <!--
   最简模板示例：证明出图插件与业务无关。
 
-  契约只有三条：
-  1. `<!--__VUE_RUNTIME__-->` 会被替换成 Vue 3 全局构建；
-  2. `__IMAGE_DATA__` 会被替换成调用方给的 JSON（字段随便定）；
-  3. 页面渲染完成后把 `window.__READY__` 置 true，image-shot 才截图。
+  模板就是纯 HTML 加六种标签，没有 JS、没有运行时、没有就绪协议：
+    字段插值（转义输出）、原样插值、if/else 块、each 块，
+    循环里可用 this 与 at-index / at-number / at-first / at-last。
+  语法详见 crates/ultralight-gen-image/src/template.rs 的模块注释。
+  数据在 Rust 侧绑好才进渲染器，字段写错会在出图前报错并指出字段名。
 -->
 <html lang="zh-CN">
 <head>
@@ -39,35 +40,14 @@
   <div class="title">{{ title }}</div>
   <div class="subtitle">{{ subtitle }}</div>
   <div class="rows">
-    <div class="row" v-for="item in rows" :key="item.key">
-      <div class="row-key">{{ item.key }}</div>
-      <div class="row-value">{{ item.value }}</div>
+    {{#each rows}}
+    <div class="row">
+      <div class="row-key">{{ key }}</div>
+      <div class="row-value">{{ value }}</div>
     </div>
+    {{/each}}
   </div>
   <div class="footer">{{ footer }}</div>
 </div>
-
-<!--__VUE_RUNTIME__-->
-
-<script id="image-data" type="application/json">__IMAGE_DATA__</script>
-<script>
-  (function () {
-    var payload = JSON.parse(document.getElementById('image-data').textContent);
-    var app = Vue.createApp({
-      data: function () {
-        return payload;
-      },
-      mounted: function () {
-        // 等两帧，确保布局与字体稳定后再让 image-shot 截图。
-        requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            window.__READY__ = true;
-          });
-        });
-      }
-    });
-    app.mount('#app');
-  })();
-</script>
 </body>
 </html>

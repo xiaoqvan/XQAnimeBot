@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::runtime::Runtime;
 
-/// 番剧卡模板（1000×550）。占位符由出图插件在渲染前替换。
+/// 番剧卡模板（1000×550）。纯 HTML 模板，字段占位符由出图插件渲染前绑定。
 const TEMPLATE: &str = include_str!("../assets/templates/bangumi-card.html");
 /// 5 格评分表情雪碧图。
 pub const RATING_EMOJI: &[u8] = include_bytes!("../assets/emoji/rate_emo.gif");
@@ -41,6 +41,7 @@ pub fn emoji_index(score: f32) -> usize {
 pub fn render(runtime: &Runtime, card: &BangumiCard) -> Result<PathBuf> {
     let out = std::env::temp_dir().join(format!("xq-card-{}.jpg", card.id));
     let payload = card.to_html_payload();
+    // html + data：出图插件渲染前把 payload 绑进模板占位符，页面里没有 JS。
     call_service(
         &runtime.host,
         "image.render",
@@ -84,9 +85,13 @@ mod tests {
     }
 
     #[test]
-    fn template_is_embedded_and_has_placeholders() {
-        // 模板里必须有数据注入点，否则渲染出来是一张静态图。
-        assert!(TEMPLATE.contains("__IMAGE_DATA__"));
-        assert!(TEMPLATE.contains("__VUE_RUNTIME__"));
+    fn template_is_plain_html_with_data_bindings() {
+        // 模板里必须有数据绑定点，否则渲染出来是一张静态图；
+        // 也绝不能再出现 Vue 运行时或早期的注入占位符。
+        assert!(TEMPLATE.contains("{{ title }}"));
+        assert!(TEMPLATE.contains("{{#each pages}}"));
+        assert!(!TEMPLATE.contains("__IMAGE_DATA__"));
+        assert!(!TEMPLATE.contains("__VUE_RUNTIME__"));
+        assert!(!TEMPLATE.contains("Vue."));
     }
 }

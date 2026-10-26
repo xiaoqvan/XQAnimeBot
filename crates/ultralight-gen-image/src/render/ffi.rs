@@ -26,6 +26,8 @@ pub enum Error {
     Timeout(u64),
     #[error("输出图片编码失败：{0}")]
     Image(#[from] image::ImageError),
+    #[error("{0}")]
+    Template(#[from] crate::template::TemplateError),
     #[error("文件读写失败（{path}）：{source}")]
     Io {
         path: String,

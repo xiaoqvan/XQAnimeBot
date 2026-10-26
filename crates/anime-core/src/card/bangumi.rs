@@ -84,12 +84,25 @@ impl BangumiCard {
     }
 
     /// 生成给 HTML 模板用的数据（字段名与 `bangumi-card.html` 一一对应）。
+    ///
+    /// 模板是纯 HTML（没有 JS 运行时），凡是「算出来才好画」的东西都在这里预先算好：
+    /// 标题回退、分页标签、评分条、补位格、两位数集号、评分/进度的展示文本。
+    /// 模板只排版不计算，字段名写错会在出图前直接报错。
     pub fn to_html_payload(&self) -> serde_json::Value {
         let poster = self.poster.as_ref().and_then(|bytes| {
             cover_jpeg(bytes, 420, 580, 90)
                 .ok()
                 .map(|jpeg| data_uri("image/jpeg", &jpeg))
         });
+
+        // 标题：中文名为空时回退原名（模板不再写 || 表达式）。
+        let title = if self.name_cn.trim().is_empty() {
+            self.name.clone()
+        } else {
+            self.name_cn.clone()
+        };
+        // 进度数字：0 就显示 “-”，与 TS 版的 || '-' 一致。
+        let ep_num_fmt = |n: u32| if n > 0 { n.to_string() } else { "-".to_owned() };
 
         let max = self
             .rating_counts
@@ -113,6 +126,19 @@ impl BangumiCard {
         } else {
             0
         };
+        // 章节分页芯片：标签 “01-30” 这种区间，以及当前页高亮。
+        let page_chips: Vec<serde_json::Value> = (0..pages)
+            .map(|page| {
+                let start = page * EPISODES_PER_PAGE + 1;
+                let end = start
+                    .saturating_add(EPISODES_PER_PAGE - 1)
+                    .min(self.episodes.len());
+                json!({
+                    "label": format!("{start:02}-{end:02}"),
+                    "active": page == active_page,
+                })
+            })
+            .collect();
 
         let mut infobox: serde_json::Map<String, serde_json::Value> = self
             .staff
@@ -130,6 +156,9 @@ impl BangumiCard {
                     "id": ep.sort,
                     "ep": ep.sort,
                     "sort": ep.sort,
+                    // 展示用：两位数集号（01）与「已放送」标记，模板不做计算。
+                    "sort_fmt": format!("{:02}", ep.sort),
+                    "aired": ep.sort <= self.current_ep,
                     "name": ep.name,
                     "name_cn": ep.name,
                     "airdate": ep.airdate,
@@ -153,6 +182,7 @@ impl BangumiCard {
                                 "id": sort,
                                 "ep": sort,
                                 "sort": sort,
+                                "sort_fmt": format!("{:02}", sort),
                                 "name": "",
                                 "name_cn": "",
                                 "airdate": "",
@@ -164,14 +194,27 @@ impl BangumiCard {
             })
             .collect();
 
+        // 当前页的章节 + 补位格（把 30 格占满，行高才整齐）。
+        let page_start = active_page * EPISODES_PER_PAGE;
+        let page_end = (page_start + EPISODES_PER_PAGE).min(episodes.len());
+        let empty_slots: Vec<serde_json::Value> = (page_end..page_start + EPISODES_PER_PAGE)
+            .map(|_| json!({}))
+            .collect();
+
         json!({
             "id": self.id,
             "name": self.name,
             "name_cn": self.name_cn,
+            "title": title,
             "poster": poster,
             "date": self.air_date,
             "platform": self.platform,
             "total_episodes": self.episodes.len(),
+            "score_fmt": format!("{:.1}", self.score),
+            "finished": self.aired_count >= self.episodes.len(),
+            "pages": page_chips,
+            "pageEpisodes": episodes[page_start..page_end].to_vec(),
+            "emptySlots": empty_slots,
             "rating": {
                 "score": self.score,
                 "rank": 0,
@@ -195,6 +238,9 @@ impl BangumiCard {
             "displayStaff": self.staff.iter().take(6).enumerate().map(|(index, (key, value))| json!({
                 "key": key,
                 "value": value,
+                // 展示用：空值显示 “-”；右列文字右对齐（模板不做计算）。
+                "value_fmt": if value.is_empty() { "-".to_owned() } else { value.clone() },
+                "align_right": index % 2 == 1,
                 "align": if index % 2 == 1 { "right" } else { "" },
             })).collect::<Vec<_>>(),
             "ratingLabel": rating_label(self.score),
@@ -203,16 +249,27 @@ impl BangumiCard {
             "rateEmoDataUri": self.rating_emoji.as_ref().map(|gif| data_uri("image/gif", gif)).unwrap_or_default(),
             "rateEmoW": 170,
             "rateEmoH": 34,
+            // 雪碧图是 5 格横排：每格 34px，按评分取第几格的偏移也算好。
+            "rateEmoCellW": 34,
+            "rateEmoOffset": self.rating_emoji_idx.min(4) * 34,
             "barPcts": bar_pcts,
+            // 评分直方图：从 10 分到 1 分，高度百分比 + 刻度文案 + 当前评分高亮。
+            "bars": bar_pcts.iter().enumerate().map(|(idx, pct)| json!({
+                "pct": pct,
+                "label": (10 - idx).to_string(),
+                "highlight": (10 - idx) as f32 == self.score.round(),
+            })).collect::<Vec<_>>(),
             "episodes": episodes,
             "otherEpisodes": other,
             "airedCount": self.aired_count,
             "episodesPerPage": EPISODES_PER_PAGE,
             "activePageIdx": active_page,
             "currentEpNum": self.current_ep,
+            "currentEpNum_fmt": ep_num_fmt(self.current_ep),
             "currentEpName": self.current_ep_name,
             "currentEpAirDate": self.current_ep_airdate,
             "nextEpNum": self.next_ep,
+            "nextEpNum_fmt": ep_num_fmt(self.next_ep),
             "nextEpName": self.next_ep_name,
             "nextEpAirDate": self.next_ep_airdate,
             "fansubs": self.fansubs,
@@ -365,8 +422,21 @@ mod tests {
         assert_eq!(payload["episodesPerPage"], EPISODES_PER_PAGE);
         assert_eq!(payload["episodes"].as_array().unwrap().len(), 4);
         assert_eq!(payload["otherEpisodes"][0]["label"], "SP");
-        // 没给海报时必须是 null，模板用 v-if 判断。
+        // 没给海报时必须是 null，模板用 #if 判断。
         assert!(payload["poster"].is_null());
+        // 展示用字段：模板只排版不计算，这些都得预先算好。
+        assert_eq!(payload["title"], "葬送的芙莉莲");
+        assert_eq!(payload["score_fmt"], "8.9");
+        assert_eq!(payload["currentEpNum_fmt"], "4");
+        assert_eq!(payload["nextEpNum_fmt"], "-");
+        assert_eq!(payload["finished"], true);
+        assert_eq!(payload["pages"][0]["label"], "01-04");
+        assert_eq!(payload["pages"][0]["active"], true);
+        assert_eq!(payload["pageEpisodes"][3]["sort_fmt"], "04");
+        assert_eq!(payload["pageEpisodes"][3]["aired"], true);
+        assert_eq!(payload["bars"][1]["label"], "9");
+        assert_eq!(payload["bars"][1]["highlight"], true);
+        assert_eq!(payload["displayStaff"][0]["value_fmt"], "斋藤圭一郎");
     }
 
     #[test]

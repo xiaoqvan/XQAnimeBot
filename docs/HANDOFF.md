@@ -59,7 +59,8 @@ RSS 三源（bangumi / dmhy / acgnx）→ 标题解析（字幕组规则）→ �
 
 1. **基础设施拆成独立插件**：数据库、qB、转码、出图都与动漫无关，注册成服务供任何插件调用；
 2. **出图走真浏览器**：TS 是 `Vue → satori → SVG → resvg → sharp`，Rust 侧没有 satori 等价物，
-   改成 Ultralight 2.0（WebKit）跑真 HTML/Vue 再截图；
+   改成 Ultralight 2.0（WebKit）跑真 HTML 再截图；模板是纯 HTML（数据 Rust 侧绑定），
+   不再往页面里塞 Vue 运行时；
 3. **业务逻辑全部放 `anime-core`**：不碰宿主、不碰 TDLib，能被 `cargo test` 直接跑；
    插件壳只做「宿主事件 ↔ 领域函数」的翻译。
 
@@ -145,7 +146,8 @@ fuyubot-plugin-anime ──┬─ storage.mongo         ──▶ MongoDB
 方法：`render`（`template`/`template_dir`/`data`/`out` 或 `html`/`out`，加 `width/height/scale/format/quality/ready_expr`）、`ping`
 配置：`{"binary":"D:/.../image-shot.exe","templates_dir":"D:/.../templates"}`
 
-模板契约（只有三条）：`<!--__VUE_RUNTIME__-->` 注入 Vue、`__IMAGE_DATA__` 注入 JSON、`window.__READY__ = true` 表示就绪。
+模板契约：纯 HTML + mustache 子集占位符（`{{ 字段 }}` / `{{#if}}` / `{{#each}}`），
+数据渲染前在 Rust 侧绑进去（缺字段直接报错）；`html`+`data` 同样绑定，页面零 JS。
 
 验证：`cargo run -p ultralight-gen-image --example render_card`
 实测（debug）：demo 卡 2000×1100 / 173KB / 653ms；动漫卡 2000×1100 / 190KB / 758ms。
@@ -576,7 +578,7 @@ Service::new(SERVICE, vec![
 ### 13.2 新增一张业务卡片模板
 
 1. 在业务插件的 `assets/templates/` 放 `xxx.html`；
-2. 模板里必须有三样：`<!--__VUE_RUNTIME__-->`、`__IMAGE_DATA__`、结尾 `window.__READY__ = true`；
+2. 模板就是纯 HTML，字段写占位符（`{{ 字段 }}`、`{{#if}}`、`{{#each}}`），不用带任何 JS；
 3. 数据侧写 `to_html_payload(&self) -> serde_json::Value`（参考 `anime_core::card::bangumi`）；
 4. 调：
 

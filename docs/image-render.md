@@ -2,7 +2,12 @@
 
 原来 TS 版是 `bangumi.vue → satori（Flexbox 布局）→ SVG → resvg → sharp → JPEG`。
 Rust 侧没有 satori 的等价物，硬重写一套 CSS 布局引擎不划算，于是改成
-**真浏览器渲染**：Ultralight 2.0（WebKit 内核）跑真 HTML/CSS/Vue，然后离屏截图。
+**真浏览器渲染**：Ultralight 2.0（WebKit 内核）跑真 HTML/CSS，然后离屏截图。
+
+数据绑定也经历了两代：先是在页面里跑 Vue（注入运行时 + JSON，页面自己渲染完置
+`__READY__`），现在改成**纯 HTML 模板**——数据在 Rust 侧就绑进模板（mustache 子集），
+进渲染器的就是最终页面。没有 100KB 的 Vue 运行时，没有就绪协议，模板字段写错会在
+出图前直接报错，而不是截出一张悄悄缺一块的图。
 
 同时定了另一条边界：**出图不属于动漫业务**。它是一个独立插件，谁都能调。
 
@@ -16,7 +21,7 @@ ultralight_gen_image.dll     插件本体（cdylib，同进程，**零业务知�
     │  拉子进程 + JSON 行协议（stdin/stdout）
     ▼
 image-shot.exe               同一 crate 的 bin，独立进程，独占主线程
-    │  Ultralight 2.0：LoadHTML → 跑 Vue → 等 __READY__ → 截图
+    │  Rust 侧绑定数据 → Ultralight 2.0：LoadHTML → 等页面稳定 → 截图
     ▼
    JPEG/PNG 路径 → 交给 TDLib 的 inputFileLocal
 ```
@@ -24,7 +29,8 @@ image-shot.exe               同一 crate 的 bin，独立进程，独占主线�
 | 路径 | 角色 | 认不认识动漫 |
 | --- | --- | --- |
 | `crates/ultralight-gen-image` (cdylib) | 注册 `image.render`，管渲染进程生命周期 | 不认识 |
-| 同 crate 的 `image-shot` bin | 渲染器：HTML/模板 → 图片 | 不认识 |
+| 同 crate 的 `image-shot` bin | 渲染器：模板 + 数据 → 图片 | 不认识 |
+| 同 crate 的 `src/template.rs` | 模板绑定（mustache 子集） | 不认识 |
 | `crates/anime-core/card` | 把番剧数据整理成模板 payload | 认识 |
 
 早先这里拆过三个 crate（`image-shot` / `image-shot-client` / `fuyubot-plugin-imagegen`）：
@@ -38,11 +44,25 @@ image-shot.exe               同一 crate 的 bin，独立进程，独占主线�
 
 跨插件调用不再需要专门的客户端 crate：`fuyubot_service::call_service` 就是通用的。
 
-## 模板契约（三条，别的一条都没有）
+## 模板契约：纯 HTML + 六种标签
 
-1. `<!--__VUE_RUNTIME__-->` 会被替换成 Vue 3 全局构建（内联，页面零外部请求）；
-2. `__IMAGE_DATA__` 会被替换成调用方给的 JSON（`<` 已转义，数据里写 `</script>` 也闭合不了）；
-3. 页面渲染完成后把 `window.__READY__ = true`，渲染器才截图。
+模板就是 HTML，加六种标签（实现见 `src/template.rs`，那里有完整语法说明）：
+
+| 写法 | 作用 |
+| --- | --- |
+| `{{ 字段 }}` | 输出并 HTML 转义（放进属性里也安全） |
+| `{{& 字段 }}` / `{{{ 字段 }}}` | 原样输出（拼好的 HTML 片段才用） |
+| `{{#if 字段}} … {{else}} … {{/if}}` | 真值走前半段，假值/缺失走后半段 |
+| `{{#each 字段}} … {{/each}}` | 遍历数组（循环里有 `this`、`@index`、`@number`、`@first`、`@last`） |
+| `{{ a.b.c }}` | 点路径取嵌套字段 |
+
+三条规则，别的没有：
+
+1. **字段不存在直接报错**（`#if` 除外，缺失一律当假）。模板和数据对不上宁可渲染失败
+   并指出字段名——「改一处忘一处只在运行时炸」是这套迁移里最贵的教训；
+2. `html` + `data` 会把 `html` 当模板绑一遍（插件内嵌模板文本走的就是这条）；
+   不带 `data` 的 `html` 视为最终页面，原样渲染；
+3. 页面没有 JS，没有就绪协议，页面 settled 即截图；真要等 JS 动作，显式传 `ready_expr`。
 
 模板放哪由调用方决定：传 `template_dir`，渲染器只按 `template_dir/<name>.html` 找文件。
 动漫的 `bangumi-card.html` 在 `crates/fuyubot-plugin-anime/assets/templates/`，
@@ -86,20 +106,25 @@ let result = call_service(&self.host, "image.render", "render", &serde_json::jso
 ## 两个踩过的坑（别改回去）
 
 1. `ulViewEvaluateScript` 的 exception 出参在**没有异常时是空 ULString，不是空指针**。
-   只判 null 会让页面永远「不就绪」，等到超时后截到白图。
+   只判 null 会让页面永远「不就绪」，等到超时后截到白图。（纯 HTML 模板用不到求值，
+   但传了 `ready_expr` 就会走到这条路上。）
 2. 求值结果字符串归 SDK 所有，**不能** `ulDestroyString`，否则双释放，进程直接消失。
 
 ## 实测
 
-| 模板 | 尺寸 | 体积 | 耗时（debug，含进程通信） |
+| 模板 | 尺寸 | 体积 | 耗时（debug，`image-shot --once`，含进程与渲染器初始化） |
 | --- | --- | --- | --- |
-| `demo.html`（通用） | 2000×1100 | 173 KB | 653 ms |
-| `bangumi-card.html`（动漫） | 2000×1100 | 190 KB | 758 ms |
+| `demo.html`（通用） | 2000×1100 | 181 KB | 1.3 s |
+| `bangumi-card.html`（动漫，template 路径） | 2000×1100 | 231 KB | 1.4 s |
+| `bangumi-card.html`（动漫，html + data 路径） | 2000×1100 | 231 KB | 1.0 s |
 
-Release 下再快一截；首图有进程启动成本，所以插件 `start()` 会预热。
+两条绑定路径产出**逐字节一致**（MD5 相同）。首图有进程启动成本，插件 `start()` 会预热，
+常驻模式下比上表快。
 
 ## 现状
 
-- 渲染链路、服务注册、模板注入：**已通**，有单测，示例可跑；
+- 渲染链路、服务注册、模板绑定：**已通**，有单测，示例可跑，真机出图验证过；
+- `html` + `data` 的绑定已修：插件内嵌模板文本这条路以前是断的（占位符根本没被替换）；
+  修复后两条路径输出逐字节一致；
 - 未在真实 FuyuBot 宿主里联调（需要在宿主里装插件看日志）；
 - 用户收藏卡模板（原 `generateUserCollectionImage.ts`）还没迁。

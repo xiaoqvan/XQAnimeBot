@@ -2,15 +2,15 @@
 <!--
   Bangumi 导航封面卡 · 1000×550
 
-  由 `img/bangumi.vue` 改写而来：模板结构、样式数值、数据字段名都保持不变，
-  只做了三件事：
-    1. SFC 拆成「HTML + 运行时模板」，省掉构建步骤（Ultralight 里直接跑 Vue 运行时）；
-    2. 海报、表情雪碧图改成 data URI，页面不再发外部请求；
-    3. 底部两张外链小图换成 CSS 图形（那两张图原本也是内联 base64，没必要搬）。
+  由 img/bangumi.vue 改写而来，历经两步：
+    1. satori 时代拆成「HTML + Vue 运行时模板」，模板里跑 Vue 做数据绑定；
+    2. 现在改成**纯 HTML 模板**：数据由出图插件在 Rust 侧绑好再送进渲染器，
+       页面零 JS、零运行时，字段写错会在出图前直接报错。
+  模板结构、样式数值与当年的 bangumi.vue 保持一致；海报、表情雪碧图是 data URI，
+  页面不发任何外部请求。
 
-  占位符（由 anime-shot 注入）：
-    <!--__VUE_RUNTIME__-->  → Vue 3 全局构建
-    __IMAGE_DATA__         → 卡片数据 JSON
+  头部那些工具类（.flex / .font-bold / .items-center……）就是原来的 Tailwind 类名，
+  以前没人给它们写样式，字重和居中一直是丢的，这次补上真样式，布局才算回到 TS 版的样子。
 -->
 <html lang="zh-CN">
 <head>
@@ -29,15 +29,29 @@
     font-family: "Noto Sans SC", "Microsoft YaHei", "PingFang SC", sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  #app { width: 1000px; height: 550px; }
   * { box-sizing: border-box; }
+
+  /* 工具类：对应模板里沿用的 Tailwind 类名 */
+  .flex { display: flex; }
+  .flex-row { flex-direction: row; }
+  .flex-col { flex-direction: column; }
+  .flex-wrap { flex-wrap: wrap; }
+  .items-center { align-items: center; }
+  .items-baseline { align-items: baseline; }
+  .items-end { align-items: flex-end; }
+  .justify-center { justify-content: center; }
+  .justify-end { justify-content: flex-end; }
+  .justify-between { justify-content: space-between; }
+  .w-full { width: 100%; }
+  .h-full { height: 100%; }
+  .m-0 { margin: 0; }
+  .p-0 { padding: 0; }
+  .font-bold { font-weight: 700; }
+  .font-semibold { font-weight: 600; }
+  .font-medium { font-weight: 500; }
 </style>
-<!--__VUE_RUNTIME__-->
 </head>
 <body>
-<div id="app"></div>
-
-<script type="text/x-template" id="card-template">
   <div class="flex flex-col w-full h-full bg-white"
        style="display: flex; flex-direction: column; position: relative; font-family: 'Noto Sans SC', sans-serif; padding: 24px; box-sizing: border-box; justify-content: space-between; width: 1000px; height: 550px;">
 
@@ -47,16 +61,18 @@
       <div class="flex flex-col" style="display: flex; flex-direction: column; min-width: 0; flex: 1;">
         <div class="flex flex-row items-center" style="display: flex;">
           <span class="font-bold m-0 p-0"
-                style="font-size: 24px; color: #1f1f1f; line-height: 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 620px;">{{ name_cn || name }}</span>
-          <span v-if="platform" class="font-bold m-0 p-0"
+                style="font-size: 24px; color: #1f1f1f; line-height: 30px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 620px;">{{ title }}</span>
+          {{#if platform}}
+          <span class="font-bold m-0 p-0"
                 style="font-size: 10px; color: #ff5c9d; background-color: rgba(255,92,157,0.08); border: 1.5px solid rgba(255,92,157,0.2); border-radius: 4px; padding: 1px 6px; margin-left: 10px; white-space: nowrap;">{{ platform }}</span>
+          {{/if}}
         </div>
         <span class="m-0 p-0"
               style="font-size: 11px; color: #8c8c8c; font-weight: 400; line-height: 14px; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 620px;">{{ name }}</span>
       </div>
       <div class="flex flex-row items-center"
            style="display: flex; border: 1.5px solid #b7eb8f; background-color: #f6ffed; border-radius: 6px; padding: 4px 10px; white-space: nowrap;">
-        <span class="font-semibold m-0 p-0" style="font-size: 11px; color: #389e0d;">放送开始：{{ infoboxMap['放送开始'] || date }}</span>
+        <span class="font-semibold m-0 p-0" style="font-size: 11px; color: #389e0d;">放送开始：{{ date }}</span>
       </div>
     </div>
 
@@ -68,20 +84,24 @@
            style="display: flex; flex-direction: column; width: 230px; height: 100%; justify-content: space-between; border-right: 1.5px dashed #f0f0f0; padding-right: 20px; box-sizing: border-box;">
         <div class="flex"
              style="display: flex; width: 210px; height: 290px; border-radius: 12px; overflow: hidden; background-color: #f5f5f5; border: 1.5px solid #e8e8e8;">
-          <img v-if="poster" :src="poster" style="width: 210px; height: 290px; object-fit: cover;" alt="Poster">
-          <div v-else style="display: flex; width: 210px; height: 290px; align-items: center; justify-content: center; font-size: 12px; color: #bfbfbf;">暂无封面</div>
+          {{#if poster}}
+          <img src="{{ poster }}" style="width: 210px; height: 290px; object-fit: cover;" alt="Poster">
+          {{else}}
+          <div style="display: flex; width: 210px; height: 290px; align-items: center; justify-content: center; font-size: 12px; color: #bfbfbf;">暂无封面</div>
+          {{/if}}
         </div>
 
         <div class="flex flex-col"
              style="display: flex; flex-direction: column; background-color: #fafafa; border-radius: 8px; padding: 8px; border: 1px solid #f0f0f0; margin-top: 8px;">
           <div class="flex flex-row flex-wrap w-full" style="display: flex; flex-wrap: wrap;">
-            <div v-for="item in displayStaff" :key="item.key" class="flex flex-col"
-                 style="display: flex; flex-direction: column; width: 50%; margin-bottom: 4px;"
-                 :style="(item.align === 'right' ? 'align-items: flex-end;' : '') + '; display: flex; flex-direction: column;'">
-              <span class="m-0 p-0" style="font-size: 9px; color: #bfbfbf;">{{ item.key }}</span>
+            {{#each displayStaff}}
+            <div class="flex flex-col"
+                 style="display: flex; flex-direction: column; width: 50%; margin-bottom: 4px;{{#if align_right}} align-items: flex-end;{{/if}}">
+              <span class="m-0 p-0" style="font-size: 9px; color: #bfbfbf;">{{ key }}</span>
               <span class="font-medium m-0 p-0"
-                    style="font-size: 10px; color: #434343; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 100px;">{{ item.value || '-' }}</span>
+                    style="font-size: 10px; color: #434343; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 100px;">{{ value_fmt }}</span>
             </div>
+            {{/each}}
           </div>
         </div>
       </div>
@@ -95,40 +115,30 @@
               <span class="font-bold m-0 p-0"
                     style="font-size: 13px; color: #595959; border-left: 3px solid #ff5c9d; padding-left: 6px;">章节列表</span>
               <div class="flex flex-row" style="display: flex; margin-left: 8px;">
-                <div v-for="p in Math.max(1, Math.ceil(episodes.length / episodesPerPage))" :key="p"
-                     class="flex flex-row items-center justify-center"
-                     style="display: flex; height: 18px; padding: 0 6px; border-radius: 4px; margin-right: 4px; box-sizing: border-box;"
-                     :style="{
-                       backgroundColor: (p - 1) === activePageIdx ? '#ff5c9d' : '#f0f0f0',
-                       border: (p - 1) === activePageIdx ? '1px solid #ff5c9d' : '1px solid #d9d9d9'
-                     }">
-                  <span class="m-0 p-0" style="font-size: 9px; padding: 0 2px;"
-                        :style="{
-                          color: (p - 1) === activePageIdx ? '#ffffff' : '#595959',
-                          fontWeight: (p - 1) === activePageIdx ? '700' : '400'
-                        }">{{ String((p - 1) * episodesPerPage + 1).padStart(2, '0') }}-{{ String(Math.min(p * episodesPerPage, episodes.length)).padStart(2, '0') }}</span>
+                {{#each pages}}
+                <div class="flex flex-row items-center justify-center"
+                     style="display: flex; height: 18px; padding: 0 6px; border-radius: 4px; margin-right: 4px; box-sizing: border-box;{{#if active}} background-color: #ff5c9d; border: 1px solid #ff5c9d;{{else}} background-color: #f0f0f0; border: 1px solid #d9d9d9;{{/if}}">
+                  <span class="m-0 p-0"
+                        style="font-size: 9px; padding: 0 2px;{{#if active}} color: #ffffff; font-weight: 700;{{else}} color: #595959; font-weight: 400;{{/if}}">{{ label }}</span>
                 </div>
+                {{/each}}
               </div>
             </div>
-            <span class="font-medium m-0 p-0" style="font-size: 10px; color: #8c8c8c;">进度: {{ airedCount }}/{{ episodes.length }}</span>
+            <span class="font-medium m-0 p-0" style="font-size: 10px; color: #8c8c8c;">进度: {{ airedCount }}/{{ total_episodes }}</span>
           </div>
 
           <div class="flex flex-row flex-wrap"
                style="display: flex; flex-wrap: wrap; width: 400px; height: 120px; align-content: flex-start;">
-            <div v-for="ep in pageEpisodes" :key="ep.sort"
-                 class="flex flex-row items-center justify-center"
-                 style="display: flex; width: 34px; height: 34px; border-radius: 6px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box;"
-                 :style="{
-                   backgroundColor: ep.sort <= currentEpNum ? 'rgba(255,92,157,0.06)' : '#f5f5f5',
-                   border: ep.sort <= currentEpNum ? '1.5px solid #ff5c9d' : '1.5px solid #e8e8e8'
-                 }">
-              <span class="m-0 p-0" style="font-size: 13px;"
-                    :style="{
-                      color: ep.sort <= currentEpNum ? '#ff5c9d' : '#8c8c8c',
-                      fontWeight: ep.sort <= currentEpNum ? '600' : '400'
-                    }">{{ ep.sort < 10 ? '0' + ep.sort : ep.sort }}</span>
+            {{#each pageEpisodes}}
+            <div class="flex flex-row items-center justify-center"
+                 style="display: flex; width: 34px; height: 34px; border-radius: 6px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box;{{#if aired}} background-color: rgba(255,92,157,0.06); border: 1.5px solid #ff5c9d;{{else}} background-color: #f5f5f5; border: 1.5px solid #e8e8e8;{{/if}}">
+              <span class="m-0 p-0"
+                    style="font-size: 13px;{{#if aired}} color: #ff5c9d; font-weight: 600;{{else}} color: #8c8c8c; font-weight: 400;{{/if}}">{{ sort_fmt }}</span>
             </div>
-            <div v-for="n in emptySlots" :key="'empty-' + n" style="display: flex; width: 34px; height: 34px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box; opacity: 0;"></div>
+            {{/each}}
+            {{#each emptySlots}}
+            <div style="display: flex; width: 34px; height: 34px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box; opacity: 0;"></div>
+            {{/each}}
           </div>
         </div>
 
@@ -137,38 +147,40 @@
              style="display: flex; background-color: rgba(255,92,157,0.03); border: 1px solid rgba(255,92,157,0.12); border-radius: 8px; padding: 8px 14px; margin-bottom: 10px; box-sizing: border-box; width: 430px; justify-content: space-between;">
           <div class="flex flex-col"
                style="display: flex; flex-direction: column; width: 195px; border-right: 1px dashed rgba(255,92,157,0.12); padding-right: 10px; box-sizing: border-box;">
-            <span class="m-0 p-0" style="font-size: 10px; color: #8c8c8c; margin-bottom: 2px; font-weight: 500;">当前进度 第 <span style="color: #ff5c9d; font-weight: bold;">{{ currentEpNum || '-' }}</span> 话</span>
-            <span class="m-0 p-0" style="font-size: 11px; color: #262626; font-weight: 600; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ currentEpAirDate || '' }} <span v-if="currentEpName" style="font-size: 9px; color: #8c8c8c; font-family: 'Noto Sans SC', sans-serif;">{{ currentEpName }}</span></span>
+            <span class="m-0 p-0" style="font-size: 10px; color: #8c8c8c; margin-bottom: 2px; font-weight: 500;">当前进度 第 <span style="color: #ff5c9d; font-weight: bold;">{{ currentEpNum_fmt }}</span> 话</span>
+            <span class="m-0 p-0" style="font-size: 11px; color: #262626; font-weight: 600; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ currentEpAirDate }}{{#if currentEpName}} <span style="font-size: 9px; color: #8c8c8c; font-family: 'Noto Sans SC', sans-serif;">{{ currentEpName }}</span>{{/if}}</span>
           </div>
           <div class="flex flex-col" style="display: flex; flex-direction: column; width: 195px; padding-left: 10px; box-sizing: border-box;">
-            <template v-if="airedCount >= episodes.length">
-              <span class="m-0 p-0" style="font-size: 12px; color: #ff5c9d; font-weight: 700; letter-spacing: 1px;">已完结</span>
-              <span class="m-0 p-0" style="font-size: 10px; color: #8c8c8c; margin-top: 2px;">共 {{ episodes.length }} 话</span>
-            </template>
-            <template v-else>
-              <span class="m-0 p-0" style="font-size: 10px; color: #8c8c8c; margin-bottom: 2px; font-weight: 500;">下一集预定 第 <span style="color: #ff5c9d; font-weight: bold;">{{ nextEpNum || '-' }}</span> 话</span>
-              <span class="m-0 p-0" style="font-size: 11px; color: #ff5c9d; font-weight: 600; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ nextEpAirDate || '' }} <span v-if="nextEpName" style="font-size: 9px; color: #8c8c8c; font-family: 'Noto Sans SC', sans-serif;">{{ nextEpName }}</span></span>
-            </template>
+            {{#if finished}}
+            <span class="m-0 p-0" style="font-size: 12px; color: #ff5c9d; font-weight: 700; letter-spacing: 1px;">已完结</span>
+            <span class="m-0 p-0" style="font-size: 10px; color: #8c8c8c; margin-top: 2px;">共 {{ total_episodes }} 话</span>
+            {{else}}
+            <span class="m-0 p-0" style="font-size: 10px; color: #8c8c8c; margin-bottom: 2px; font-weight: 500;">下一集预定 第 <span style="color: #ff5c9d; font-weight: bold;">{{ nextEpNum_fmt }}</span> 话</span>
+            <span class="m-0 p-0" style="font-size: 11px; color: #ff5c9d; font-weight: 600; font-family: monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ nextEpAirDate }}{{#if nextEpName}} <span style="font-size: 9px; color: #8c8c8c; font-family: 'Noto Sans SC', sans-serif;">{{ nextEpName }}</span>{{/if}}</span>
+            {{/if}}
           </div>
         </div>
 
         <!-- 其他集数 -->
-        <div v-if="otherEpisodes.length > 0" class="flex flex-col" style="display: flex; flex-direction: column; margin-bottom: 6px;">
+        {{#if otherEpisodes}}
+        <div class="flex flex-col" style="display: flex; flex-direction: column; margin-bottom: 6px;">
           <span class="font-bold m-0 p-0"
                 style="font-size: 13px; color: #595959; border-left: 3px solid #52c41a; padding-left: 6px; margin-bottom: 6px;">其他集数</span>
           <div class="flex flex-row flex-wrap" style="display: flex; flex-wrap: wrap; align-content: flex-start; max-height: 70px; overflow: hidden;">
-            <template v-for="group in otherEpisodes" :key="'g-' + group.type">
-              <div style="display: flex; width: 1.5px; height: 24px; margin-right: 6px; margin-bottom: 6px; border-radius: 1px; background-color: #b7eb8f; flex-shrink: 0;"></div>
-              <span class="font-bold m-0 p-0"
-                    style="font-size: 11px; color: #52c41a; line-height: 24px; height: 24px; margin-right: 6px; margin-bottom: 6px;">{{ group.label }}</span>
-              <div v-for="ep in group.episodes" :key="ep.id"
-                   class="flex flex-row items-center justify-center"
-                   style="display: flex; width: 26px; height: 26px; border-radius: 5px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box; background-color: #f5f5f5; border: 1.5px solid #e8e8e8;">
-                <span class="m-0 p-0" style="font-size: 11px; font-weight: 500; color: #8c8c8c;">{{ ep.sort < 10 ? '0' + ep.sort : ep.sort }}</span>
-              </div>
-            </template>
+            {{#each otherEpisodes}}
+            <div style="display: flex; width: 1.5px; height: 24px; margin-right: 6px; margin-bottom: 6px; border-radius: 1px; background-color: #b7eb8f; flex-shrink: 0;"></div>
+            <span class="font-bold m-0 p-0"
+                  style="font-size: 11px; color: #52c41a; line-height: 24px; height: 24px; margin-right: 6px; margin-bottom: 6px;">{{ label }}</span>
+            {{#each episodes}}
+            <div class="flex flex-row items-center justify-center"
+                 style="display: flex; width: 26px; height: 26px; border-radius: 5px; margin-right: 6px; margin-bottom: 6px; box-sizing: border-box; background-color: #f5f5f5; border: 1.5px solid #e8e8e8;">
+              <span class="m-0 p-0" style="font-size: 11px; font-weight: 500; color: #8c8c8c;">{{ sort_fmt }}</span>
+            </div>
+            {{/each}}
+            {{/each}}
           </div>
         </div>
+        {{/if}}
 
         <!-- 标签 -->
         <div class="flex flex-col" style="display: flex; flex-direction: column;">
@@ -176,29 +188,31 @@
                 style="font-size: 13px; color: #595959; border-left: 3px solid #ff5c9d; padding-left: 6px; margin-bottom: 6px;">热门标签</span>
           <div class="flex flex-row flex-wrap"
                style="display: flex; flex-wrap: wrap; max-height: 80px; overflow: hidden; align-content: flex-start;">
-            <div v-for="(tag, idx) in tags.slice(0, 12)" :key="idx" class="flex flex-row items-center"
-                 style="display: flex; border-radius: 9999px; padding: 2px 10px; margin-right: 6px; margin-bottom: 5px; height: 22px; box-sizing: border-box;"
-                 :style="{
-                   backgroundColor: idx === 0 ? 'rgba(255,92,157,0.06)' : '#fbfbfb',
-                   border: idx === 0 ? '1.5px solid rgba(255,92,157,0.2)' : '1.5px solid #d9d9d9'
-                 }">
-              <span class="font-medium m-0 p-0" style="font-size: 11px; line-height: 12px;"
-                    :style="{ color: idx === 0 ? '#ff5c9d' : '#595959' }">{{ tag.name }}</span>
+            {{#each tags}}
+            <div class="flex flex-row items-center"
+                 style="display: flex; border-radius: 9999px; padding: 2px 10px; margin-right: 6px; margin-bottom: 5px; height: 22px; box-sizing: border-box;{{#if @first}} background-color: rgba(255,92,157,0.06); border: 1.5px solid rgba(255,92,157,0.2);{{else}} background-color: #fbfbfb; border: 1.5px solid #d9d9d9;{{/if}}">
+              <span class="font-medium m-0 p-0"
+                    style="font-size: 11px; line-height: 12px;{{#if @first}} color: #ff5c9d;{{else}} color: #595959;{{/if}}">{{ name }}</span>
             </div>
+            {{/each}}
           </div>
         </div>
 
         <!-- 字幕组 -->
-        <div v-if="fansubs && fansubs.length > 0" class="flex flex-col" style="display: flex; flex-direction: column; margin-top: 6px;">
+        {{#if fansubs}}
+        <div class="flex flex-col" style="display: flex; flex-direction: column; margin-top: 6px;">
           <span class="font-bold m-0 p-0"
                 style="font-size: 13px; color: #595959; border-left: 3px solid #52c41a; padding-left: 6px; margin-bottom: 6px;">字幕组</span>
           <div class="flex flex-row flex-wrap" style="display: flex; flex-wrap: wrap; align-content: flex-start; max-height: 54px; overflow: hidden;">
-            <div v-for="(fansub, idx) in fansubs" :key="idx" class="flex flex-row items-center"
+            {{#each fansubs}}
+            <div class="flex flex-row items-center"
                  style="display: flex; border-radius: 9999px; padding: 2px 10px; margin-right: 6px; margin-bottom: 5px; height: 22px; box-sizing: border-box; background-color: rgba(82,196,26,0.06); border: 1.5px solid rgba(82,196,26,0.2);">
-              <span class="font-medium m-0 p-0" style="font-size: 11px; line-height: 12px; color: #52c41a;">{{ fansub }}</span>
+              <span class="font-medium m-0 p-0" style="font-size: 11px; line-height: 12px; color: #52c41a;">{{ this }}</span>
             </div>
+            {{/each}}
           </div>
         </div>
+        {{/if}}
       </div>
 
       <!-- 右栏：评分 + 收藏 -->
@@ -208,13 +222,15 @@
              style="display: flex; flex-direction: column; background-color: #ffffff; border: 1.5px solid #f0f0f0; border-radius: 16px; padding: 12px 12px 10px; box-sizing: border-box; box-shadow: 0 4px 14px rgba(0,0,0,0.03);">
           <div class="flex flex-row items-center" style="display: flex; margin-bottom: 4px; position: relative;">
             <span class="m-0 p-0" style="position: absolute; top: -6px; right: 0; font-size: 9px; color: #bfbfbf; line-height: 9px;">{{ generatedAt }}</span>
-            <div :style="'display: flex; width: ' + (rateEmoW / 5) + 'px; height: ' + rateEmoH + 'px; margin-right: 8px; flex-shrink: 0; overflow: hidden;'">
-              <img :src="rateEmoDataUri"
-                   :style="'display: flex; width: ' + rateEmoW + 'px; height: ' + rateEmoH + 'px; max-width: none; flex-shrink: 0; margin-left: -' + (ratingEmojiIdx * rateEmoW / 5) + 'px;'" alt="">
+            {{#if rateEmoDataUri}}
+            <div style="display: flex; width: {{ rateEmoCellW }}px; height: {{ rateEmoH }}px; margin-right: 8px; flex-shrink: 0; overflow: hidden;">
+              <img src="{{ rateEmoDataUri }}"
+                   style="display: flex; width: {{ rateEmoW }}px; height: {{ rateEmoH }}px; max-width: none; flex-shrink: 0; margin-left: -{{ rateEmoOffset }}px;" alt="">
             </div>
+            {{/if}}
             <div class="flex flex-col justify-center" style="display: flex; flex-direction: column; justify-content: center;">
               <div class="flex flex-row items-baseline" style="display: flex; align-items: baseline;">
-                <span class="font-bold m-0 p-0" style="font-size: 20px; color: #ff5c9d; margin-right: 4px; line-height: 20px;">{{ rating.score.toFixed(1) }}</span>
+                <span class="font-bold m-0 p-0" style="font-size: 20px; color: #ff5c9d; margin-right: 4px; line-height: 20px;">{{ score_fmt }}</span>
                 <span class="font-bold m-0 p-0" style="font-size: 11px; color: #ff5c9d; line-height: 11px;">{{ ratingLabel }}</span>
               </div>
             </div>
@@ -226,14 +242,15 @@
             </div>
             <div class="flex flex-row w-full items-end justify-between"
                  style="display: flex; height: 70px; align-items: flex-end; justify-content: space-between;">
-              <div v-for="(pct, idx) in barPcts" :key="idx" class="flex flex-col items-center"
+              {{#each bars}}
+              <div class="flex flex-col items-center"
                    style="display: flex; flex-direction: column; align-items: center; width: 14px; height: 100%;">
                 <div style="flex: 1; min-height: 0; width: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center;">
-                  <div style="display: flex; width: 12px; border-radius: 2px 2px 0 0;"
-                       :style="'height: ' + pct + '%; ' + (idx === 10 - Math.round(rating.score) ? 'background-color: #ff5c9d;' : 'background-color: #a6a6a6;')"></div>
+                  <div style="display: flex; width: 12px; border-radius: 2px 2px 0 0; height: {{ pct }}%; {{#if highlight}}background-color: #ff5c9d;{{else}}background-color: #a6a6a6;{{/if}}"></div>
                 </div>
-                <span class="m-0 p-0" style="font-size: 8px; color: #8c8c8c; font-weight: 400; line-height: 8px; margin-top: 3px;">{{ 10 - idx }}</span>
+                <span class="m-0 p-0" style="font-size: 8px; color: #8c8c8c; font-weight: 400; line-height: 8px; margin-top: 3px;">{{ label }}</span>
               </div>
+              {{/each}}
             </div>
           </div>
         </div>
@@ -289,41 +306,5 @@
     </div>
     <div style="position: absolute; bottom: 0; left: 0; right: 0; height: 4px; background-color: #ff5c9d;"></div>
   </div>
-</script>
-
-<script id="image-data" type="application/json">__IMAGE_DATA__</script>
-<script>
-  (function () {
-    var payload = JSON.parse(document.getElementById('image-data').textContent);
-    var app = Vue.createApp({
-      template: '#card-template',
-      data: function () {
-        return payload;
-      },
-      computed: {
-        pageEpisodes: function () {
-          var start = this.activePageIdx * this.episodesPerPage;
-          return this.episodes.slice(start, start + this.episodesPerPage);
-        },
-        emptySlots: function () {
-          var start = this.activePageIdx * this.episodesPerPage;
-          var used = Math.min(Math.max(0, this.episodes.length - start), this.episodesPerPage);
-          return Math.max(0, this.episodesPerPage - used);
-        }
-      },
-      mounted: function () {
-        // 渲染完成后再等一帧，确保布局与字体都稳定，截图不会截到半成品。
-        var self = this;
-        requestAnimationFrame(function () {
-          requestAnimationFrame(function () {
-            window.__READY__ = true;
-            void self;
-          });
-        });
-      }
-    });
-    app.mount('#app');
-  })();
-</script>
 </body>
 </html>

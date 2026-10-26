@@ -73,15 +73,9 @@ fn render(ultra: Option<&Ultra>, renderer: Option<Handle>, request: RenderReques
     };
     let started = Instant::now();
 
-    let html = match (&request.html, &request.template) {
-        (Some(html), _) => html.clone(),
-        (None, Some(name)) => {
-            match compose_template(name, &request.data, request.template_dir.as_deref()) {
-                Ok(html) => html,
-                Err(err) => return Response::error(err.to_string()),
-            }
-        }
-        (None, None) => return Response::error("必须给 template 或 html"),
+    let html = match compose_html(&request) {
+        Ok(html) => html,
+        Err(err) => return Response::error(err.to_string()),
     };
 
     match ultra.render_html(
@@ -173,13 +167,32 @@ fn default_out(format: &str) -> PathBuf {
     std::env::temp_dir().join(format!("image-shot-{stamp}.{ext}"))
 }
 
-/// 把模板、Vue 运行时、数据拼成一份自包含 HTML。
+/// 把请求里的「HTML 或 模板 + 数据」合成最终要渲染的 HTML。
+///
+/// - `html` + `data`：把 `html` 当模板绑一遍（插件内嵌模板文本就是走这条）；
+/// - 只有 `html`：调用方已绑定完，原样渲染；
+/// - `template` + `data`：读 `template_dir/<name>.html` 再绑定。
+fn compose_html(request: &RenderRequest) -> Result<String> {
+    match (&request.html, &request.template) {
+        (Some(html), _) => {
+            if request.data.is_null() {
+                Ok(html.clone())
+            } else {
+                crate::template::render(html, &request.data).map_err(Error::Template)
+            }
+        }
+        (None, Some(name)) => {
+            compose_template(name, &request.data, request.template_dir.as_deref())
+        }
+        (None, None) => Err(Error::Render("必须给 template 或 html".to_owned())),
+    }
+}
+
+/// 读模板文件、把数据绑进去，得到最终 HTML。
 ///
 /// `dir` 为空时用本 crate 的 `templates/`（只有 demo，业务模板必须自己传路径）。
-///
-/// 全部内联（而不是 `file://` + 相对路径）有两个好处：
-/// 1. 不依赖 `ulEnablePlatformFileSystem` 的 base_dir 语义，换目录不会白屏；
-/// 2. 页面没有外部请求，`ulViewIsSettled()` 的判定更干脆。
+/// 绑定走 [`crate::template`]（mustache 子集）：进渲染器的就是最终页面，
+/// 没有 Vue / JS 运行时，也没有 `__READY__` 之类的就绪协议。
 pub fn compose_template(
     name: &str,
     data: &serde_json::Value,
@@ -202,24 +215,7 @@ pub fn compose_template(
         source,
     })?;
 
-    let vue =
-        std::fs::read_to_string(assets_dir().join("vue.global.prod.js")).map_err(|source| {
-            Error::Io {
-                path: "assets/vue.global.prod.js".to_string(),
-                source,
-            }
-        })?;
-
-    // JSON 里的 `<` 转义掉，避免数据里出现 `</script>` 把脚本块提前闭合。
-    let json = serde_json::to_string(data)
-        .map_err(|err| Error::Render(err.to_string()))?
-        .replace('<', "\\u003c");
-
-    Ok(html
-        .replace("<!--__VUE_RUNTIME__-->", &format!("<script>{vue}</script>"))
-        .replace("__IMAGE_DATA__", &json)
-        // 兼容早期用 `__ANIME_DATA__` 写的模板。
-        .replace("__ANIME_DATA__", &json))
+    crate::template::render(&html, data).map_err(Error::Template)
 }
 
 /// 本 crate 自带的模板目录（只有 demo；业务模板由调用方通过 `template_dir` 指定）。
@@ -240,19 +236,6 @@ pub fn templates_dir() -> Option<PathBuf> {
     candidates.into_iter().find(|dir| dir.is_dir())
 }
 
-pub fn assets_dir() -> PathBuf {
-    if let Some(manifest) = option_env!("CARGO_MANIFEST_DIR") {
-        let dir = Path::new(manifest).join("assets");
-        if dir.is_dir() {
-            return dir;
-        }
-    }
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("assets")))
-        .unwrap_or_else(|| PathBuf::from("assets"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,17 +248,45 @@ mod tests {
     }
 
     #[test]
-    fn data_cannot_break_out_of_the_script_tag() {
+    fn data_is_html_escaped_so_it_cannot_break_the_page() {
         let dir = std::env::temp_dir().join("ugi-test-templates");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("t.html");
-        std::fs::write(&path, "<html><script>D=__IMAGE_DATA__</script></html>").unwrap();
+        std::fs::write(dir.join("t.html"), "<html><p>{{ x }}</p></html>").unwrap();
         let html =
-            compose_template("t", &serde_json::json!({"x": "</script><b>"}), Some(&dir)).unwrap();
+            compose_template("t", &serde_json::json!({"x": "</p><b>"}), Some(&dir)).unwrap();
         assert!(
-            !html.contains("</script><b>"),
-            "注入的 </script> 必须被转义：{html}"
+            !html.contains("</p><b>"),
+            "数据里的标签必须被转义：{html}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 修复回归：html + data 也必须做绑定（插件内嵌模板文本走的就是这条路）。
+    #[test]
+    fn html_with_data_is_bound_like_a_template() {
+        let request = RenderRequest {
+            html: Some("<html>{{ title }}</html>".to_owned()),
+            data: serde_json::json!({ "title": "芙莉莲" }),
+            ..Default::default()
+        };
+        let html = compose_html(&request).unwrap();
+        assert_eq!(html, "<html>芙莉莲</html>");
+    }
+
+    #[test]
+    fn html_without_data_is_final_and_passes_through() {
+        let request = RenderRequest::html("<html>已是最终页面</html>", "x.jpg");
+        let html = compose_html(&request).unwrap();
+        assert_eq!(html, "<html>已是最终页面</html>");
+    }
+
+    #[test]
+    fn template_missing_field_fails_before_rendering() {
+        let dir = std::env::temp_dir().join("ugi-test-templates2");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("t.html"), "<html>{{ title }}</html>").unwrap();
+        let err = compose_template("t", &serde_json::json!({}), Some(&dir)).unwrap_err();
+        assert!(err.to_string().contains("title"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

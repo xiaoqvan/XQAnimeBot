@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 /// // 1) 直接给整段 HTML —— 调用方自己负责数据绑定
 /// RenderRequest::html(full_html, out)
 ///
-/// // 2) 给模板目录 + 模板名 + 数据 —— 渲染器注入 Vue 运行时与数据
+/// // 2) 给模板 + 数据 —— 渲染器把数据绑进模板占位符（纯 HTML，无 JS）
 /// RenderRequest::template("bangumi-card", payload, out)
 ///     .with_template_dir(".../assets/templates")
 /// ```
@@ -32,7 +32,8 @@ pub struct RenderRequest {
     pub template: Option<String>,
     /// 模板目录。业务插件应当显式给，这样渲染器不必认识任何业务。
     pub template_dir: Option<PathBuf>,
-    /// 注入模板的数据（替换 `__IMAGE_DATA__` 占位符）。
+    /// 绑定进模板的数据（对上模板里的字段占位符）。
+    /// 给了 `data`，`html` 也会被当成模板绑一遍；不给就是最终 HTML 原样渲染。
     pub data: Value,
     /// 输出路径。TDLib 只接受本地路径，所以结果必须落盘。
     /// 渲染器侧可以省略（写临时目录），插件侧要求必填。
@@ -48,6 +49,8 @@ pub struct RenderRequest {
     /// JPEG 质量 1..=100。
     pub quality: u8,
     /// 页面就绪判定的 JS 表达式（求值为 `true` 才截图）。
+    /// 纯 HTML 模板没有异步动作，留空即可（渲染器等页面 settled 就截）；
+    /// 只有模板自带 JS 动画 / 异步加载时才需要传。
     pub ready_expr: Option<String>,
     /// 渲染超时（毫秒）。
     pub timeout_ms: u64,
@@ -67,7 +70,8 @@ impl Default for RenderRequest {
             scale: 2.0,
             format: "jpeg".to_owned(),
             quality: 90,
-            ready_expr: Some("window.__READY__ === true".to_owned()),
+            // 纯 HTML 模板没东西要等；带 JS 的模板自己传 ready_expr。
+            ready_expr: None,
             timeout_ms: 15_000,
         }
     }
@@ -79,7 +83,7 @@ impl RenderRequest {
         Self {
             html: Some(html.into()),
             out: Some(out.into()),
-            // 没有模板就没有注入点，别等 `__READY__`。
+            // 最终页面通常没有 JS，没什么要等的。
             ready_expr: None,
             ..Default::default()
         }

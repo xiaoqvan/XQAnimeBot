@@ -1,3 +1,6 @@
+// to_html_payload 的 json! 字面量有几十个键，serde_json 宏递归默认深度不够用。
+#![recursion_limit = "512"]
+
 //! 动漫插件的**领域层**：只做业务，不认识宿主、也不认识 TDLib。
 //!
 //! 分层是刻意的：
