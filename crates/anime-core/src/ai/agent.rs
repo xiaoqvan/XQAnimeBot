@@ -34,8 +34,14 @@ use crate::bangumi::{AnimeCandidate, BgmTools};
 use crate::rss::Http;
 use crate::Result;
 
-/// Agent 请求超时。工具循环最多 15 轮，单轮给 60 秒。
-const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// Agent 请求超时。工具循环最多 15 轮，带推理的模型单轮就可能二三十秒，给宽一些。
+const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Agent 用的 UA。
+///
+/// **不能用 `Http` 的默认浏览器 UA**：OpenRouter 一类 OpenAI 兼容网关会按 UA 判断
+/// 调用方，带浏览器 UA 的请求实测被挡（502）。这里给一个可识别的自报家门 UA。
+const AGENT_UA: &str = "XQAnimeBot/1.0 (https://github.com/xiaoqvan/XQAnimeBot)";
 
 /// `llmDecision` 的迭代上限（TS 的同名常量是 15）。
 const MAX_DECISION_ITERATIONS: usize = 15;
@@ -45,6 +51,27 @@ const MAX_EPISODE_ITERATIONS: usize = 8;
 
 /// 工具调用时的采样温度。匹配要稳定，别让模型发挥。
 const TEMPERATURE: f64 = 0.1;
+
+/// 单次 Responses 请求最多试几次（TS 的 `retryRequest` 也是 3 次）。
+const MAX_ATTEMPTS: usize = 3;
+
+/// 重试间隔：递增，避免连续三次都撞在限流窗口里。
+const RETRY_BACKOFF: [std::time::Duration; 2] = [
+    std::time::Duration::from_secs(3),
+    std::time::Duration::from_secs(10),
+];
+
+/// 这个失败值得重试吗？
+///
+/// 只有「连接层失败」和「限流 / 网关抖动」值得；认证与参数错误重试无益。
+fn is_retryable(error: &crate::Error) -> bool {
+    match error {
+        crate::Error::HttpStatused { status, .. } => *status == 0 || *status == 429 || *status >= 500,
+        // 旧路径（拿不到状态码）一律重试：宁可多等一次，也别把抖动当失败。
+        crate::Error::Http { .. } => true,
+        _ => false,
+    }
+}
 
 /// 匹配输入（TS 的 `bangumiAgent.ts::animeItem`）。
 #[derive(Debug, Clone, Default)]
@@ -308,7 +335,7 @@ impl BangumiAgent {
         Self {
             config,
             tools,
-            http: Http::new(TIMEOUT),
+            http: Http::with_user_agent(AGENT_UA, TIMEOUT),
         }
     }
 
@@ -571,7 +598,17 @@ impl BangumiAgent {
         None
     }
 
-    /// 调一次 Responses API。
+    /// 调一次 Responses API，**带重试**。
+    ///
+    /// 为什么要重试：实测 OpenRouter 上的免费模型会间歇性 502（同一条请求前一次
+    /// 成功、后一次失败），网关限流也常见。匹配请求是只读的，重试没有副作用。
+    ///
+    /// 哪些失败值得重试（TS 的 `retryRequest` 是 3 次 / 间隔 10 秒，这里同次数但
+    /// 间隔递增，避免连续三次都撞在限流窗口里）：
+    /// - 连接层失败（状态码 0）；
+    /// - 429 限流、5xx 网关抖动。
+    ///
+    /// **不重试**：401/403（key 错了，重试只是白等）、400（请求体有问题）。
     fn responses(&self, instructions: &str, input: &[Value]) -> Result<Value> {
         let url = format!(
             "{}/responses",
@@ -584,8 +621,26 @@ impl BangumiAgent {
             "tools": tool_definitions(),
             "temperature": TEMPERATURE,
         });
-        self.http
-            .post_json_auth(&url, &body, Some(&self.config.api_key))
+
+        let mut last_error = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            match self
+                .http
+                .post_json_auth_statused(&url, &body, Some(&self.config.api_key))
+            {
+                Ok((_, value)) => return Ok(value),
+                Err(error) => {
+                    if !is_retryable(&error) {
+                        return Err(error);
+                    }
+                    if attempt + 1 < MAX_ATTEMPTS {
+                        std::thread::sleep(RETRY_BACKOFF[attempt]);
+                    }
+                    last_error = Some(error);
+                }
+            }
+        }
+        Err(last_error.expect("循环至少跑一次，这里必然有值"))
     }
 
     /// 执行一个工具调用，返回给模型的字符串结果。
@@ -980,6 +1035,39 @@ mod tests {
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].name, "searchAnimeCandidates");
         assert_eq!(extract_output_text(&response), "最终结果");
+    }
+
+    #[test]
+    fn retry_policy_targets_only_transient_failures() {
+        use crate::Error;
+        // 连接层失败（没拿到响应）：重试。
+        assert!(is_retryable(&Error::HttpStatused {
+            url: "u".to_owned(),
+            status: 0,
+            source: Box::new(ureq::Error::StatusCode(0)),
+        }));
+        // 限流与网关抖动：重试。
+        for status in [429, 500, 502, 503] {
+            assert!(
+                is_retryable(&Error::HttpStatused {
+                    url: "u".to_owned(),
+                    status,
+                    source: Box::new(ureq::Error::StatusCode(status)),
+                }),
+                "{status} 应当重试"
+            );
+        }
+        // 认证与参数错误：不重试，重试只是白等。
+        for status in [400, 401, 403, 404] {
+            assert!(
+                !is_retryable(&Error::HttpStatused {
+                    url: "u".to_owned(),
+                    status,
+                    source: Box::new(ureq::Error::StatusCode(status)),
+                }),
+                "{status} 不该重试"
+            );
+        }
     }
 
     #[test]

@@ -41,8 +41,18 @@ impl Default for Http {
 
 impl Http {
     pub fn new(timeout: Duration) -> Self {
+        Self::with_user_agent(UA, timeout)
+    }
+
+    /// 用**自定义 UA** 建客户端。
+    ///
+    /// 为什么需要：默认 UA 是浏览器 UA（RSS 源靠它放行），但 OpenAI 兼容的 API
+    /// （OpenRouter 等）会按 UA 判断调用方，带浏览器 UA 的请求会被挡掉（实测 502）。
+    /// Bangumi 自己也要求带可识别 UA。这类调用方应当建一个自己的 `Http`，别去改
+    /// 全局默认——改了会让 RSS 源开始 403。
+    pub fn with_user_agent(user_agent: &str, timeout: Duration) -> Self {
         let config = Agent::config_builder()
-            .user_agent(UA)
+            .user_agent(user_agent)
             .timeout_global(Some(timeout))
             .max_redirects(5)
             .build();
@@ -120,6 +130,21 @@ impl Http {
 
     /// 带 Bearer 的 POST（OpenAI 兼容接口用）。`token` 为空等价于不带。
     pub fn post_json_auth(&self, url: &str, body: &Value, token: Option<&str>) -> Result<Value> {
+        self.post_json_auth_statused(url, body, token)
+            .map(|(_, value)| value)
+    }
+
+    /// 同 [`Self::post_json_auth`]，但把 HTTP 状态码一并返回。
+    ///
+    /// 为什么需要：调用方要按状态码决定「值不值得重试」。网关类错误（429 限流、
+    /// 502/503 抖动）重试一次往往就过了，而 401/400 重试只是白等。
+    /// [`crate::Error::Http`] 里只有 `ureq::Error`，没有状态码可用。
+    pub fn post_json_auth_statused(
+        &self,
+        url: &str,
+        body: &Value,
+        token: Option<&str>,
+    ) -> Result<(u16, Value)> {
         let payload = serde_json::to_string(body).map_err(|err| Error::Parse {
             what: "请求体",
             message: err.to_string(),
@@ -131,17 +156,26 @@ impl Http {
         if let Some(token) = token.filter(|token| !token.trim().is_empty()) {
             request = request.header("Authorization", &format!("Bearer {token}"));
         }
-        let response = request
-            .send(payload.as_str())
-            .map_err(|source| Error::Http {
+        let response = request.send(payload.as_str()).map_err(|source| {
+            // 4xx/5xx 在 ureq 里也走 Err（`Error::StatusCode`）。调用方要按码判断
+            // 是否重试，所以这里把码从 source 里挖出来，而不是丢给上层猜。
+            let status = match &source {
+                ureq::Error::StatusCode(code) => *code,
+                _ => 0,
+            };
+            Error::HttpStatused {
                 url: url.to_owned(),
+                status,
                 source: Box::new(source),
-            })?;
+            }
+        })?;
+        let status = response.status().as_u16();
         let text = read_body(response, url)?;
-        serde_json::from_str(&text).map_err(|err| Error::Parse {
+        let value = serde_json::from_str(&text).map_err(|err| Error::Parse {
             what: "JSON 响应",
             message: format!("{url}：{err}"),
-        })
+        })?;
+        Ok((status, value))
     }
 }
 

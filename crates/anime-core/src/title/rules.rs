@@ -225,10 +225,62 @@ fn light_novel(title: &str) -> Vec<String> {
     second_bracket_filtered(title, r"^\d{1,3}$|END|GB|MP4|1080P|720P")
 }
 
+/// 喵萌奶茶屋。
+///
+/// ⚠️ **这里与 TS 当前在用的 `groupRules.ts` 不同**，采纳的是 TS 里已写好但还没接入
+/// 的 `utils/newGroupRules.ts`。原因：旧规则直接取**第一个**中括号，而喵萌的真实
+/// 标题是 `[喵萌奶茶屋] 葬送的芙莉莲 - 05 [...]`——第一个括号是**发布组自己**，
+/// 于是番名被解析成「喵萌奶茶屋」。实测后果：Agent 拿这个错误关键词去搜 Bangumi，
+/// 候选列表为空，只能靠模型自己从标题原文再搜一轮（多花一轮、且可能搜偏）。
+///
+/// 修正后的顺序：先剥掉开头的组标签 → 在剩下的括号里挑「不像技术参数的那个」→
+/// 仍没有就取第一个 `[` 之前的文本（番名写在括号外的情形）。
 fn nekomoe(title: &str) -> Vec<String> {
-    let blocks = brackets(title);
-    match blocks.first() {
-        Some(first) => sort_names_by_priority(split_multi(first), title),
+    // 组标签可能是 `[组]` 也可能是 `【组】`，两种都要剥。
+    static GROUP_TAG: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r"^[【\[][^】\]]+[】\]]\s*").expect("内置正则必须合法")
+    });
+    // 集数写法：` - 05` 或 `[05]`。
+    static CUT: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\s*-\s*\d+|\s*\[\d+\]").expect("内置正则必须合法"));
+    // 剩下所有 `[...]` / `(...)` 都是技术参数，一并去掉。
+    static MARKS: LazyLock<regex::Regex> =
+        LazyLock::new(|| regex::Regex::new(r"\[[^\]]*\]|\([^)]*\)").expect("内置正则必须合法"));
+    // 番名写在括号里时（旧格式 `[组][番名][05]`），用它剔除纯技术参数。
+    static TECH: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(
+            r"(?i)^(?:END|GB|MP4|MKV|1080P|720P|WEBRip|WEB|HEVC|H264|H265|BDRip|先行版|简日双语|繁日双语|简繁|繁日|简体|繁体)$",
+        )
+        .expect("内置正则必须合法")
+    });
+
+    let stripped = GROUP_TAG.replace(title, "").to_string();
+
+    // ① 番名在括号外（现主流形态 `[组] 番名 - 05 [参数]`）：剥组标签后砍掉集数与
+    //    所有括号，剩下的就是番名。与 `lolihouse` 同一套处理。
+    let outside: Vec<String> = split_multi(&stripped)
+        .into_iter()
+        .map(|part| {
+            let cut = CUT
+                .find(&part)
+                .map(|m| part[..m.start()].to_owned())
+                .unwrap_or(part);
+            MARKS.replace_all(&cut, "").trim().to_owned()
+        })
+        .filter(|name| name.chars().count() > 2)
+        .collect();
+    if !outside.is_empty() {
+        return sort_names_by_priority(outside, title);
+    }
+
+    // ② 番名在括号里（旧形态 `[组][番名][05]`）：挑第一个不像技术参数的括号。
+    let blocks = brackets(&stripped);
+    let candidate = blocks
+        .iter()
+        .find(|block| !TECH.is_match(block) && block.chars().count() > 2)
+        .or_else(|| blocks.first());
+    match candidate {
+        Some(name) => sort_names_by_priority(split_multi(name), title),
         None => Vec::new(),
     }
 }
@@ -676,6 +728,49 @@ mod tests {
         assert!(is_tech_token("1080P"));
         assert!(is_tech_token("简体"));
         assert!(!is_tech_token("葬送的芙莉莲"));
+    }
+
+    #[test]
+    fn nekomoe_does_not_mistake_the_group_tag_for_a_title() {
+        // 这是修过的一个 bug：旧规则直接取第一个中括号，而喵萌的第一个括号是
+        // 「喵萌奶茶屋」自己，于是番名被解析成组名，Agent 拿它去搜 Bangumi 空手而归。
+        let names = nekomoe("[喵萌奶茶屋] 葬送的芙莉莲 - 05 [1080p][繁日双语]");
+        assert_eq!(names, vec!["葬送的芙莉莲"], "{names:?}");
+    }
+
+    #[test]
+    fn nekomoe_handles_both_outside_and_inside_bracket_titles() {
+        // 现主流形态：番名在括号外，后面跟一整串技术参数。
+        assert_eq!(
+            nekomoe(
+                "[喵萌奶茶屋&LoliHouse] 葬送的芙莉莲 - 05 [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]"
+            ),
+            vec!["葬送的芙莉莲"]
+        );
+        // 旧形态：番名在第二个括号里。
+        assert_eq!(
+            nekomoe("[喵萌奶茶屋][葬送的芙莉莲][05][繁日双语][1080P]"),
+            vec!["葬送的芙莉莲"]
+        );
+        // 全角组标签同样要剥。
+        assert_eq!(
+            nekomoe("【喵萌奶茶屋】 葬送的芙莉莲 - 05 [1080p]"),
+            vec!["葬送的芙莉莲"]
+        );
+    }
+
+    #[test]
+    fn nekomoe_keeps_slash_names_and_season_suffix() {
+        // `/` 分隔的中英名都要留（检索名优先排序在 `sort_names_by_priority` 里）。
+        assert_eq!(
+            nekomoe("[喵萌奶茶屋] 葬送的芙莉莲 / Sousou no Frieren - 05 [1080p]"),
+            vec!["葬送的芙莉莲", "Sousou no Frieren"]
+        );
+        // 「第二季」这类后缀不能当成参数砍掉——它是区分多季的关键。
+        assert_eq!(
+            nekomoe("[喵萌奶茶屋] 葬送的芙莉莲 第二季 - 16 [简日双语][1080P]"),
+            vec!["葬送的芙莉莲 第二季"]
+        );
     }
 
     #[test]

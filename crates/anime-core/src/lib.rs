@@ -38,6 +38,17 @@ pub enum Error {
         #[source]
         source: Box<ureq::Error>,
     },
+    /// 同 [`Error::Http`]，但**带 HTTP 状态码**（`0` = 连接层失败，没拿到响应）。
+    ///
+    /// 给「按码决定是否重试」的调用方用：429 限流、502/503 抖动值得重试，
+    /// 401/403/400 重试只是白等。
+    #[error("网络请求失败（{url}）[HTTP {status}]：{source}")]
+    HttpStatused {
+        url: String,
+        status: u16,
+        #[source]
+        source: Box<ureq::Error>,
+    },
     #[error("响应解析失败（{what}）：{message}")]
     Parse { what: &'static str, message: String },
     #[error("qBittorrent 未登录：{0}")]
