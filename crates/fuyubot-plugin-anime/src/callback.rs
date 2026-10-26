@@ -46,6 +46,170 @@ use crate::runtime::Runtime;
 /// 用户点了内联按钮时宿主推的更新类型。
 pub const CALLBACK_EVENT: &str = "updateNewCallbackQuery";
 
+/// 审核类回调，与 TS `CallbackQuery/index.ts` 的四个分支逐字对齐。
+///
+/// 格式统一是 `<命令>?<k>=<v>&...`（TS 用 `URLSearchParams` 解析）：
+///
+/// ```text
+/// Y_anime?r=<reviewId>               确认匹配正确（待审核模式）
+/// Y_anime?id=<episodeId>&c=<cacheId> 确认匹配正确（旧格式，无待审核记录时）
+/// F_anime?r=<reviewId>               匹配错误，进入纠正流程
+/// N_anime?c=<cacheId>                自动搜索失败，请手动提供番剧信息
+/// N_ep?c=<cacheId>&id=<animeId>      集数匹配失败，请手动提供集数
+/// ```
+///
+/// 为什么要这套而不是原来的 `review:approve:<id>`：TS 的审核不只是「通过/驳回」两个
+/// 动作——`N_anime` / `N_ep` 是**多轮交互**的入口（点了之后管理员回复消息提供正确
+/// 的条目链接或集数 id，bot 解析回复继续流程）。一个动作维度装不下这些，所以照搬
+/// TS 的「命令 + 查询串」。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AnimeCallback {
+    /// `Y_anime`：确认当前匹配正确。
+    Confirm(CallbackTarget),
+    /// `F_anime`：匹配错误，等待管理员提供正确条目。
+    Reject(CallbackTarget),
+    /// `N_anime`：搜不到番剧，等待管理员提供条目链接。
+    ProvideAnime { cache_id: i64 },
+    /// `N_ep`：集数匹配失败，等待管理员提供集数 id。
+    ProvideEpisode { cache_id: i64, anime_id: i64 },
+}
+
+/// 回调定位到哪条记录。
+///
+/// 两套并存是 TS 的历史：`r` 是后来的「待审核记录 id」（更短，且能带完整上下文），
+/// `id`+`c` 是旧格式。新流程一律带 `r`，旧格式只为兼容还在飞的旧按钮保留。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CallbackTarget {
+    /// `r`：pendingReviews 的自增 id。
+    pub review_id: Option<i64>,
+    /// `id`：Bangumi 章节 id。
+    pub episode_id: Option<i64>,
+    /// `c`：cacheItem 的 id。
+    pub cache_id: Option<i64>,
+}
+
+impl CallbackTarget {
+    /// 只带待审核 id 的目标（新流程）。
+    pub const fn by_review(review_id: i64) -> Self {
+        Self {
+            review_id: Some(review_id),
+            episode_id: None,
+            cache_id: None,
+        }
+    }
+
+    /// 旧格式：章节 id + 缓存 id。
+    pub const fn by_episode(episode_id: i64, cache_id: i64) -> Self {
+        Self {
+            review_id: None,
+            episode_id: Some(episode_id),
+            cache_id: Some(cache_id),
+        }
+    }
+}
+
+/// 解析 `<命令>?<k>=<v>&...` 形式的回调数据。
+///
+/// 返回 `None` 的情况：没有 `?`、命令不认识、`N_anime`/`N_ep` 缺必需参数。
+/// 「命令认识但参数不全」也算不认识——半截参数进到处理流程只会做错事。
+pub fn parse_anime_callback(raw: &str) -> Option<AnimeCallback> {
+    let (command, params) = raw.split_once('?')?;
+    let params = Query::new(params);
+    match command.trim() {
+        "Y_anime" => Some(AnimeCallback::Confirm(target_of(&params))),
+        "F_anime" => Some(AnimeCallback::Reject(target_of(&params))),
+        "N_anime" => Some(AnimeCallback::ProvideAnime {
+            cache_id: params.i64("c")?,
+        }),
+        "N_ep" => Some(AnimeCallback::ProvideEpisode {
+            cache_id: params.i64("c")?,
+            anime_id: params.i64("id")?,
+        }),
+        _ => None,
+    }
+}
+
+/// 从查询串里还原定位目标：`r` 优先，没有再取 `id` + `c`。
+fn target_of(params: &Query<'_>) -> CallbackTarget {
+    if let Some(review_id) = params.i64("r") {
+        return CallbackTarget::by_review(review_id);
+    }
+    CallbackTarget {
+        review_id: None,
+        episode_id: params.i64("id"),
+        cache_id: params.i64("c"),
+    }
+}
+
+/// 构造按钮数据（base64 之前的原文）。
+pub mod data {
+    use super::CallbackTarget;
+
+    /// `Y_anime?r=<id>` —— 有待审核记录时用它，比 `id`+`c` 短。
+    pub fn confirm(target: CallbackTarget) -> String {
+        let mut out = String::from("Y_anime?");
+        push_target(&mut out, target);
+        out
+    }
+
+    /// `F_anime?r=<id>`
+    pub fn reject(target: CallbackTarget) -> String {
+        let mut out = String::from("F_anime?");
+        push_target(&mut out, target);
+        out
+    }
+
+    /// `N_anime?c=<cacheId>`
+    pub fn provide_anime(cache_id: i64) -> String {
+        format!("N_anime?c={cache_id}")
+    }
+
+    /// `N_ep?c=<cacheId>&id=<animeId>`
+    pub fn provide_episode(cache_id: i64, anime_id: i64) -> String {
+        format!("N_ep?c={cache_id}&id={anime_id}")
+    }
+
+    fn push_target(out: &mut String, target: CallbackTarget) {
+        match target.review_id {
+            Some(id) => out.push_str(&format!("r={id}")),
+            None => {
+                if let Some(id) = target.episode_id {
+                    out.push_str(&format!("id={id}"));
+                }
+                if let Some(id) = target.cache_id {
+                    if target.episode_id.is_some() {
+                        out.push('&');
+                    }
+                    out.push_str(&format!("c={id}"));
+                }
+            }
+        }
+    }
+}
+
+/// 极简查询串解析：`k=v&k2=v2`。只支持整数取值，够回调数据用。
+///
+/// 不引 `serde_urlencoded`：回调数据只有两三个纯数字参数，引一个依赖换来的只是
+/// 百分号解码——而按钮数据我们自己生成，不会有需要转义的字符。
+struct Query<'a> {
+    raw: &'a str,
+}
+
+impl<'a> Query<'a> {
+    fn new(raw: &'a str) -> Self {
+        Self { raw }
+    }
+
+    /// 取某个键的整数值；键不存在或不是整数返回 `None`。
+    fn i64(&self, key: &str) -> Option<i64> {
+        let prefix = format!("{key}=");
+        self.raw
+            .split('&')
+            .filter_map(|pair| pair.strip_prefix(&prefix))
+            .find_map(|value| value.trim().parse::<i64>().ok())
+    }
+}
+
 /// 审核动作。两个按钮一个动作，字段只有这两个值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewAction {
@@ -631,6 +795,91 @@ fn base64_decode(data: &str) -> Option<String> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn parse_anime_callback_reads_ts_formats() {
+        use AnimeCallback::*;
+
+        // 新流程：只带待审核 id
+        assert_eq!(
+            parse_anime_callback("Y_anime?r=42"),
+            Some(Confirm(CallbackTarget::by_review(42)))
+        );
+        assert_eq!(
+            parse_anime_callback("F_anime?r=7"),
+            Some(Reject(CallbackTarget::by_review(7)))
+        );
+        // 旧格式：章节 id + 缓存 id
+        assert_eq!(
+            parse_anime_callback("Y_anime?id=1227091&c=9"),
+            Some(Confirm(CallbackTarget::by_episode(1227091, 9)))
+        );
+        // 多轮交互入口
+        assert_eq!(
+            parse_anime_callback("N_anime?c=9"),
+            Some(ProvideAnime { cache_id: 9 })
+        );
+        assert_eq!(
+            parse_anime_callback("N_ep?c=9&id=400602"),
+            Some(ProvideEpisode {
+                cache_id: 9,
+                anime_id: 400602
+            })
+        );
+    }
+
+    #[test]
+    fn parse_anime_callback_rejects_unknown_or_incomplete() {
+        for raw in [
+            "review:approve:1", // 旧格式不再认
+            "colorep?id=1&c=2", // 别的功能的回调，交给别处分发
+            "chgcol?type=2",
+            "Y_anime",  // 没有 ?
+            "N_anime",  // 缺 c
+            "N_anime?x=1", // 参数名不对
+            "N_ep?c=9", // 缺 id
+            "N_ep?id=1", // 缺 c
+            "N_anime?c=abc", // c 不是整数
+            "",
+        ] {
+            assert_eq!(
+                parse_anime_callback(raw),
+                None,
+                "{raw:?} 不该被认成审核回调"
+            );
+        }
+    }
+
+    #[test]
+    fn callback_data_round_trips_through_parse() {
+        use AnimeCallback::*;
+
+        // 构造 → 解析 必须回到同一个值，否则按钮点了会路由错。
+        for expected in [
+            Confirm(CallbackTarget::by_review(42)),
+            Reject(CallbackTarget::by_review(7)),
+            Confirm(CallbackTarget::by_episode(1227091, 9)),
+            Reject(CallbackTarget::by_episode(1, 2)),
+        ] {
+            let raw = match expected {
+                Confirm(target) => data::confirm(target),
+                Reject(target) => data::reject(target),
+                _ => unreachable!(),
+            };
+            assert_eq!(parse_anime_callback(&raw), Some(expected), "{raw}");
+        }
+        assert_eq!(
+            parse_anime_callback(&data::provide_anime(9)),
+            Some(ProvideAnime { cache_id: 9 })
+        );
+        assert_eq!(
+            parse_anime_callback(&data::provide_episode(9, 400602)),
+            Some(ProvideEpisode {
+                cache_id: 9,
+                anime_id: 400602
+            })
+        );
+    }
 
     #[test]
     fn parse_accepts_both_review_actions() {
