@@ -33,6 +33,16 @@ pub struct TelegramConfig {
     pub nav_channel: i64,
     /// 正片频道（每集视频发这里）。
     pub anime_channel: i64,
+    /// 缓冲频道/群：拿不准的片子（低置信度新番、集数没对齐）先发这里，管理员
+    /// 确认后才转进正片频道。
+    ///
+    /// 为 0 时退回 TS 的落点：管理群（`admin_group_id`）的番剧话题
+    /// （`anime_group_thread_id`）——TS 的 `sendMegToCache` 就是发那儿。
+    /// 单独配一个频道/群时，话题仍用 `anime_group_thread_id`。
+    ///
+    /// 注意不能回退到 `anime_channel`：把没确认过的片子直接丢进正片频道，正是
+    /// 缓冲频道要避免的事（发出去就撤不回了）。
+    pub cache_channel: i64,
     /// 管理群（审核按钮、错误通知）。
     pub admin_group_id: i64,
     /// 管理群里的话题（0 = 不用话题）。

@@ -23,6 +23,8 @@ mod fetch;
 mod media;
 mod nav;
 mod poll;
+mod newanime;
+mod prompts;
 mod qb;
 mod review;
 mod runtime;

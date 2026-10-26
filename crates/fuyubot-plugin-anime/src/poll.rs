@@ -218,6 +218,8 @@ pub struct Round {
     pub new_anime: usize,
     /// 命中番剧且集数也对齐（= 可以直接投放）的条数。
     pub ready: usize,
+    /// 命中番剧但集数没对齐（发缓冲频道、等管理员纠正）的条数。
+    pub pending_fix: usize,
 }
 
 /// 抓一轮：抓取 → 跨轮次去重 → 查库去重 → 匹配 → 记日志。
@@ -244,6 +246,7 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     let mut matched = 0usize;
     let mut new_anime = 0usize;
     let mut ready = 0usize;
+    let mut pending_fix = 0usize;
     for item in &summary.items {
         if store_ready {
             match runtime.store.has_torrent_title(&item.title) {
@@ -307,12 +310,33 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
                     // 下载可能要几十分钟：交给 chain 的限流线程，轮询继续跑。
                     chain::spawn(Arc::clone(runtime), item.clone(), hit.anime_id);
                 } else {
+                    // 集数没对齐不是「丢弃」：视频照样下、照样发，只是发到缓冲频道
+                    // 并把种子停在「等待纠正」，等管理员确认第几集（TS 的
+                    // handleExistingAnime 走的也是这条路）。
+                    pending_fix += 1;
+                    let cache_id = match runtime.store.cache_item_add(item) {
+                        Ok(id) => id,
+                        Err(error) => {
+                            log!(logger, Warn, "写 cacheItem 失败（继续）：{error}");
+                            0
+                        }
+                    };
                     log!(
                         logger,
                         Info,
-                        "命中但集数没对齐：{}｜{}",
+                        "命中但集数没对齐，送缓冲频道：{}｜{}",
                         item.title,
                         outcome.describe()
+                    );
+                    chain::spawn_with(
+                        Arc::clone(runtime),
+                        item.clone(),
+                        chain::Plan::cache(
+                            hit.anime_id,
+                            cache_id,
+                            outcome.episode.clone(),
+                            None,
+                        ),
                     );
                 }
             }
@@ -330,7 +354,10 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
             }
             SeasonDecision::New => {
                 new_anime += 1;
-                log!(logger, Debug, "新番候选：{}", item.title);
+                log!(logger, Info, "新番候选：{}", item.title);
+                // 库里没有这部番：建档（含 LLM Agent 匹配）→ 下载 → 发正片或缓冲
+                // 频道 → 生成待审核/提示。整条链路自己开线程，轮询继续跑。
+                crate::newanime::spawn(Arc::clone(runtime), item.clone());
             }
         }
     }
@@ -338,11 +365,12 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
     log!(
         logger,
         Info,
-        "{}｜新 {} 条（命中 {}，可投 {}，新番候选 {}）",
+        "{}｜新 {} 条（命中 {}，可投 {}，待纠正 {}，新番候选 {}）",
         summary.render().replace('\n', " "),
         fresh,
         matched,
         ready,
+        pending_fix,
         new_anime
     );
 
@@ -354,6 +382,7 @@ fn run_round(runtime: &Arc<Runtime>, seen: &mut Seen) -> Round {
         matched,
         new_anime,
         ready,
+        pending_fix,
     }
 }
 

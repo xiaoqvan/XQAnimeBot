@@ -15,6 +15,8 @@ use std::sync::{Arc, Condvar, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use anime_core::ai::MatchResult;
+use anime_core::matching::EpisodeMatch;
 use anime_core::models::{AnimeItem, TorrentStatus};
 use anime_core::store::{Storage, btih_from_magnet};
 use anime_core::{Error, Result, log};
@@ -36,9 +38,91 @@ static SLOTS: LazyLock<(Mutex<usize>, Condvar)> =
     LazyLock::new(|| (Mutex::new(0), Condvar::new()));
 static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
-/// 起一个后台任务。拿不到槽位就等——阻塞的是调用方线程（轮询线程）……
+/// 这一条投放「发到哪、发完之后干什么」。
+///
+/// 以前 `spawn` 只带一个 `anime_id`，隐含「命中了、集数也对了、发正片频道」——
+/// 这一条假设装不下 TS 的三条路：集数没对齐要发**缓冲频道**并请管理员纠正，
+/// 新番高置信度要**先发后审**（视频已经在正片频道了，审核在后面）。
+/// 所以把「目标」和「发完的动作」显式化成计划，由调用方挑。
+#[derive(Debug, Clone, Default)]
+pub struct Plan {
+    /// 命中的番剧（Bangumi subject id）。`0` = 没确定是哪部番。
+    pub anime_id: i64,
+    /// 命中的章节 id（集数没对齐时为 `None`）。
+    pub episode_id: Option<i64>,
+    /// `cacheItem` 的自增 id：审核提示的按钮要带它，管理员点「提供」时才能回查条目。
+    pub cache_id: i64,
+    /// 发**缓冲频道**而不是正片频道。
+    ///
+    /// 缓冲频道是「还没确认过」的暂存区：视频发过去、种子状态置 `等待纠正`，
+    /// 管理员确认后才转进正片。发错正片是撤不回的，发错缓冲只是多一步纠正。
+    pub to_cache: bool,
+    /// 发完之后提示管理员（缓冲频道的确认 / 正片频道的先发后审）。
+    pub review: bool,
+    /// 集数匹配结论：提示里要说明「哪里没对上」。
+    pub episode_match: Option<EpisodeMatch>,
+    /// LLM 匹配详情：提示里要展示置信度与理由（可溯源纠正）。
+    pub match_detail: Option<MatchResult>,
+}
+
+impl Plan {
+    /// 老行为：命中且集数对齐，发正片频道 + 记导航，不进审核。
+    pub fn channel(anime_id: i64) -> Self {
+        Self {
+            anime_id,
+            ..Default::default()
+        }
+    }
+
+    /// 缓冲频道：发到管理群等纠正，发完请管理员确认。
+    ///
+    /// `episode_match` 决定提示的两个分支：日期不符（机器有答案）给「正确」，
+    /// 其余（库里没这集）给「提供正确集数」。
+    pub fn cache(
+        anime_id: i64,
+        cache_id: i64,
+        episode_match: Option<EpisodeMatch>,
+        match_detail: Option<MatchResult>,
+    ) -> Self {
+        Self {
+            anime_id,
+            cache_id,
+            to_cache: true,
+            review: true,
+            episode_match,
+            match_detail,
+            ..Default::default()
+        }
+    }
+
+    /// 先发后审：正片频道照发，发完建待审核记录 + 带候选的确认提示。
+    pub fn post_send(
+        anime_id: i64,
+        cache_id: i64,
+        episode_id: Option<i64>,
+        match_detail: Option<MatchResult>,
+    ) -> Self {
+        Self {
+            anime_id,
+            cache_id,
+            episode_id,
+            review: true,
+            match_detail,
+            ..Default::default()
+        }
+    }
+}
+
+/// 起一个后台任务：命中且集数对齐，发正片频道。
+///
+/// 拿不到槽位就等——阻塞的是调用方线程（轮询线程）……
 /// 所以调用方必须在自己的线程里调它，**不能**在命令回调里直接调。
 pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
+    spawn_with(runtime, item, Plan::channel(anime_id));
+}
+
+/// 按 [Plan] 起一个后台任务。
+pub fn spawn_with(runtime: Arc<Runtime>, item: AnimeItem, plan: Plan) {
     // dmhy 的 enclosure 往往是 .torrent 地址而不是 magnet:，拿不到 btih。
     // 这不影响下载（qB 自己能算 hash），只影响去重键——所以退化用标题当键。
     let known_hash = btih_from_magnet(&item.magnet);
@@ -59,7 +143,7 @@ pub fn spawn(runtime: Arc<Runtime>, item: AnimeItem, anime_id: i64) {
     let spawned = thread::Builder::new()
         .name("xq-anime-chain".to_owned())
         .spawn(move || {
-            let result = run(&worker, &item, anime_id, known_hash.as_deref());
+            let result = run(&worker, &item, &plan, known_hash.as_deref());
             if let Err(error) = result {
                 log!(&worker.logger, Error, "下载链路失败（{title}）：{error}");
                 let _ = worker.store.checkpoint_finish(
@@ -190,10 +274,24 @@ fn add_and_discover(runtime: &Runtime, qb: &Qb, item: &AnimeItem) -> Result<Stri
         message: "加种后 30 秒内没在 qB 列表里看到新种子".to_owned(),
     })
 }
+
+/// 缓冲频道的目标会话。
+///
+/// TS 的 `sendMegToCache` 固定发 `ADMIN_GROUP_ID` 的 `ANIME_GROUP_THREAD_ID` 话题——
+/// 缓冲和正片在同一个群里，区别只在话题。这里允许单独配一个 `cache_channel`
+/// （有的部署会把缓冲单独开一个群）；没配就退回 TS 的那套（管理群 + 番剧话题）。
+pub fn cache_target(telegram: &anime_core::config::TelegramConfig) -> Target {
+    let chat_id = if telegram.cache_channel != 0 {
+        telegram.cache_channel
+    } else {
+        telegram.admin_group_id
+    };
+    Target::new(chat_id, 0).with_topic(telegram.anime_group_thread_id)
+}
 fn run(
     runtime: &Runtime,
     item: &AnimeItem,
-    anime_id: i64,
+    plan: &Plan,
     known_hash: Option<&str>,
 ) -> Result<()> {
     let qb = Qb::new(runtime.host);
@@ -229,7 +327,13 @@ fn run(
         }
         None => add_and_discover(runtime, &qb, item)?,
     };
-    log!(&runtime.logger, Info, "已加种：{}（anime {anime_id}）", item.title);
+    log!(
+        &runtime.logger,
+        Info,
+        "已加种：{}（anime {}）",
+        item.title,
+        plan.anime_id
+    );
 
     let torrent = wait_done(runtime, &qb, &hash)?;
     let _ = runtime.store.checkpoint_stage(&key, "转码");
@@ -261,8 +365,11 @@ fn run(
     // 超过上传上限就按大小分段（TG 约 2GB）。分段是流复制，秒级。
     let parts = split_for_upload(runtime, &send_path);
     let total = parts.len();
-    let target = Target::new(config.telegram.anime_channel, 0)
-        .with_topic(config.telegram.anime_group_thread_id);
+    let target = if plan.to_cache {
+        cache_target(&config.telegram)
+    } else {
+        Target::new(config.telegram.anime_channel, 0).with_topic(config.telegram.anime_group_thread_id)
+    };
     let mut message_id = None;
     let mut send_failed = false;
     for (index, part) in parts.iter().enumerate() {
@@ -322,18 +429,24 @@ fn run(
             message: "发视频失败或未确认".to_owned(),
         });
     };
-    // message_id = 0 表示没等确认（拿不到 id），导航无法记账，跳过。
-    if anime_id > 0
+    // 只有正片频道才记导航：缓冲频道里的视频还没经过确认，记进导航等于把未审核的
+    // 东西公开出去（TS 也是 `sendMegToAnime` 之后才 `sendMegToNavAnime`）。
+    if !plan.to_cache
+        && plan.anime_id > 0
         && message_id > 0
-        && let Err(error) =
-            crate::nav::push_episode(
-                runtime,
-                anime_id,
-                config.telegram.anime_channel,
-                message_id,
-            )
+        && let Err(error) = crate::nav::push_episode(
+            runtime,
+            plan.anime_id,
+            config.telegram.anime_channel,
+            message_id,
+        )
     {
         log!(&runtime.logger, Warn, "记录 navVideoMessage 失败：{error}");
+    }
+    // 发完之后该做的事（记资源 / 建待审核 / 提示管理员）交给 review，
+    // 那里才知道提示该长什么样。
+    if plan.review {
+        crate::review::after_send(runtime, plan, item, target.chat_id, message_id);
     }
     // 发送成功后再删源：发送失败时原始文件还要留着重试。
     if transcoded && config.media.delete_source_after_remux {
@@ -352,7 +465,16 @@ fn run(
             ),
         }
     }
-    mark_status(runtime, item, TorrentStatus::Done);
+    // 缓冲频道的种子停在「等待纠正」：管理员还没确认集数，这条不算完。
+    mark_status(
+        runtime,
+        item,
+        if plan.to_cache {
+            TorrentStatus::PendingFix
+        } else {
+            TorrentStatus::Done
+        },
+    );
 
     // 清理：发送完还留着种子会一直做种；源文件被删的情况下 qB 还会报 missingFiles。
     if config.qbittorrent.delete_torrent_after_send {
