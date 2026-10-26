@@ -187,8 +187,8 @@ pub enum ParsedEpisode {
 
 /// 解析集数字符串（TS 的 `parseEpisode`）。
 ///
-/// 公开是因为除了导航排序，`/jz` 的单集纠正也要用它——纠正时「第 03 集」要在
-/// 目标番的章节表里找回去，与排序必须是同一套理解。
+/// 公开是因为除了导航排序，`/jz` 的单集纠正也要用它——纠正时要把资源的集数
+/// 字符串按目标章节重写，同时留下 `v2` 这类版本号，与排序必须是同一套理解。
 pub fn parse_episode(episode: &str) -> ParsedEpisode {
     let text = episode.trim();
     let digits: String = text

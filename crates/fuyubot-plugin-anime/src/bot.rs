@@ -90,7 +90,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     },
     CommandSpec {
         name: "jz",
-        summary: "单集纠正：/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]",
+        summary: "单集纠正：/jz <源集数 id> <目标集数 id> [字幕组]",
         handler: cmd_jz,
     },
     CommandSpec {
@@ -1105,10 +1105,11 @@ fn anime_name(runtime: &Runtime, anime_id: i64) -> String {
         .unwrap_or_else(|| format!("{anime_id}"))
 }
 
-/// `/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]`：把一集改挂到正确的番上。
+/// `/jz <源集数 id> <目标集数 id> [字幕组]`：把一集改挂到正确的章节上。
 ///
-/// 见 [`crate::correct`]——现在的链路在投放前就把番剧定下来了，要纠正的是
-/// **已经发进正片频道但挂错番**的那一集，不再是缓存条目。
+/// 见 [`crate::correct`]——管理员手上有的通常是**章节 id**（导航卡、Bangumi 页面
+/// 上看得到），让他再翻出番剧 id 和集数编号是多一步容易错的翻译，所以这里直接
+/// 收两个章节 id，番剧由章节反查（本地库优先，没有再问 Bangumi）。
 ///
 /// 干的是写库 + 刷两边导航 + 改已发消息文案，所以要开线程：一次 mongo 往返
 /// 不该把更新流按住。
@@ -1117,9 +1118,10 @@ fn cmd_jz(runtime: &Arc<Runtime>, command: &Command) {
     let Some(request) = crate::correct::parse_request(&command.args) else {
         runtime.td.reply_text(
             target,
-            "用法：/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]\n\
-             示例：/jz 12345 03 67890\n\
-             只纠正某个字幕组：/jz 12345 03 67890 喵萌奶茶屋",
+            "用法：/jz <源集数 id> <目标集数 id> [字幕组]\n\
+             示例：/jz 1001 2005\n\
+             只纠正某个字幕组：/jz 1001 2005 喵萌奶茶屋\n\
+             集数 id 指 Bangumi 章节 id（bgm.tv/ep/<id>），番剧由它反查",
         );
         return;
     };

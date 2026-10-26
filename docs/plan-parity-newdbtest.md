@@ -405,10 +405,16 @@ Rust 都把黑名单存在 MongoDB 的 `config` 集合 `{key:"animeBlacklist", l
 - **`/jz` 语义已改（不再照搬 TS 的 `ConAnimeInfo`）**：TS 是「缓存条目接番剧」
   （`<条目 id> <缓存 id>` + `Y_anime?id=&c=` 确定按钮），依赖「先有 cacheItem 再谈
   番剧」的旧流程。现在投放前就把番剧定下来了，缓存 id 不再是纠正入口，真正要
-  纠正的是**已发进正片却挂错番**的那一集。新用法
-  `/jz <源番剧 id> <集数> <目标番剧 id> [字幕组]`（见 `correct.rs`）：
-  查资源 → 按目标番章节表重解 `episodeId` → 插新删旧 → 刷两边导航 →
-  把已发视频的 caption 改成目标番的（`edit_caption`）。
+  纠正的是**已发进正片却挂错章节**的那一集。
+  参数从「番剧 id + 集数」进一步收成**两个章节 id**
+  （`/jz <源集数 id> <目标集数 id> [字幕组]`，见 `correct.rs`）：管理员手上通常就是
+  章节 id（导航卡、`bgm.tv/ep/<id>`），番剧由章节反查——先查本地 `episodes_meta`
+  （自带 `subject_id`），本地没有才走 `BgmClient::episode(id)` 并写回库，所以
+  同一集只联网一次。
+  一次纠正：按源章节找资源（有 `episodeId` 只认 id，缺失才退回 `03`/`3` 字符串）
+  → 目标章节的 `episodeId` 写进资源、集数字符串也按目标章节重写（保留 `v2` 版本
+  后缀）→ 插新删旧（同集同组只留一条）→ 刷两边导航 → 把已发视频的 caption 改成
+  目标番的（`edit_caption`）。同番只改章节 id 也允许，此时只刷一次导航。
   不做确认按钮：`callback_data` 上限 64 字节，塞不下中文字幕组名。
 
 - **阶段 6 剩余**：`checkTorrentFormat`（MKV 预检）属于阶段 5 的并发管理器，
