@@ -320,8 +320,8 @@ newdbtest 注册了两个 inline handler（`animeNavigation` / `episodeVideo`）
 - [audit-2026-10-26.md](docs/audit-2026-10-26.md) 加「已归档」头，保留作追溯。
 - 所有文档里「TS 版」的引用统一改指 `newdbtest`；README 顶部写明参考分支，
   并修掉指向 `F:/Node.JS/XQAnimeBot`（`main` 旧副本）的链接。
-- 代码与文档一起作为**新分支**提交到 `github.com/xiaoqvan/XQAnimeBot`
-  （`origin/rust` 已存在，本次按用户要求另起分支）。
+- 代码与文档一起推到 `github.com/xiaoqvan/XQAnimeBot` 的 **`rust`** 分支
+  （`87aadab → 0fb490a`，快进 23 个提交；`main` / `newdbtest` / `callback` 未动）。
 
 ---
 
