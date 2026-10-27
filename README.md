@@ -1,7 +1,11 @@
 # XQAnimeBot-Rust
 
-原 [XQAnimeBot](F:/Node.JS/XQAnimeBot)（TypeScript，105 文件 / 20.5k 行）的 Rust 版：
+原 XQAnimeBot（TypeScript，105 文件 / 20.5k 行）的 Rust 版：
 FuyuBot 插件形态，RSS → 标题解析 → 匹配 → qBittorrent → 转码 → 发频道。
+
+> **参考实现 = [`xiaoqvan/XQAnimeBot` 的 `newdbtest` 分支](https://github.com/xiaoqvan/XQAnimeBot/tree/newdbtest)**。
+> 本文所有「TS 版」均指该分支（本地副本 `d:/GitHub/_ts-newdbtest`）；
+> `main` 分支的 `plugins/XQAnimeBot` 是旧副本（10.6k 行），不要拿它对照。
 
 ## 工程结构
 
@@ -15,7 +19,8 @@ FuyuBot 插件形态，RSS → 标题解析 → 匹配 → qBittorrent → 转�
 | `ultralight-gen-image` | cdylib + bin | **ultralightGenImage**：出图插件，注册 `image.render`；同包产出 `image-shot.exe`（Ultralight 2.0 渲染器，独立进程独占主线程） |
 | `fuyubot-service` | lib | 服务外壳：JSON 服务表、统一回复缓冲、配置槽 |
 | `anime-core` | lib | 领域逻辑：配置、数据模型、标题解析、**RSS 三源**、**番剧/集数匹配**、番剧卡片 payload |
-| `fuyubot-plugin-anime` | cdylib | 动漫业务插件：插件壳 + 命令路由（**已在真宿主跑通**，业务链路待接） |
+| `fuyubot-tdlib-ext` | lib | TDLib 读接口（getMessage/getChat/getMessageLink/answerInlineQuery…），simplify 的补丁层 |
+| `fuyubot-plugin-anime` | cdylib | 动漫业务插件：轮询、下载链路、审核、导航、单集纠正、内联、22 条命令 |
 
 ```
 fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
@@ -26,25 +31,28 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 ## 迁移进度
 
-**没有完成。** 基础设施四个插件已落地并可独立运行；业务插件壳已在真宿主跑通，业务链路仍空。
+**9 个迁移阶段全部落地。** 基础设施四个插件可独立运行；业务插件的主链（RSS → 匹配 → 下载 →
+转码 → 发频道/缓冲频道 → 审核 → 导航）已完整，命令、权限、OAuth、单集纠正、并发管理、内联都已接上。
+与 `newdbtest` 的**剩余差异**见 [gap-audit](docs/gap-audit-2026-10-27.md)。
 
 | 模块 | TS 规模 | Rust 状态 |
 | --- | --- | --- |
 | 出图（bangumi.vue/satori → 纯 HTML + Ultralight） | ~1.1k | ✅ 独立插件，实测出图 |
 | ffmpeg 转码 | ~0.5k | ✅ 独立插件，实测 copy/NVENC 两条路；MKV 简体中文字幕烧录已实测 |
 | qBittorrent 客户端 | ~1.1k | ✅ 独立插件（手写 5.0 API，真机联调通过） |
-| MongoDB 存储层 | ~2.5k | ✅ 独立插件（通用 CRUD，本机全链路联调通过） |
-| 标题解析 / 字幕组规则 | ~1.3k | ✅ 完成 |
-| 配置 / 数据模型 / 日志 | ~0.8k | ✅ 完成 |
+| MongoDB 存储层 | ~2.5k | ✅ 独立插件（通用 CRUD + `ensure_index`，本机全链路联调通过） |
+| 标题解析 / 字幕组规则 | ~1.3k | ✅ 34 条规则 + 8 条别名（TS 的 31/5 的超集） |
+| 配置 / 数据模型 / 日志 | ~0.8k | ✅ 九组配置、三层取值、`bangumi_users`/`pendingReviews` 与 TS 逐字对齐 |
 | 番剧卡片数据 payload | ~0.3k | ✅ 完成 |
 | RSS 三源解析（bangumi/dmhy/acgnx） | ~1.2k | ✅ 完成（三源 + 合并去重 + 条目构建，真网络验证） |
 | 番剧匹配（season + 集数对齐） | ~0.6k | ✅ 完成（打分 + 阈值 + 放送日期窗口，真数据验证） |
-| 插件壳 / 命令路由 | ~3.3k | 🚧 19 个命令（含 /bindbangumi /exitbangumi /collect 收藏回调、主人权限校验） + 后台 RSS 轮询（去重 → 匹配 → 下载 → 转码 → 发视频；审核提示/按钮/通过即下载；/addanime 导入库；导航卡 + 每集链接） |
-| 业务存储层（db） | ~2.5k | 🚧 `anime-core::store` 就绪（Storage trait + 业务查询），插件侧已用 `storage.mongo` 实现 |
-| TDLib 读接口 / inline | — | ✅ `fuyubot-tdlib-ext`（getMessage/getChat/getMessageLink/answerInlineQuery 等 10 个）；inline 两个 handler 已接（`@机器人 关键词`） |
-| 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | 🚧 主链已通（含待审核分支、导航卡、navVideoMessage）；缺分段/多集/播报 |
-| Bangumi API + AI Agent | ~1.8k | 🚧 API 客户端 + `/addanime` `/testbgimg`；AI 集数抽取与章节匹配已接（兜底，可关） |
-| 任务恢复 / 检查点 / 审核 | ~1.0k | ❌ 未开始 |
+| LLM Agent（Responses API 工具调用） | ~1.8k | ✅ 3 个工具、≤8 轮、`confidence`/`reason`；新番链路 Agent 优先 |
+| 业务编排（RSS→匹配→下载→转码→发频道） | ~2k | ✅ 主链完整：缓冲频道、4 提示 / 6 回调、多轮纠正、导航分页 |
+| 并发管理 / MKV 队列 / 进度 / 取消 | ~0.5k | ✅ `tasks.rs`：普通+MKV 队列、转码独占槽、`/progress`、`/canceltask` |
+| 命令 / 权限 / OAuth / 深链 | ~3.3k | ✅ 22 条命令（另 `/s` 是 `/searchanime` 短名；TS 15 条全覆盖）、真 `getChatMember` 判定、OAuth 四步 + 自动刷新 |
+| 单集纠正 `/jz` | — | ✅ 按两个章节 id 迁移资源，含 `N_ep`/`F_anime` 复用 |
+| TDLib 读接口 / inline | — | ✅ `fuyubot-tdlib-ext`；inline 两个 handler（`@机器人 关键词`） |
+| 任务恢复 / 检查点 | ~1.0k | ✅ 检查点（RSS/下载/转码/发送）+ 重启恢复 |
 | Web 管理端（Fastify + Vue） | ~7k | 🚧 只读 HTTP API（health/stats/anime/reviews/tasks + Bearer）；前端不做 |
 
 ## 数据库（本地 / 云端）
@@ -57,10 +65,14 @@ fuyubot-plugin-anime  ──┬─ storage.mongo         ──▶ MongoDB
 
 1. 装好四个基础插件（mongo / qb / ffmpeg / 出图），并让宿主加载本插件；
 2. 复制 [`xq-anime.toml.example`](xq-anime.toml.example) 成 `xq-anime.toml`，填频道 id、qB 账号、Mongo 地址；
-3. 导入第一部番：`/addanime 400602`（会自动发导航卡）；
-4. 之后 RSS 轮询命中就会自动下载 → 转码 → 发番剧频道。
+3. 导入第一部番：`/addnewanime <章节 id> <bangumi.moe 或 dmhy 链接>`（建档 + 加种 + 发导航卡）；
+   已有番补一集用 `/addanime <章节 id> <链接>`；
+4. 之后 RSS 轮询命中就会自动下载 → 转码 → 发番剧频道；匹配不准时用
+   `/jz <源章节 id> <目标章节 id> [字幕组]` 把单集改挂到正确的番。
 
-常用命令：`/selftest`（一条命令自检服务/库/RSS/匹配）`/addanime` `/testbgimg` `/searchanime` `/progress` `/canceltask` `/status` `/web` `/help`。
+常用命令：`/selftest`（一条命令自检服务/库/RSS/匹配）`/addanime` `/addnewanime` `/updateanime`
+`/jz` `/testbgimg` `/searchanime` `/setanimer18` `/animeblacklist` `/progress` `/canceltask`
+`/status` `/web` `/help`。完整 22 条见 `/help`。
 
 内联：在任意聊天里打 `@机器人 <番剧关键词>` 取导航卡（点开就是完整导航正文），打 `@机器人 <章节 id 或 bgm.tv/ep/<id> 链接>` 取这一集的视频，选中即发送（复用频道里已上传的文件，不重传）。
 

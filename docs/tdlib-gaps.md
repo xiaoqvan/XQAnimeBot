@@ -1,14 +1,18 @@
 # TDLib 封装缺口（fuyubot-simplify → 动漫插件）
 
-> 生成时间：2026-10-26 01:26。对照对象：
-> - TS 侧：`F:/Node.JS/XQAnimeBot/src/TDLib/function/*.ts`（message/get/chat/files/text/markdown/inlineAdapter/permissions）
-> - Rust 侧：`F:/Rust/FuyuBot/crates/fuyubot-simplify`（lib.rs + rich.rs）
+> 生成：2026-10-26；更新：2026-10-27（阶段 8 后）。
+> 对照对象：
+> - TS 侧（**插件**）：`xiaoqvan/XQAnimeBot` 的 **`newdbtest`** 分支，本地 `d:/GitHub/_ts-newdbtest`
+> - TS 侧（**框架**）：`F:/Node.JS/XQAnimeBot/src/TDLib/function/*.ts`（message/get/chat/files/text/
+>   markdown/inlineAdapter/permissions）。这是 Fuyu_TDBot 框架仓、检出在 `main`，
+>   与插件分支无关；`inlineAdapter` 只是把业务 DSL 原样翻成 TDLib 结构，不做校验。
+> - Rust 侧：`F:/Rust/FuyuBot/crates/fuyubot-simplify`（lib.rs + rich.rs）+ 本仓 `crates/fuyubot-tdlib-ext`
 > - 消费方：`crates/fuyubot-plugin-anime`
 
 ## 1. 结论
 
 simplify 已经覆盖「发消息」这一整条（文本/图片/视频/相册/编辑/删除/回调查询/富文本），
-缺的主要是「**读**」和「**inline**」：
+缺的主要是「**读**」和「**inline**」——这些已由本仓的 `fuyubot-tdlib-ext` 补齐（见 §3）：
 
 | 能力 | TS 封装 | simplify 现状 | 插件是否需要 |
 | --- | --- | --- | --- |
@@ -59,3 +63,9 @@ simplify 已经覆盖「发消息」这一整条（文本/图片/视频/相册/�
 `thumbnail_url` 必须是 **HTTP URL**（客户端拿它做预览），**不能**填 Telegram 的文件 id；
 要发一个已存在的文件，正确做法是把 `inputMessageVideo{inputFileRemote}` 放进
 `input_message_content`，卡片本身用 `inputInlineQueryResultArticle`。
+
+TS 的 `inline/animeNavigation.ts` 把 `anime.image`（http URL）同时塞进 `photo_url` 和
+`message.media.photo.id`，框架的 `inlineAdapter` 又原样翻成 `inputMessagePhoto{inputPhoto{
+photo: inputFileRemote{id: "https://…"}}}`——**选中后发不出去**（`inputFileRemote.id` 不认 URL）。
+Rust 侧因此统一发文本卡片，封面只当 `thumbnail_url`；单集视频改用
+`inputMessageVideo{inputFileRemote{id: <Telegram 文件 id>}}`，选中即发原文件，不重传。

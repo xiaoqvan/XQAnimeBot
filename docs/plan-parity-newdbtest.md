@@ -1,10 +1,10 @@
 # 补齐计划：对齐 newdbtest + 配置迁入全局
 
-> 目标仓库：`D:/GitHub/XQAnimeBot-Rust`（分支 `rust`，HEAD `87aadab`）
+> 目标仓库：`D:/GitHub/XQAnimeBot-Rust`（分支 `rust`，收尾时 HEAD `af32ac0`）
 > 对齐对象：`github.com/xiaoqvan/XQAnimeBot` 的 **`newdbtest`** 分支（已克隆到 `d:/GitHub/_ts-newdbtest`）
 > 范围：**不含 web 端**
-> 制定时间：2026-10-27
-> 前置：`cargo test --workspace` = 306 passed / 0 failed
+> 制定：2026-10-27；阶段 1–9 全部完成
+> 现状：`cargo test --workspace` = **440 passed / 0 failed**（16 个测试目标）
 
 ## 0. 本次计划要解决的两件事
 
@@ -288,10 +288,13 @@ newdbtest 注册了两个 inline handler（`animeNavigation` / `episodeVideo`）
   `video_url` 会被服务端按「URL 非法」退回来。所以改成「article 卡片 +
   `input_message_content = inputMessageVideo{inputFileRemote}`」——**列表里是卡片，
   选中后发出的是视频**，不重新上传、不先下载。卡片缩略图用番剧封面（真 URL）。
-- **TS 的 photo 结果会「把封面当图片发出去」，这里统一发文本卡片**：TS 走的是它那层
-  `media: { photo: { id: anime.image } }`（把封面 **URL** 塞进文件 id 的位置），
-  TDLib 的 `InputFile` 只有本地 / 远程 id / 生成文件三种，没有「按 URL 发图」——
-  真要发图得先下载再上传。导航正文本身才是要发的东西，所以只把封面当缩略图。
+- **TS 的 photo 结果实际上发不出去，这里统一发文本卡片**：TS 在
+  `inline/animeNavigation.ts` 里把 `anime.image`（http URL）同时写进 `photo_url` 和
+  `message.media.photo.id`；框架的 `inlineAdapter.ts` 又原样翻成
+  `inputMessagePhoto{inputPhoto{photo: inputFileRemote{id: "https://…"}}}`——
+  `inputFileRemote.id` 不认 URL，选中后服务端会退回来。TDLib 的 `InputFile` 只有
+  本地 / 远程 id / 生成文件三种，没有「按 URL 发图」；要发图得先下载再上传。
+  导航正文本身才是要发的东西，所以只把封面当 `thumbnail_url`。
 - **一个查询只回一次**：`answerInlineQuery` 一个 query id 只有最后一次应答生效，
   所以两个 handler 不能各回各的。
 - **逐条结果的取视频逻辑保留 TS 的顺序**：`videoid` → `getMessage` 读
@@ -306,16 +309,19 @@ newdbtest 注册了两个 inline handler（`animeNavigation` / `episodeVideo`）
 
 ---
 
-## 9. 文档与交付
+## 9. 文档与交付（已完成）
 
-- **先删掉/重写** [gap-audit-2026-10-27.md](docs/gap-audit-2026-10-27.md)——那份是照
-  `main` 写的，结论有三处错误，留着会误导下一个接手的人。
-- [HANDOFF.md](docs/HANDOFF.md) §3/§4 自相矛盾、测试数写 281（实际 306）；
-  [audit-2026-10-26.md](docs/audit-2026-10-26.md) 是「15 命令 → 3」的旧口径。
-- 所有文档里「TS 版」的引用统一改指 `newdbtest`，并写明**参考分支**——
-  这次的错就是没写分支导致的。
-- 最后按你的要求，作为**新分支**提交到 `github.com/xiaoqvan/XQAnimeBot`。
-  分支名待定（本地现有 `rust` / `rust-migration` / `main`，`origin/rust` 已存在）。
+- **重写** [gap-audit-2026-10-27.md](docs/gap-audit-2026-10-27.md)：原版照 `main` 写，三处结论
+  错误；现在改成「阶段 1–8 已闭合的缺口 + 剩余 10 条差异（P1/P2）+ 刻意偏离 + 未验证项」，
+  文首写明参考分支、HEAD、测试数，每条差异都给了 `grep` 复核入口。
+- [HANDOFF.md](docs/HANDOFF.md) 整体重写：模块表按真实行数、业务主链一张表、
+  阶段进度、剩余差异指向 gap-audit、风险项与「下一步建议」；§3/§4 的自相矛盾已消失，
+  测试数 281 → 440。
+- [audit-2026-10-26.md](docs/audit-2026-10-26.md) 加「已归档」头，保留作追溯。
+- 所有文档里「TS 版」的引用统一改指 `newdbtest`；README 顶部写明参考分支，
+  并修掉指向 `F:/Node.JS/XQAnimeBot`（`main` 旧副本）的链接。
+- 代码与文档一起作为**新分支**提交到 `github.com/xiaoqvan/XQAnimeBot`
+  （`origin/rust` 已存在，本次按用户要求另起分支）。
 
 ---
 
